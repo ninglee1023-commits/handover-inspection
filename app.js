@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.6.0';
+const VERSION = '0.6.1';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -915,11 +915,20 @@ async function exportDocx(onlyDev) {
     const border = { style: D.BorderStyle.SINGLE, size: 4, color: '8A9391' };
     const borders = { top: border, bottom: border, left: border, right: border };
     // A4 landscape 16838 x 11906 twips; margins 600 → 15638 usable
-    const usable = 15638; const colPct = [4, 14, 26, 26, 19, 11]; const colTw = colPct.map(p => Math.round(usable * p / 100));
+    const usable = 15638; const colPct = [6, 13, 25, 25, 13, 18]; const colTw = colPct.map(p => Math.round(usable * p / 100));
     const imgPx = Math.floor(colTw[2] / 15) - 12; // drawing crop and photo share one width → same 4:3 size
     const cell = (children, i, o = {}) => new D.TableCell({ children, width: { size: colTw[i], type: D.WidthType.DXA }, borders, verticalAlign: o.v || D.VerticalAlign.TOP, shading: o.shade ? { type: D.ShadingType.CLEAR, color: 'auto', fill: o.shade } : undefined, margins: { top: 70, bottom: 70, left: 80, right: 80 } });
-    const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進'];
+    const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進／回復'];
     const rows = [new D.TableRow({ tableHeader: true, cantSplit: true, children: heads.map((h, i) => cell([Pg(T(h, { bold: true, color: 'FFFFFF', size: 17 }), { align: D.AlignmentType.CENTER, after: 0 })], i, { shade: '1D2629', v: D.VerticalAlign.CENTER })) })];
+    const rPx = Math.floor(colTw[5] / 15) - 12;
+    const replyParas = async it => { const out = [];
+      for (const [i, ph] of ((it.fix && it.fix.photos) || []).entries()) {
+        let w = rPx, h = rPx * 0.75; const r = ph.w / ph.h; if (r > 4 / 3) h = w / r; else w = h * r;
+        try { out.push(Pg(new D.ImageRun({ data: await (await shrink(ph.out, 1000)).arrayBuffer(), transformation: { width: Math.round(w), height: Math.round(h) } }), { align: D.AlignmentType.CENTER, after: 20 })); } catch (e) { fails.push(`${itemLabel(it)} 回復照片${i + 1}：${e.message}`); }
+        out.push(Pg(T(`回復 ${i + 1}　${fmtTime(ph.t).slice(0, 10)}`, { size: 13, color: '2F7D4F' }), { align: D.AlignmentType.CENTER, after: 80 }));
+      }
+      if (it.fix && it.fix.reply) out.push(Pg([T('回覆：', { bold: true, size: 15, color: '2F7D4F' }), T(it.fix.reply, { size: 15, color: '2F7D4F' })]));
+      return out.length ? out : [Pg(T(''))]; };
     let n = 0;
     for (const it of items) {
       busy(`正在生成報告… ${++n}／${items.length}`);
@@ -953,7 +962,7 @@ async function exportDocx(onlyDev) {
       rows.push(new D.TableRow({
         cantSplit: true, children: [
           cell([Pg(T(itemLabel(it), { bold: true, size: 16, color: 'D42A1E' }), { align: D.AlignmentType.CENTER }), Pg(T(it.by || '', { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER }), Pg(T(fmtTime(it.created).slice(5, 10), { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER })], 0, { v: D.VerticalAlign.CENTER }),
-          cell(locParas, 1), cell(dwgParas, 2), cell(phParas, 3), cell(noteParas.length ? noteParas : [Pg(T(''))], 4), cell([Pg(T(''))], 5),
+          cell(locParas, 1), cell(dwgParas, 2), cell(phParas, 3), cell(noteParas.length ? noteParas : [Pg(T(''))], 4), cell(await replyParas(it), 5),
         ]
       }));
     }
@@ -1196,8 +1205,8 @@ async function drawBlob(x, blob, X, Y, W, H) { const img = await loadImg(blob); 
 
 async function buildReportPages(items, progress) {
   const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M;
-  const pct = [4, 14, 26, 26, 19, 11], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
-  const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進'];
+  const pct = [6, 13, 25, 25, 13, 18], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
+  const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進／回復'];
   const pad = 5, imgW = cw[2] - 2 * pad, cropH = imgW * 0.75, top0 = M + 14, bottom = PG.H - M - 14, headH = 20;
   const pages = []; let c, x, y, fails = [];
   const newPage = first => {
@@ -1230,12 +1239,22 @@ async function buildReportPages(items, progress) {
     let phH = cropH; const avail = bottom - top0 - headH - 2 * pad;
     const need = () => Math.max(ovH + 4 + cropH, ovH + 4 + Math.max(1, np) * (phH + 4) - 4);
     if (need() > avail) phH = Math.max(40, (avail - ovH - 4 - (np - 1) * 4) / np);
-    const rowH = need() + 2 * pad;
+    const rps = (it.fix && it.fix.photos) || [], rW = cw[5] - 2 * pad; let rH = rW * 0.75;
+    if (rps.length && rps.length * (rH + 14) > avail - 30) rH = Math.max(30, (avail - 30) / rps.length - 14);
+    const replyH = rps.length ? rps.length * (rH + 14) + 30 : 0;
+    const rowH = Math.max(need(), replyH) + 2 * pad;
     if (y + rowH > bottom) newPage(false);
     const y0 = y; grid(y0, rowH);
-    drawText(x, itemLabel(it), cx[0], y0 + rowH / 2 - 16, cw[0], 7.5, { bold: true, color: '#d42a1e', center: true });
-    drawText(x, it.by || '', cx[0], y0 + rowH / 2 - 4, cw[0], 6, { color: '#5f6b69', center: true });
-    drawText(x, fmtTime(it.created).slice(5, 10), cx[0], y0 + rowH / 2 + 5, cw[0], 6, { color: '#5f6b69', center: true });
+    { let ly = y0 + rowH / 2 - 18; ly += drawText(x, itemLabel(it), cx[0] + 2, ly, cw[0] - 4, 7.5, { bold: true, color: '#d42a1e', center: true }) + 2;
+      if (it.by) ly += drawText(x, it.by, cx[0] + 2, ly, cw[0] - 4, 6, { color: '#5f6b69', center: true }) + 1;
+      drawText(x, fmtTime(it.created).slice(5, 10), cx[0] + 2, ly, cw[0] - 4, 6, { color: '#5f6b69', center: true }); }
+    if (rps.length) { let ry = y0 + pad; const rx = cx[5] + pad;
+      for (const [i, ph] of rps.entries()) {
+        let w = Math.min(rW, rH / 0.75), h = w * 0.75; const r = ph.w / ph.h; let dw = w, dh = h; if (r > w / h) dh = w / r; else dw = h * r;
+        try { await drawBlob(x, await shrink(ph.out, 1000), rx + (rW - dw) / 2, ry + (h - dh) / 2, dw, dh); } catch (e) { fails.push(`${itemLabel(it)} 回復照片${i + 1}：${e.message}`); }
+        ry += h + 2; ry += drawText(x, `回復 ${i + 1}　${fmtTime(ph.t).slice(0, 10)}`, rx, ry, rW, 6.5, { color: '#2f7d4f', center: true }) + 4;
+      }
+      if (it.fix.reply) drawText(x, '回覆：' + it.fix.reply, rx, ry, rW, 7.5, { color: '#2f7d4f' }); }
     const L = it.loc || {}; const v = viewById(d, L.viewId);
     let ty = y0 + pad + drawText(x, it.locText || '—', cx[1] + pad, y0 + pad, cw[1] - 2 * pad, 8.5, { bold: true }) + 6;
     for (const [a, b] of [['座', L.tower], ['層', L.floor], ['單位', L.flat ? 'FLAT ' + L.flat : ''], ['房間／區域', L.room || L.area], ['軸線', L.grid], ['圖紙', [d.no, v ? v.title : d.name].filter(Boolean).join(' ')]])
