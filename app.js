@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36);
@@ -679,11 +679,19 @@ function openEditor(src, prev) {
     size(); const onRes = () => size(); addEventListener('resize', onRes);
     const draw = () => { ctx.drawImage(base, 0, 0, w, h); for (const s of shapes) drawShape(ctx, s, lw); if (cur) drawShape(ctx, cur, lw); };
     draw();
+    // auto save to Photos: keep a captioned copy ready so the share sheet can open straight from the 完成 tap
+    const it0 = S.editing, t0 = prev ? prev.t : Date.now(); let pv = 0, ready = null, prepT = 0;
+    const autoAlb = !prev && it0 && S.settings.autoAlbum !== false && navigator.canShare && navigator.share;
+    const prep = () => { if (!autoAlb) return; const v = ++pv; ready = null; clearTimeout(prepT); prepT = setTimeout(async () => {
+      try { const out = await canvasBlob(cv, 'image/jpeg', 0.86); if (v !== pv) return;
+        const f = new File([await captioned({ ...it0, photos: [...it0.photos, 0] }, { out, t: t0 }, it0.photos.length)], photoName(it0, it0.photos.length), { type: 'image/jpeg' });
+        if (v === pv && navigator.canShare({ files: [f] })) ready = { v, f }; } catch (e) { } }, 120); };
+    prep();
     const pos = e => { const r = cv.getBoundingClientRect(); return { x: Math.round((e.clientX - r.left) * w / r.width), y: Math.round((e.clientY - r.top) * h / r.height) }; };
     let pid = null;
     cv.onpointerdown = e => { if (pid !== null) return; pid = e.pointerId; cv.setPointerCapture(pid); const p = pos(e); cur = E.tool === 'pen' ? { t: 'pen', c: E.color, pts: [p] } : { t: E.tool, c: E.color, a: p, b: p }; draw(); };
     cv.onpointermove = e => { if (e.pointerId !== pid || !cur) return; const p = pos(e); if (cur.t === 'pen') cur.pts.push(p); else cur.b = p; draw(); };
-    cv.onpointerup = cv.onpointercancel = e => { if (e.pointerId !== pid) return; pid = null; if (cur) { const ok = cur.t === 'pen' ? cur.pts.length > 1 : Math.hypot(cur.b.x - cur.a.x, cur.b.y - cur.a.y) > lw * 2; if (ok) shapes.push(cur); cur = null; draw(); } };
+    cv.onpointerup = cv.onpointercancel = e => { if (e.pointerId !== pid) return; pid = null; if (cur) { const ok = cur.t === 'pen' ? cur.pts.length > 1 : Math.hypot(cur.b.x - cur.a.x, cur.b.y - cur.a.y) > lw * 2; if (ok) shapes.push(cur); cur = null; draw(); prep(); } };
     const sync = () => ed.querySelectorAll('[data-ed="tool"],[data-ed="color"]').forEach(b => b.setAttribute('aria-pressed', b.dataset.ed === 'tool' ? b.dataset.v === E.tool : b.dataset.v === E.color));
     sync();
     const finish = async ok => {
@@ -694,13 +702,18 @@ function openEditor(src, prev) {
       if (!orig) { ctx.drawImage(base, 0, 0, w, h); orig = await canvasBlob(cv, 'image/jpeg', 0.88); draw(); }
       const out = await canvasBlob(cv, 'image/jpeg', 0.86);
       busy(); ed.hidden = true;
-      resolve({ id: prev ? prev.id : uid(), orig, out, shapes, w, h, t: prev ? prev.t : Date.now() });
+      const r = { id: prev ? prev.id : uid(), orig, out, shapes, w, h, t: t0 };
+      if (albumP) albumP.then(async okA => { if (!okA) return toast('未存入相簿，可稍後在「導出 → 存入相簿」補存', 3500); r.album = Date.now(); if (S.items.includes(it0)) await DB.put('items', it0); updateBar(); });
+      else if (autoAlb) toast('相片未能即時存入相簿，可稍後在「導出 → 存入相簿」補存', 3500);
+      resolve(r);
     };
+    let albumP = null;
     ed.onclick = e => {
       const b = e.target.closest('[data-ed]'); if (!b) return;
       const a = b.dataset.ed;
       if (a === 'tool') E.tool = b.dataset.v; if (a === 'color') E.color = b.dataset.v;
-      if (a === 'undo') { shapes.pop(); draw(); } if (a === 'clear') { shapes.length = 0; draw(); }
+      if (a === 'undo') { shapes.pop(); draw(); prep(); } if (a === 'clear') { shapes.length = 0; draw(); prep(); }
+      if (a === 'done' && autoAlb && ready && ready.v === pv) albumP = navigator.share({ files: [ready.f] }).then(() => true, () => false);
       if (a === 'cancel') finish(false); if (a === 'done') finish(true);
       sync();
     };
@@ -730,11 +743,12 @@ function exportPanel() {
     <div class="sec">本機</div>
     <div class="row"><button class="btn" data-a="setup">代號 ${esc(S.settings.dev || '—')}　${esc(S.settings.inspector || '')}</button></div>
     <label class="toggle">點選位置後直接開相機<input type="checkbox" id="sCam" ${S.settings.autoCam ? 'checked' : ''}></label>
+    <label class="toggle">拍照後即時存入相簿（分享選單按「儲存影像」）<input type="checkbox" id="sAlb" ${S.settings.autoAlbum !== false ? 'checked' : ''}></label>
     <label class="toggle">驗收時顯示單位範圍<input type="checkbox" id="sZone" ${S.settings.showZones ? 'checked' : ''}></label>
     <div class="note" id="stor">記錄存在這部 iPad 的程式資料內。</div>
     <div class="note">版本 ${VERSION}${S.pkgVersion ? '　圖紙包 ' + esc(S.pkgVersion) : ''}</div>`);
   $('#pCrop').value = S.settings.crop;
-  const sv = () => { Object.assign(P, { name: $('#pName').value, site: $('#pSite').value, date: $('#pDate').value, company: $('#pCo').value }); S.settings.keyPlan = $('#pKey').checked; S.settings.crop = $('#pCrop').value; S.settings.autoCam = $('#sCam').checked; S.settings.showZones = $('#sZone').checked; saveKV(); updateBar(); renderOverlay(); };
+  const sv = () => { Object.assign(P, { name: $('#pName').value, site: $('#pSite').value, date: $('#pDate').value, company: $('#pCo').value }); S.settings.keyPlan = $('#pKey').checked; S.settings.crop = $('#pCrop').value; S.settings.autoCam = $('#sCam').checked; S.settings.showZones = $('#sZone').checked; S.settings.autoAlbum = $('#sAlb').checked; saveKV(); updateBar(); renderOverlay(); };
   panel.querySelectorAll('input,select').forEach(i => i.onchange = sv);
   (async () => {
     const el = $('#stor'); if (!el) return; let t = el.textContent;
