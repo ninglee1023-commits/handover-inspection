@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.4.2';
+const VERSION = '0.5.0';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -291,7 +291,7 @@ function renderOverlay() {
     const all = S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
     for (const it of all) {
       const act = S.editing && S.editing.id === it.id; const r = (act ? 17 : 14) * u;
-      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="#d42a1e" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(it.no > 99 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
+      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="#d42a1e" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, !multiFloorViews(d).length) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, !multiFloorViews(d).length) : devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
     }
   }
   ov.innerHTML = h;
@@ -791,7 +791,9 @@ function exportPanel() {
     <div class="note">預覽後可直接導出 PDF 或 Word。PDF 與預覽版面相同；Word 可再加文字修改。</div>
     <div class="sec">合併其他 iPad 的記錄</div>
     <button class="btn" data-a="imp">匯入備份檔（ZIP）</button>
-    <div class="note">匯入後所有記錄會在同一張圖上顯示，保留原來的編號（如 B-012）及檢查人員；同一記錄以較新的版本為準。</div>
+    <div class="note">匯入後所有記錄會在同一張圖上顯示，連同圖上位置、照片標註及檢查人員；同一記錄以較新的版本為準。</div>
+    <button class="btn" data-a="renum">整理編號（按樓層、位置）</button>
+    <div class="note">全部記錄匯入後按這裏，編號會改為按樓層排列，例如 B1-001、B1-002、B2-001，同一單位或區域的記錄排在一起，就像一個人做了全部記錄。原來的編號會保留在記錄內。之後再匯入或新增記錄，可再按一次重新整理。</div>
     <div class="sec">本機</div>
     <div class="row"><button class="btn" data-a="setup">代號 ${esc(S.settings.dev || '—')}　${esc(S.settings.inspector || '')}</button></div>
     <label class="toggle">點選位置後直接開相機<input type="checkbox" id="sCam" ${S.settings.autoCam ? 'checked' : ''}></label>
@@ -819,6 +821,7 @@ function exportPanel() {
     if (a === 'album') albumPanel();
     if (a === 'setup') setupPanel();
     if (a === 'imp') $('#jsonInput').click();
+    if (a === 'renum') { if (!S.items.length) return toast('還沒有任何記錄'); if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = `再按一次確認整理 ${S.items.length} 項記錄的編號`; return; } await renumberAll(); exportPanel(); }
   };
 }
 async function deliver(blob, filename) {
@@ -847,7 +850,7 @@ async function cropImage(d, it) { // 4:3, vector-sharp
     x.beginPath(); z.pts.forEach((p, i) => { const a = (p[0] - R.x) * s, b = (p[1] - R.y) * s; i ? x.lineTo(a, b) : x.moveTo(a, b); }); x.closePath();
     x.fillStyle = 'rgba(242,194,48,.16)'; x.fill(); x.strokeStyle = 'rgba(212,42,30,.55)'; x.lineWidth = 4; x.setLineDash([14, 8]); x.stroke(); x.setLineDash([]);
   }
-  pinOn(x, (it.x - R.x) * s, (it.y - R.y) * s, devOf(it) + it.no, 44);
+  pinOn(x, (it.x - R.x) * s, (it.y - R.y) * s, pinLabel(it, !multiFloorViews(d).length), 44);
   x.strokeStyle = '#888'; x.lineWidth = 3; x.strokeRect(1.5, 1.5, c.width - 3, c.height - 3);
   return { blob: await canvasBlob(c, 'image/jpeg', 0.88), w: c.width, h: c.height };
 }
@@ -868,7 +871,7 @@ async function overviewImage(d, it) { // whole plan view, small, with the crop b
 async function keyPlanImage(d, v, items) {
   const b = v ? v.bbox : [0, 0, d.w, d.h]; const bw = b[2] - b[0], bh = b[3] - b[1];
   const outW = 2400; const c = await renderRegion(d, b[0], b[1], bw, bh, outW); const x = c.getContext('2d'); const s = outW / bw;
-  for (const it of items) pinOn(x, (it.x - b[0]) * s, (it.y - b[1]) * s, devOf(it) + it.no, Math.max(16, outW / 90));
+  for (const it of items) pinOn(x, (it.x - b[0]) * s, (it.y - b[1]) * s, pinLabel(it, !(v && v.floors && v.floors.length > 1)), Math.max(16, outW / 90));
   return { blob: await canvasBlob(c, 'image/jpeg', 0.88), w: c.width, h: c.height };
 }
 
@@ -968,8 +971,34 @@ async function exportDocx(onlyDev) {
 
 /* ---------------- device identity, captions, album, backup & merge ---------------- */
 const devOf = it => it.dev || S.settings.dev || 'A';
-const itemLabel = it => `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
-const byOrder = (a, b) => devOf(a).localeCompare(devOf(b)) || a.no - b.no;
+// after 整理編號 a record carries a unified code (e.g. B1-003) that replaces the per-device number
+const itemLabel = it => it.code || `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
+const byOrder = (a, b) => (a.ord ?? 1e9) - (b.ord ?? 1e9) || devOf(a).localeCompare(devOf(b)) || a.no - b.no;
+// pins have little room: number only, or floor + number where one plan stands for several floors
+const pinLabel = (it, short) => { if (!it.code) return devOf(it) + it.no; const n = String(+it.code.split('-').pop()); return short || !(it.loc && it.loc.floor) ? n : `${it.loc.floor}-${n}`; };
+
+/* unified numbering: as if one inspector made every record — grouped by floor, ordered by location */
+function floorRank(f) {
+  const s = String(f || '').toUpperCase().replace(/\/F$|F$/, '');
+  let m = s.match(/^B(\d+)$/); if (m) return -Number(m[1]);
+  if (/^(G|GF|LG|UG)$/.test(s)) return 0;
+  m = s.match(/(\d+)/); return m ? Number(m[1]) : 999;
+}
+async function renumberAll() {
+  const key = it => { const L = it.loc || {}; return [L.tower || '', L.floor || ''].filter(Boolean).join('-') || '其他'; };
+  const cmp = (a, b) => { const A = a.loc || {}, B = b.loc || {};
+    return floorRank(A.floor) - floorRank(B.floor) || (A.tower || '').localeCompare(B.tower || '', 'en', { numeric: true })
+      || (A.flat || '').localeCompare(B.flat || '', 'en', { numeric: true }) || (A.room || A.area || '').localeCompare(B.room || B.area || '', 'zh-Hant')
+      || a.y - b.y || a.x - b.x; };
+  const list = S.items.slice().sort(cmp); const cnt = new Map(); const now = Date.now();
+  for (const [i, it] of list.entries()) {
+    const k = key(it); const n = (cnt.get(k) || 0) + 1; cnt.set(k, n);
+    if (!it.origLabel) it.origLabel = `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
+    it.code = `${k}-${String(n).padStart(3, '0')}`; it.ord = i; it.mod = now;
+    await DB.put('items', it);
+  }
+  renderOverlay(); updateBar(); toast(`已整理 ${list.length} 項記錄的編號（${cnt.size} 個樓層）`, 4000);
+}
 const fmtTime = t => { const d = new Date(t || Date.now()); const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 function unbacked() { const t = S.settings.lastBackup || 0; return S.items.filter(i => (i.mod || i.created || 0) > t).length; }
 function unalbum() { return S.items.reduce((n, i) => n + i.photos.filter(p => !p.album).length, 0); }
@@ -1070,6 +1099,7 @@ async function importBackup(file) {
       if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
       const ex = S.items.find(x => x.id === it.id);
       if (ex && (ex.mod || ex.created || 0) >= (it.mod || it.created || 0)) { skip++; continue; }
+      if (ex && ex.code && !it.code) Object.assign(it, { code: ex.code, ord: ex.ord, origLabel: ex.origLabel });
       const photos = [];
       for (const p of it.photos) {
         let orig = typeof p.orig === 'string' && p.orig.startsWith('data:') ? await dataURLToBlob(p.orig) : zip ? await zip.file(p.orig).async('blob') : null;
