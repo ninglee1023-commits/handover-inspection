@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36);
@@ -62,6 +62,9 @@ function loadImg(src) {
     i.src = typeof src === 'string' ? src : URL.createObjectURL(src);
   });
 }
+// Android has no "save image" target in the share sheet: a plain download lands in Download/, which the gallery shows
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+function saveFile(blob, filename) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000); }
 const canvasBlob = (c, type = 'image/jpeg', q = 0.86) => new Promise(r => c.toBlob(r, type, q));
 async function shrink(blob, max) { const img = await loadImg(blob); const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)); if (k >= 1) { URL.revokeObjectURL(img.src); return blob; } const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(img.src); return canvasBlob(c, 'image/jpeg', 0.8); }
 const blobToDataURL = b => new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); });
@@ -299,6 +302,9 @@ function updateBar() {
   const mv = multiFloorViews(d);
   $('#btnFloor').hidden = !mv.length || S.mode !== 'inspect';
   if (mv.length) $('#btnFloor').innerHTML = `樓層 <b>${esc(mv.map(v => floorFor(v)).filter((f, i, a) => a.indexOf(f) === i).join('/'))}</b>`;
+  // zones and grids of the bundled plans come with the package; 位置設定 is only offered for drawings imported on the device
+  $('#mMap').parentElement.hidden = !d || d.src === 'bundle';
+  if (S.mode === 'map' && (!d || d.src === 'bundle')) { S.mode = 'inspect'; S.draft = null; renderOverlay(); }
   $('#maptools').hidden = S.mode !== 'map' || !d;
   document.querySelectorAll('#maptools [data-tool]').forEach(b => b.setAttribute('aria-pressed', b.dataset.tool === S.tool));
   const poly = S.mode === 'map' && S.tool === 'poly';
@@ -716,11 +722,11 @@ function openEditor(src, prev) {
     draw();
     // auto save to Photos: keep a captioned copy ready so the share sheet can open straight from the 完成 tap
     const it0 = S.editing, t0 = prev ? prev.t : Date.now(); let pv = 0, ready = null, prepT = 0;
-    const autoAlb = !prev && it0 && S.settings.autoAlbum !== false && navigator.canShare && navigator.share;
+    const autoAlb = !prev && it0 && S.settings.autoAlbum !== false && (IS_ANDROID || (navigator.canShare && navigator.share));
     const prep = () => { if (!autoAlb) return; const v = ++pv; ready = null; clearTimeout(prepT); prepT = setTimeout(async () => {
       try { const out = await canvasBlob(cv, 'image/jpeg', 0.86); if (v !== pv) return;
         const f = new File([await captioned({ ...it0, photos: [...it0.photos, 0] }, { out, t: t0 }, it0.photos.length)], photoName(it0, it0.photos.length), { type: 'image/jpeg' });
-        if (v === pv && navigator.canShare({ files: [f] })) ready = { v, f }; } catch (e) { } }, 120); };
+        if (v === pv && (IS_ANDROID || navigator.canShare({ files: [f] }))) ready = { v, f }; } catch (e) { } }, 120); };
     prep();
     const pos = e => { const r = cv.getBoundingClientRect(); return { x: Math.round((e.clientX - r.left) * w / r.width), y: Math.round((e.clientY - r.top) * h / r.height) }; };
     let pid = null;
@@ -738,7 +744,10 @@ function openEditor(src, prev) {
       const out = await canvasBlob(cv, 'image/jpeg', 0.86);
       busy(); ed.hidden = true;
       const r = { id: prev ? prev.id : uid(), orig, out, shapes, w, h, t: t0 };
-      if (albumP) albumP.then(async okA => { if (!okA) return toast('未存入相簿，可稍後在「導出 → 存入相簿」補存', 3500); r.album = Date.now(); if (S.items.includes(it0)) await DB.put('items', it0); updateBar(); });
+      if (autoAlb && IS_ANDROID) {
+        try { const f = ready && ready.v === pv ? ready.f : new File([await captioned({ ...it0, photos: [...it0.photos, 0] }, { out, t: t0 }, it0.photos.length)], photoName(it0, it0.photos.length), { type: 'image/jpeg' });
+          saveFile(f, f.name); r.album = Date.now(); } catch (e) { toast('相片未能存入手機，可稍後在「導出 → 存入相簿」補存', 3500); }
+      } else if (albumP) albumP.then(async okA => { if (!okA) return toast('未存入相簿，可稍後在「導出 → 存入相簿」補存', 3500); r.album = Date.now(); if (S.items.includes(it0)) await DB.put('items', it0); updateBar(); });
       else if (autoAlb) toast('相片未能即時存入相簿，可稍後在「導出 → 存入相簿」補存', 3500);
       resolve(r);
     };
@@ -748,7 +757,7 @@ function openEditor(src, prev) {
       const a = b.dataset.ed;
       if (a === 'tool') E.tool = b.dataset.v; if (a === 'color') E.color = b.dataset.v;
       if (a === 'undo') { shapes.pop(); draw(); prep(); } if (a === 'clear') { shapes.length = 0; draw(); prep(); }
-      if (a === 'done' && autoAlb && ready && ready.v === pv) albumP = navigator.share({ files: [ready.f] }).then(() => true, () => false);
+      if (a === 'done' && autoAlb && !IS_ANDROID && ready && ready.v === pv) albumP = navigator.share({ files: [ready.f] }).then(() => true, () => false);
       if (a === 'cancel') finish(false); if (a === 'done') finish(true);
       sync();
     };
@@ -780,7 +789,7 @@ function exportPanel() {
     <div class="sec">本機</div>
     <div class="row"><button class="btn" data-a="setup">代號 ${esc(S.settings.dev || '—')}　${esc(S.settings.inspector || '')}</button></div>
     <label class="toggle">點選位置後直接開相機<input type="checkbox" id="sCam" ${S.settings.autoCam ? 'checked' : ''}></label>
-    <label class="toggle">拍照後即時存入相簿（分享選單按「儲存影像」）<input type="checkbox" id="sAlb" ${S.settings.autoAlbum !== false ? 'checked' : ''}></label>
+    <label class="toggle">${IS_ANDROID ? '拍照後自動存入手機（相簿的「Download」資料夾）' : '拍照後即時存入相簿（分享選單按「儲存影像」）'}<input type="checkbox" id="sAlb" ${S.settings.autoAlbum !== false ? 'checked' : ''}></label>
     <label class="toggle">驗收時顯示單位範圍<input type="checkbox" id="sZone" ${S.settings.showZones ? 'checked' : ''}></label>
     <div class="note" id="stor">記錄存在這部 iPad 的程式資料內。</div>
     <div class="note">版本 ${VERSION}${S.pkgVersion ? '　圖紙包 ' + esc(S.pkgVersion) : ''}</div>`);
@@ -985,12 +994,17 @@ async function albumPanel() {
   const todo = []; for (const it of S.items.slice().sort(byOrder)) it.photos.forEach((p, i) => { if (!p.album) todo.push([it, p, i]); });
   const N = 20, batches = Math.ceil(todo.length / N);
   openPanel('album', '存入相簿', todo.length ? `
-    <div class="note">尚有 <b>${todo.length}</b> 張相未存入相簿。每批 ${N} 張，按下後在分享選單揀「儲存 ${Math.min(N, todo.length)} 張影像」。存入的相片底部印有編號、位置、時間及檢查人員。</div>
+    <div class="note">尚有 <b>${todo.length}</b> 張相未存入相簿。每批 ${N} 張，${IS_ANDROID ? '按下後直接存入手機的「Download」資料夾（第一次請在提示中按「允許」下載多個檔案）' : `按下後在分享選單揀「儲存 ${Math.min(N, todo.length)} 張影像」`}。存入的相片底部印有編號、位置、時間及檢查人員。</div>
     <button class="btn p" id="albGo">存入第 1 批（共 ${batches} 批）</button>`
     : '<div class="note">全部相片已存入相簿。</div>', { compact: true });
   const go = $('#albGo'); if (!go) return;
   go.onclick = async () => {
     const part = todo.slice(0, N);
+    if (IS_ANDROID) {
+      try { busy('正在存入…'); for (const [it, p, i] of part) { saveFile(await captioned(it, p, i), photoName(it, i)); p.album = Date.now(); await DB.put('items', it); await new Promise(r => setTimeout(r, 250)); }
+        busy(); toast(`已存入 ${part.length} 張`); albumPanel(); updateBar(); } catch (e) { busy(); toast('未能存入：' + e.message, 4000); }
+      return;
+    }
     if (!navigator.canShare) return toast('這個瀏覽器不支援存入相簿，請用 iPad Safari');
     try {
       busy('正在準備相片…'); const files = [];
