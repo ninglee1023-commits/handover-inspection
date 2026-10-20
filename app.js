@@ -147,6 +147,7 @@ function span(lines, v, other) {
   let s = lines.filter(l => l.from == null || (other >= l.from - 30 && other <= l.to + 30));
   if (!s.length) s = lines;
   s = [...s].sort((a, b) => a.pos - b.pos);
+  if (s.length === 1) return stripPre(s[0].label); // part plans often show a single grid line
   if (v < s[0].pos) return `${stripPre(s[0].label)}外`;
   for (let i = 0; i < s.length - 1; i++) if (v >= s[i].pos && v <= s[i + 1].pos) { const p = [stripPre(s[i].label), stripPre(s[i + 1].label)].sort((a, b) => a.localeCompare(b, 'en', { numeric: true })); return `${p[0]}-${p[1]}`; }
   return `${stripPre(s[s.length - 1].label)}外`;
