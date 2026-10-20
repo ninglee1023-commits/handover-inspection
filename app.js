@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.6.1';
+const VERSION = '0.6.2';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -56,18 +56,25 @@ function busy(msg) { $('#busy').hidden = !msg; if (msg) $('#busyMsg').textConten
 const blobURLs = [];
 function burl(b) { const u = URL.createObjectURL(b); blobURLs.push(u); return u; }
 function freeURLs() { while (blobURLs.length) URL.revokeObjectURL(blobURLs.pop()); }
-function loadImg(src) {
-  return new Promise((res, rej) => {
-    if (!src) return rej(new Error('圖片資料不存在'));
-    const i = new Image();
-    i.onload = () => res(i);
-    i.onerror = async () => { // fallback decoder (helps with very large images on iPad)
-      if (typeof src !== 'string' && window.createImageBitmap) { try { const b = await createImageBitmap(src); b.naturalWidth = b.width; b.naturalHeight = b.height; return res(b); } catch (e) { } }
-      rej(new Error(typeof src === 'string' ? '圖片無法讀取' : `圖片無法讀取（${src.type || '未知格式'}，${Math.round((src.size || 0) / 1024)} KB）`));
-    };
-    i.src = typeof src === 'string' ? src : URL.createObjectURL(src);
-  });
+function loadImgOnce(url) { return new Promise((res, rej) => { const i = new Image(); i.decoding = 'async'; i.onload = () => res(i); i.onerror = () => rej(new Error('decode')); i.src = url; }); }
+/* iPad Safari sometimes loses the file behind a photo blob kept from IndexedDB (often on the 2nd report in a row),
+   so try several ways: object URL → bitmap → a fresh copy of the bytes → data URL */
+async function loadImg(src) {
+  if (!src) throw new Error('圖片資料不存在');
+  if (typeof src === 'string') { try { return await loadImgOnce(src); } catch (e) { throw new Error('圖片無法讀取'); } }
+  const tryUrl = async b => { const u = URL.createObjectURL(b); try { return await loadImgOnce(u); } catch (e) { URL.revokeObjectURL(u); throw e; } };
+  try { return await tryUrl(src); } catch (e) { }
+  if (window.createImageBitmap) { try { const bm = await createImageBitmap(src); bm.naturalWidth = bm.width; bm.naturalHeight = bm.height; return bm; } catch (e) { } }
+  let bytes = null; try { bytes = await src.arrayBuffer(); } catch (e) { }
+  if (bytes && bytes.byteLength) {
+    const fresh = new Blob([bytes], { type: src.type || 'image/jpeg' });
+    try { return await tryUrl(fresh); } catch (e) { }
+    try { return await loadImgOnce(await blobToDataURL(fresh)); } catch (e) { }
+  }
+  throw new Error(`圖片無法讀取（${src.type || '未知格式'}，${Math.round((src.size || 0) / 1024)} KB${bytes ? '' : '，檔案已失效'}）`);
 }
+/* re-read records from IndexedDB before a report, so every photo comes with a fresh, valid file handle */
+async function freshItems(items) { const out = []; for (const it of items) { let f = null; try { f = await DB.get('items', it.id); } catch (e) { } out.push(f && f.photos ? f : it); } return out; }
 // Android has no "save image" target in the share sheet: a plain download lands in Download/, which the gallery shows
 const IS_ANDROID = /Android/i.test(navigator.userAgent);
 function saveFile(blob, filename) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000); }
@@ -908,7 +915,7 @@ async function exportDocx(onlyDev) {
   const D = window.docx; const P = S.project;
   try {
     busy('正在生成報告…');
-    const items = roundItems().filter(i => !onlyDev || devOf(i) === onlyDev).sort(byOrder); const fails = []; ovCache.clear(); var curLbl = '';
+    const items = await freshItems(roundItems().filter(i => !onlyDev || devOf(i) === onlyDev).sort(byOrder)); const fails = []; ovCache.clear(); var curLbl = '';
     const FONT = { ascii: 'Arial', hAnsi: 'Arial', eastAsia: 'Microsoft JhengHei', cs: 'Arial' };
     const T = (text, o = {}) => new D.TextRun({ text: String(text ?? ''), font: FONT, size: o.size || 18, bold: o.bold, color: o.color });
     const Pg = (runs, o = {}) => new D.Paragraph({ children: Array.isArray(runs) ? runs : [runs], alignment: o.align, spacing: { after: o.after ?? 40, before: o.before ?? 0 }, keepLines: true, keepNext: o.keepNext });
@@ -1204,6 +1211,7 @@ function drawText(x, text, X, Y, maxW, size, o = {}) {
 async function drawBlob(x, blob, X, Y, W, H) { const img = await loadImg(blob); x.drawImage(img, X, Y, W, H); if (img.close) img.close(); else URL.revokeObjectURL(img.src); }
 
 async function buildReportPages(items, progress) {
+  items = await freshItems(items);
   const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M;
   const pct = [6, 13, 25, 25, 13, 18], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
   const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進／回復'];
@@ -1546,6 +1554,7 @@ function reportItems(kind, onlyDev) {
 }
 const reportTitle = kind => kind === 'inspect' ? '竣工驗收記錄' : '執修回復報告';
 async function buildFixPages(items, progress, kind) {
+  items = await freshItems(items);
   const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M, title = reportTitle(kind), rn = curRound().name;
   const pct = [5, 13, 18, 23, 23, 11, 7], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
   const heads = ['編號', '位置', '圖紙位置', '完成前', '完成後', '問題／回覆', '狀態'];
@@ -1611,6 +1620,7 @@ async function buildFixPages(items, progress, kind) {
   return { pages: blobs, fails };
 }
 async function exportFixDocx(items, kind) {
+  items = await freshItems(items);
   if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '還沒有任何記錄');
   if (!window.docx) return toast('報告元件未載入，請連網後重新開啟一次');
   const D = window.docx, P = S.project, title = reportTitle(kind), rn = curRound().name;
