@@ -1,7 +1,9 @@
 # 竣工驗收記錄 (handover-inspection)
 
-離線 iPad 網頁程式：圖紙上點選位置 → 拍照 → 標記箭頭／圈選 → 自動帶出座／層／房間／Grid → 導出 Word 報告。
+iPad 竣工驗收程式：在 GBP 平面圖上點選位置 → 拍照 → 加箭頭／圈選 → 自動帶出 座-層-單位-房間 及 Grid → 導出 Word 報告（A4 橫向，可另存 PDF）。
 
-- 純靜態網頁，放上 GitHub Pages 即可使用；首次開啟後可離線。
-- 資料儲存在 iPad Safari 的 IndexedDB，請「加入主畫面」並定期「導出全部（含照片）」備份。
-- 函式庫：pdf.js 3.11.174、docx 8.5.0（已放在 lib/，不需外部 CDN）。
+- 網址：https://ninglee1023-commits.github.io/handover-inspection/
+- 圖紙：`gbp/plans.pdf`（GBP 13th Amd 平面圖頁 P3-8、13-20，向量原檔，放大保持清晰）
+- 位置設定：`gbp/mapping.json`（GBP 軸線文字＋售樓說明書單位範圍生成）
+- 資料存在 iPad Safari 的 IndexedDB，請「加入主畫面」並定期導出備份。
+- 函式庫：pdf.js 3.11.174、docx 8.5.0（已放在 lib/）。

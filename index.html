@@ -58,6 +58,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 #stage{position:fixed;inset:0;touch-action:none;overflow:hidden;background:var(--paper)}
 #board{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
 #board img{display:block;pointer-events:none;-webkit-user-drag:none;background:#fff;box-shadow:0 1px 8px rgba(0,0,0,.18)}
+#hires{position:absolute;pointer-events:none}
 #ov{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
 #empty{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;color:var(--muted)}
 
@@ -93,6 +94,14 @@ label.f{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mu
 label.f input,label.f textarea,label.f select{font:15px/1.4 var(--sans);color:var(--fg);background:var(--surface-2);border:1px solid var(--line);border-radius:9px;padding:9px 10px;width:100%}
 label.f textarea{resize:vertical;min-height:62px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:8px}
+.idx{font:700 17px/1.35 var(--sans);background:var(--board);color:var(--board-fg);border-radius:10px;padding:10px 12px;word-break:break-word;-webkit-user-select:text;user-select:text}
+.f-l{font-size:12px;color:var(--muted);letter-spacing:.02em;margin-bottom:-6px}
+.chips.pick .chip{font-size:14px;padding:8px 12px;min-height:38px;background:var(--surface-2);color:var(--fg)}
+.chips.pick .chip.on{background:var(--red);border-color:var(--red);color:#fff;font-weight:600}
+details summary{font-size:13px;color:var(--muted);cursor:pointer;padding:4px 0}
+details[open]{display:flex;flex-direction:column;gap:8px}
+#btnFloor b{font-family:var(--mono)}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:3px 9px}
 .chip b{font-weight:600}
@@ -133,7 +142,7 @@ label.f textarea{resize:vertical;min-height:62px}
 #editor .ok{background:var(--red);border-color:var(--red);font-weight:600}
 .edgrp{display:flex;gap:6px}
 
-#toast{position:fixed;z-index:60;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 80px);background:var(--fg);color:var(--surface);padding:10px 16px;border-radius:10px;font-size:14px;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:90vw}
+#toast{position:fixed;z-index:60;pointer-events:none;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 80px);background:var(--fg);color:var(--surface);padding:10px 16px;border-radius:10px;font-size:14px;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:90vw}
 #busy{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.45);display:grid;place-items:center;color:#fff;font-size:16px}
 #busy div{background:var(--board);padding:18px 22px;border-radius:12px}
 @media (prefers-reduced-motion:no-preference){#panel{animation:slide .18s ease-out}@keyframes slide{from{transform:translateX(20px)}}}
@@ -141,9 +150,9 @@ label.f textarea{resize:vertical;min-height:62px}
 </head>
 <body>
 <div id="stage">
-  <div id="board"><img id="dwg" alt=""><svg id="ov" xmlns="http://www.w3.org/2000/svg"></svg></div>
+  <div id="board"><img id="dwg" alt=""><canvas id="hires" hidden></canvas><svg id="ov" xmlns="http://www.w3.org/2000/svg"></svg></div>
 </div>
-<div id="empty" hidden><div><p style="font-size:17px;color:var(--fg)">還沒有圖紙</p><p>按右上角「圖紙」匯入 PDF 或圖片</p></div></div>
+<div id="empty" hidden><div><p style="font-size:17px;color:var(--fg)">正在載入圖紙…</p><p>如長時間沒有反應，請連網後重新開啟</p></div></div>
 
 <header id="bar">
   <button class="tb" id="btnDrawings" title="圖紙">圖紙</button>
@@ -152,6 +161,7 @@ label.f textarea{resize:vertical;min-height:62px}
     <button id="mInspect" aria-pressed="true">驗收</button>
     <button id="mMap" aria-pressed="false">位置設定</button>
   </div>
+  <button class="tb" id="btnFloor" hidden>樓層</button>
   <button class="tb" id="btnItems">記錄<span class="n" id="cnt">0</span></button>
   <button class="tb" id="btnExport">導出</button>
 </header>
