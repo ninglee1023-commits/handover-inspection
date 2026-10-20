@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36);
@@ -52,6 +52,7 @@ function burl(b) { const u = URL.createObjectURL(b); blobURLs.push(u); return u;
 function freeURLs() { while (blobURLs.length) URL.revokeObjectURL(blobURLs.pop()); }
 function loadImg(src) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('圖片無法讀取')); i.src = typeof src === 'string' ? src : URL.createObjectURL(src); }); }
 const canvasBlob = (c, type = 'image/jpeg', q = 0.86) => new Promise(r => c.toBlob(r, type, q));
+async function shrink(blob, max) { const img = await loadImg(blob); const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)); if (k >= 1) { URL.revokeObjectURL(img.src); return blob; } const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(img.src); return canvasBlob(c, 'image/jpeg', 0.8); }
 const blobToDataURL = b => new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); });
 const dataURLToBlob = async u => (await fetch(u)).blob();
 function curD() { return S.drawings.find(d => d.id === S.cur) || null; }
@@ -131,7 +132,7 @@ function resolveLoc(d, x, y) {
 }
 function indexText(L) { return [L.tower, L.floor, L.flat ? 'FLAT ' + L.flat : '', L.room || L.area].filter(Boolean).join('-'); }
 function fmtLoc(L) { const i = indexText(L); return [i, L.grid ? 'Grid ' + L.grid : ''].filter(Boolean).join('　'); }
-function nextNo() { return S.items.reduce((m, i) => Math.max(m, i.no || 0), 0) + 1; }
+function nextNo() { const d = S.settings.dev || 'A'; return S.items.filter(i => devOf(i) === d).reduce((m, i) => Math.max(m, i.no || 0), 0) + 1; }
 function nextLabel(lines, axis) {
   if (!lines.length) return axis === 'gx' ? '1' : 'A';
   const last = [...lines].sort((a, b) => a.pos - b.pos).pop().label; const pre = (last.match(/^T\d+-/) || [''])[0], core = last.slice(pre.length);
@@ -249,7 +250,7 @@ function renderOverlay() {
     const all = S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
     for (const it of all) {
       const act = S.editing && S.editing.id === it.id; const r = (act ? 17 : 14) * u;
-      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="#d42a1e" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(it.no > 99 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.no}</text>`;
+      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="#d42a1e" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(it.no > 99 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
     }
   }
   ov.innerHTML = h;
@@ -261,6 +262,7 @@ function updateBar() {
   $('#curName').textContent = d ? d.name : (S.project.name || '竣工驗收記錄');
   $('#curSub').textContent = d ? [d.no, S.project.name].filter(Boolean).join('　') : '';
   $('#cnt').textContent = S.items.length;
+  const ub = unbacked(); $('#btnExport').innerHTML = '導出' + (ub ? `<span class="n" title="未備份">${ub}</span>` : '');
   $('#mInspect').setAttribute('aria-pressed', S.mode === 'inspect'); $('#mMap').setAttribute('aria-pressed', S.mode === 'map');
   const mv = multiFloorViews(d);
   $('#btnFloor').hidden = !mv.length || S.mode !== 'inspect';
@@ -272,7 +274,7 @@ function updateBar() {
   $('#empty').hidden = !!d; $('#zoombtns').hidden = !d;
   const hints = { select: '點選區域或軸線可修改；兩指縮放、拖動', rect: '在圖上拖出矩形，框住單位、房間或區域', poly: '逐點點選邊界，完成後按「完成多邊形」', gx: '在每條縱向軸線上點一下（會自動編號）', gy: '在每條橫向軸線上點一下（會自動編號）' };
   const hint = $('#hint');
-  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : (S.editing ? `#${S.editing.no}：${S.editing.locText || '未設定位置'}` : '點選圖上的問題位置 → 拍照');
+  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : '點選圖上的問題位置 → 拍照');
   hint.hidden = !d;
 }
 
@@ -338,7 +340,10 @@ function endPtr(e) {
 }
 stage.addEventListener('pointerup', endPtr); stage.addEventListener('pointercancel', endPtr);
 stage.addEventListener('wheel', e => { e.preventDefault(); const r = stageRect(); zoomAt(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0018)), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
-document.addEventListener('gesturestart', e => e.preventDefault());
+// page itself never zooms: only the drawing does (iOS ignores user-scalable=no)
+for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+document.addEventListener('touchmove', e => { if (e.touches.length > 1 && !stage.contains(e.target)) e.preventDefault(); }, { passive: false });
+
 
 function onTap(cx, cy) {
   const d = curD(); if (!d) return;
@@ -398,7 +403,7 @@ function closePanel() {
 function newItem(p) {
   if (S.editing) finishItem();
   const d = curD(); const loc = resolveLoc(d, p.x, p.y);
-  S.editing = { id: uid(), drawingId: d.id, no: nextNo(), x: Math.round(p.x), y: Math.round(p.y), loc, locText: fmtLoc(loc), locEdited: false, photos: [], note: '', created: Date.now(), _new: true };
+  S.editing = { id: uid(), dev: S.settings.dev || 'A', by: S.settings.inspector || '', drawingId: d.id, no: nextNo(), x: Math.round(p.x), y: Math.round(p.y), loc, locText: fmtLoc(loc), locEdited: false, photos: [], note: '', created: Date.now(), _new: true };
   renderOverlay(); itemPanel(); updateBar(); ensureVisible(p);
   if (S.settings.autoCam) $('#camInput').click();
 }
@@ -425,11 +430,11 @@ function itemPanel() {
       : `<label class="f">區域名稱（如 Lift Lobby、平台花園）<input id="fArea" list="areaList" value="${esc(L.area)}"><datalist id="areaList">${S.recentAreas.map(a => `<option value="${esc(a)}">`).join('')}</datalist></label>`}
     ${L.grid ? `<div class="chips"><span class="chip">Grid <b>${esc(L.grid)}</b></span></div>` : ''}
     <div class="photos">${photos}</div>
-    <div class="row"><button class="btn p" data-a="cam">拍照</button><button class="btn" data-a="lib">從相簿加入</button></div>
+    <div class="row"><label class="btn p" for="camInput">拍照</label><label class="btn" for="libInput">從相簿加入</label></div>
     <label class="f">問題描述（可回辦公室再填）<textarea id="fNote" rows="3" placeholder="例如：門鉸鬆脫">${esc(it.note)}</textarea></label>
     <details><summary>手動修改位置文字</summary><label class="f"><textarea id="fLoc" rows="2">${esc(it.locText)}</textarea></label>${it.locEdited ? '<button class="btn" data-a="reloc">按上面選項重新生成</button>' : ''}</details>
     <div class="row"><button class="btn warn" data-a="del">刪除此記錄</button><button class="btn dk" data-a="done">完成</button></div>`,
-    { badge: `<span class="no">#${it.no}</span>` });
+    { badge: `<span class="no">${itemLabel(it)}</span>` });
   const q = s => panel.querySelector(s);
   const upd = (re) => { relocate(it); q('.idx').textContent = it.locText || '未設定位置'; q('#fLoc').value = it.locText; persistItem(); updateBar(); if (re) itemPanel(); };
   q('#fTower').onchange = e => { L.tower = e.target.value; upd(); };
@@ -450,7 +455,7 @@ function itemPanel() {
     if (a === 'delph') { if (e.target.dataset.armed) { it.photos.splice(+e.target.dataset.i, 1); await persistItem(true); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
     if (a === 'del') {
       if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = '再按一次確認刪除'; return; }
-      S.items = S.items.filter(x => x.id !== it.id); await DB.del('items', it.id); S.editing = null; closePanel(); toast(`已刪除 #${it.no}`);
+      S.items = S.items.filter(x => x.id !== it.id); await DB.del('items', it.id); S.editing = null; closePanel(); toast(`已刪除 ${itemLabel(it)}`);
     }
   };
   updateBar();
@@ -459,18 +464,19 @@ let persistT;
 async function persistItem(now) {
   const it = S.editing; if (!it) return;
   if (it._new && !it.photos.length && !it.note.trim()) return;
+  it.mod = Date.now();
   if (it._new) { delete it._new; S.items.push(it); updateBar(); }
   clearTimeout(persistT);
   const doit = () => DB.put('items', it).catch(err => toast('儲存失敗：' + err.message, 4000));
   if (now) await doit(); else persistT = setTimeout(doit, 400);
 }
-function finishItem() { const it = S.editing; if (!it) return; if (!it._new) DB.put('items', it); S.editing = null; }
+function finishItem() { const it = S.editing; if (!it) return; if (!it._new) DB.put('items', it); S.editing = null; updateBar(); }
 
 async function addPhotoFile(file) {
   if (!file || !S.editing) return;
   const r = await openEditor(file, null); if (!r) return;
   S.editing.photos.push(r); await persistItem(true);
-  if (S.panel === 'item') itemPanel(); renderOverlay(); toast(`#${S.editing.no} 已加入照片`);
+  if (S.panel === 'item') itemPanel(); renderOverlay(); toast(`${itemLabel(S.editing)} 已加入照片`);
 }
 $('#camInput').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addPhotoFile(f); };
 $('#libInput').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addPhotoFile(f); };
@@ -478,10 +484,10 @@ $('#libInput').onchange = e => { const f = e.target.files[0]; e.target.value = '
 function itemsPanel() {
   freeURLs();
   const d = curD();
-  const list = (S.listScope === 'cur' && d ? S.items.filter(i => i.drawingId === d.id) : S.items).slice().sort((a, b) => a.no - b.no);
+  const list = (S.listScope === 'cur' && d ? S.items.filter(i => i.drawingId === d.id) : S.items).slice().sort(byOrder);
   const rows = list.map(it => {
     const th = it.photos[0] ? `style="background-image:url('${burl(it.photos[0].out)}')"` : '';
-    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">#${it.no}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${esc(it.note || '未填描述')}　·　${it.photos.length} 張相</span></span></button>`;
+    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
   }).join('') || '<div class="note">這張圖紙還沒有記錄。在「驗收」模式點選圖上的位置即可開始。</div>';
   openPanel('items', `驗收記錄（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
@@ -703,33 +709,46 @@ function openEditor(src, prev) {
 
 /* ---------------- export: Word report + backup ---------------- */
 function exportPanel() {
-  const P = S.project;
-  openPanel('export', '導出報告', `
+  const P = S.project; const ub = unbacked(), ua = unalbum(); const devs = [...new Set(S.items.map(devOf))].sort();
+  const last = S.settings.lastBackup ? fmtTime(S.settings.lastBackup) : '從未備份';
+  openPanel('export', '導出及備份', `
+    <div class="safe ${ub ? 'warn' : 'ok'}"><b>${ub ? `${ub} 項記錄未備份` : '全部記錄已備份'}</b><span>上次備份：${last}　·　未存入相簿：${ua} 張</span></div>
+    <div class="row"><button class="btn ${ub ? 'p' : ''}" data-a="bknew">備份新增記錄</button><button class="btn" data-a="album">存入相簿（${ua}）</button></div>
+    <button class="btn" data-a="bk">完整備份（全部 ${S.items.length} 項）</button>
+    <div class="note">備份檔是 ZIP，可用分享選單存到「檔案」、iCloud Drive、Google Drive 或 WhatsApp。ZIP 內的「相片」資料夾在電腦上可直接開啟，每張相底部印有編號、位置、時間及檢查人員。</div>
+    <div class="sec">報告</div>
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
-    <label class="f">地盤／地址<input id="pSite" value="${esc(P.site)}"></label>
-    <div class="grid2"><label class="f">驗收日期<input id="pDate" type="date" value="${esc(P.date)}"></label>
-    <label class="f">檢查人員<input id="pBy" value="${esc(P.inspector)}"></label></div>
+    <div class="grid2"><label class="f">地盤／地址<input id="pSite" value="${esc(P.site)}"></label><label class="f">驗收日期<input id="pDate" type="date" value="${esc(P.date)}"></label></div>
     <label class="f">公司／單位<input id="pCo" value="${esc(P.company)}"></label>
+    ${devs.length > 1 ? `<label class="f">報告範圍<select id="pDevs"><option value="">全部（${devs.join('、')}）</option>${devs.map(d => `<option value="${d}">只限 ${d}</option>`).join('')}</select></label>` : ''}
     <label class="f">圖紙截取範圍<select id="pCrop"><option value="s">細（約 7 米闊）</option><option value="m">中（約 11 米闊）</option><option value="l">大（約 17 米闊）</option></select></label>
     <label class="toggle">報告最後附上每張平面圖的位置總圖<input type="checkbox" id="pKey" ${S.settings.keyPlan ? 'checked' : ''}></label>
-    <button class="btn p" data-a="docx">導出 Word 報告（${S.items.length} 項）</button>
-    <div class="note">Word 可直接另存為 PDF 分發。圖紙截取與照片同為 4:3，與 iPad 橫向拍照比例一致。</div>
-    <div class="sec">設定</div>
+    <button class="btn dk" data-a="docx">導出 Word 報告</button>
+    <div class="sec">合併其他 iPad 的記錄</div>
+    <button class="btn" data-a="imp">匯入備份檔（ZIP）</button>
+    <div class="note">匯入後所有記錄會在同一張圖上顯示，保留原來的編號（如 B-012）及檢查人員；同一記錄以較新的版本為準。</div>
+    <div class="sec">本機</div>
+    <div class="row"><button class="btn" data-a="setup">代號 ${esc(S.settings.dev || '—')}　${esc(S.settings.inspector || '')}</button></div>
     <label class="toggle">點選位置後直接開相機<input type="checkbox" id="sCam" ${S.settings.autoCam ? 'checked' : ''}></label>
     <label class="toggle">驗收時顯示單位範圍<input type="checkbox" id="sZone" ${S.settings.showZones ? 'checked' : ''}></label>
-    <div class="sec">備份／轉移到另一部 iPad</div>
-    <button class="btn" data-a="bk">導出全部記錄（含照片）</button>
-    <button class="btn" data-a="imp">匯入備份檔</button>
-    <div class="note" id="stor">資料只存在這部 iPad。請把此網頁「加入主畫面」使用，並每日導出備份。</div>
+    <div class="note" id="stor">記錄存在這部 iPad 的程式資料內。</div>
     <div class="note">版本 ${VERSION}${S.pkgVersion ? '　圖紙包 ' + esc(S.pkgVersion) : ''}</div>`);
   $('#pCrop').value = S.settings.crop;
-  const sv = () => { Object.assign(P, { name: $('#pName').value, site: $('#pSite').value, date: $('#pDate').value, inspector: $('#pBy').value, company: $('#pCo').value }); S.settings.keyPlan = $('#pKey').checked; S.settings.crop = $('#pCrop').value; S.settings.autoCam = $('#sCam').checked; S.settings.showZones = $('#sZone').checked; saveKV(); updateBar(); renderOverlay(); };
+  const sv = () => { Object.assign(P, { name: $('#pName').value, site: $('#pSite').value, date: $('#pDate').value, company: $('#pCo').value }); S.settings.keyPlan = $('#pKey').checked; S.settings.crop = $('#pCrop').value; S.settings.autoCam = $('#sCam').checked; S.settings.showZones = $('#sZone').checked; saveKV(); updateBar(); renderOverlay(); };
   panel.querySelectorAll('input,select').forEach(i => i.onchange = sv);
-  if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then(es => { const el = $('#stor'); if (el) el.textContent += `　已用 ${(es.usage / 1048576).toFixed(0)} MB。`; });
+  (async () => {
+    const el = $('#stor'); if (!el) return; let t = el.textContent;
+    try { if (navigator.storage && navigator.storage.persisted) t += (await navigator.storage.persisted()) ? '　已設為持久保存。' : '　未獲持久保存，請從主畫面圖示開啟。'; } catch (e) { }
+    try { if (navigator.storage && navigator.storage.estimate) { const es = await navigator.storage.estimate(); t += `　已用 ${(es.usage / 1048576).toFixed(0)} MB。`; } } catch (e) { }
+    el.textContent = t;
+  })();
   panel.querySelector('.pb').onclick = async e => {
     const a = e.target.dataset.a; if (!a) return; sv();
-    if (a === 'docx') exportDocx();
-    if (a === 'bk') exportBackup();
+    if (a === 'docx') exportDocx($('#pDevs') ? $('#pDevs').value : '');
+    if (a === 'bk') exportBackup(false);
+    if (a === 'bknew') exportBackup(true);
+    if (a === 'album') albumPanel();
+    if (a === 'setup') setupPanel();
     if (a === 'imp') $('#jsonInput').click();
   };
 }
@@ -745,7 +764,7 @@ const safeName = s => (s || '').replace(/[\\/:*?"<>|]+/g, '_').trim();
 
 function pinOn(x, px, py, n, r) {
   x.beginPath(); x.arc(px, py, r, 0, Math.PI * 2); x.fillStyle = '#d42a1e'; x.fill(); x.lineWidth = Math.max(3, r / 6); x.strokeStyle = '#fff'; x.stroke();
-  x.fillStyle = '#fff'; x.font = `bold ${Math.round(r * (n > 99 ? 0.8 : 1))}px Menlo, monospace`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(String(n), px, py + 1);
+  x.fillStyle = '#fff'; x.font = `bold ${Math.round(r * (String(n).length > 3 ? 0.62 : String(n).length > 2 ? 0.8 : 1))}px Menlo, monospace`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(String(n), px, py + 1);
 }
 function cropRect(d, it) {
   let cw = CROP_W[S.settings.crop] || 320, ch = cw * 0.75;
@@ -759,7 +778,7 @@ async function cropImage(d, it) { // 4:3, vector-sharp
     x.beginPath(); z.pts.forEach((p, i) => { const a = (p[0] - R.x) * s, b = (p[1] - R.y) * s; i ? x.lineTo(a, b) : x.moveTo(a, b); }); x.closePath();
     x.fillStyle = 'rgba(242,194,48,.16)'; x.fill(); x.strokeStyle = 'rgba(212,42,30,.55)'; x.lineWidth = 4; x.setLineDash([14, 8]); x.stroke(); x.setLineDash([]);
   }
-  pinOn(x, (it.x - R.x) * s, (it.y - R.y) * s, it.no, 44);
+  pinOn(x, (it.x - R.x) * s, (it.y - R.y) * s, devOf(it) + it.no, 44);
   x.strokeStyle = '#888'; x.lineWidth = 3; x.strokeRect(1.5, 1.5, c.width - 3, c.height - 3);
   return { blob: await canvasBlob(c, 'image/jpeg', 0.88), w: c.width, h: c.height };
 }
@@ -778,17 +797,17 @@ async function overviewImage(d, it) { // whole plan view, small, with the crop b
 async function keyPlanImage(d, v, items) {
   const b = v ? v.bbox : [0, 0, d.w, d.h]; const bw = b[2] - b[0], bh = b[3] - b[1];
   const outW = 2400; const c = await renderRegion(d, b[0], b[1], bw, bh, outW); const x = c.getContext('2d'); const s = outW / bw;
-  for (const it of items) pinOn(x, (it.x - b[0]) * s, (it.y - b[1]) * s, it.no, Math.max(16, outW / 90));
+  for (const it of items) pinOn(x, (it.x - b[0]) * s, (it.y - b[1]) * s, devOf(it) + it.no, Math.max(16, outW / 90));
   return { blob: await canvasBlob(c, 'image/jpeg', 0.88), w: c.width, h: c.height };
 }
 
-async function exportDocx() {
+async function exportDocx(onlyDev) {
   if (!S.items.length) return toast('還沒有任何記錄');
   if (!window.docx) return toast('報告元件未載入，請連網後重新開啟一次');
   const D = window.docx; const P = S.project;
   try {
     busy('正在生成報告…');
-    const items = S.items.slice().sort((a, b) => a.no - b.no);
+    const items = S.items.filter(i => !onlyDev || devOf(i) === onlyDev).sort(byOrder);
     const FONT = { ascii: 'Arial', hAnsi: 'Arial', eastAsia: 'Microsoft JhengHei', cs: 'Arial' };
     const T = (text, o = {}) => new D.TextRun({ text: String(text ?? ''), font: FONT, size: o.size || 18, bold: o.bold, color: o.color });
     const Pg = (runs, o = {}) => new D.Paragraph({ children: Array.isArray(runs) ? runs : [runs], alignment: o.align, spacing: { after: o.after ?? 40, before: o.before ?? 0 }, keepLines: true, keepNext: o.keepNext });
@@ -815,7 +834,7 @@ async function exportDocx() {
       for (const [i, ph] of it.photos.entries()) {
         let wpx = imgPx, hpx = Math.round(imgPx * 0.75); // 4:3 frame; portrait photos fit inside it
         if (Math.abs(ph.w / ph.h - 4 / 3) > 0.02) { if (ph.w / ph.h > 4 / 3) hpx = Math.round(imgPx * ph.h / ph.w); else { wpx = Math.round(hpx * ph.w / ph.h); } }
-        phParas.push(Pg(new D.ImageRun({ data: await ph.out.arrayBuffer(), transformation: { width: wpx, height: hpx } }), { after: 60, align: D.AlignmentType.CENTER }));
+        phParas.push(Pg(new D.ImageRun({ data: await (await shrink(ph.out, 1400)).arrayBuffer(), transformation: { width: wpx, height: hpx } }), { after: 60, align: D.AlignmentType.CENTER }));
         if (i === 0 && it.photos.length > 0) { /* first photo sits level with the drawing crop */ }
       }
       if (it.photos.length) phParas.unshift(Pg(T(''), { after: Math.round(ovH * 15) + 60 })); // push first photo down so it lines up with the crop
@@ -826,7 +845,7 @@ async function exportDocx() {
       const noteParas = (it.note || '').split('\n').map(l => Pg(T(l, { size: 18 })));
       rows.push(new D.TableRow({
         cantSplit: true, children: [
-          cell([Pg(T(it.no, { bold: true, size: 22, color: 'D42A1E' }), { align: D.AlignmentType.CENTER })], 0, { v: D.VerticalAlign.CENTER }),
+          cell([Pg(T(itemLabel(it), { bold: true, size: 16, color: 'D42A1E' }), { align: D.AlignmentType.CENTER }), Pg(T(it.by || '', { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER }), Pg(T(fmtTime(it.created).slice(5, 10), { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER })], 0, { v: D.VerticalAlign.CENTER }),
           cell(locParas, 1), cell(dwgParas, 2), cell(phParas, 3), cell(noteParas.length ? noteParas : [Pg(T(''))], 4), cell([Pg(T(''))], 5),
         ]
       }));
@@ -848,7 +867,7 @@ async function exportDocx() {
         busy(`正在生成位置總圖：${v ? v.title : d.name}`);
         const k = await keyPlanImage(d, v, its); const s = Math.min(avail.w / k.w, avail.h / k.h);
         children.push(new D.Paragraph({ pageBreakBefore: true, children: [T(`位置總圖：${v ? v.title : d.name}`, { bold: true, size: 24 })], spacing: { after: 60 } }));
-        children.push(Pg(T(`${d.no || d.name}　記錄：${its.map(i => '#' + i.no + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, { size: 16, color: '5F6B69' }), { after: 80 }));
+        children.push(Pg(T(`${d.no || d.name}　記錄：${its.map(i => itemLabel(i) + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, { size: 16, color: '5F6B69' }), { after: 80 }));
         children.push(Pg(new D.ImageRun({ data: await k.blob.arrayBuffer(), transformation: { width: Math.round(k.w * s), height: Math.round(k.h * s) } }), { align: D.AlignmentType.CENTER }));
       }
     }
@@ -868,45 +887,132 @@ async function exportDocx() {
   } catch (err) { busy(); console.error(err); toast('報告生成失敗：' + err.message, 6000); }
 }
 
-async function exportBackup() {
-  try {
-    busy('正在打包…');
-    const drawings = [], files = [];
-    for (const d of S.drawings) {
-      const { base, thumb, blob, ...rest } = d;
-      if (d.src === 'user') { if (blob) rest.image = await blobToDataURL(blob); }
-      drawings.push(rest);
-    }
-    for (const fid of new Set(S.drawings.filter(d => d.src === 'user' && d.kind === 'pdf').map(d => d.fileId))) { const f = await DB.get('files', fid); if (f) files.push({ id: fid, name: f.name, data: await blobToDataURL(f.blob) }); }
-    const items = [];
-    for (const it of S.items) { const photos = []; for (const p of it.photos) photos.push({ ...p, orig: await blobToDataURL(p.orig), out: await blobToDataURL(p.out) }); items.push({ ...it, photos }); }
-    const data = { app: 'handover-inspect', version: VERSION, exported: new Date().toISOString(), project: S.project, settings: S.settings, floorSel: S.floorSel, recentAreas: S.recentAreas, drawings, files, items };
-    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-    busy();
-    await deliver(blob, `驗收備份_${safeName(S.project.name) || '項目'}_${today()}.json`);
-  } catch (err) { busy(); toast('導出失敗：' + err.message, 5000); }
+/* ---------------- device identity, captions, album, backup & merge ---------------- */
+const devOf = it => it.dev || S.settings.dev || 'A';
+const itemLabel = it => `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
+const byOrder = (a, b) => devOf(a).localeCompare(devOf(b)) || a.no - b.no;
+const fmtTime = t => { const d = new Date(t || Date.now()); const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+function unbacked() { const t = S.settings.lastBackup || 0; return S.items.filter(i => (i.mod || i.created || 0) > t).length; }
+function unalbum() { return S.items.reduce((n, i) => n + i.photos.filter(p => !p.album).length, 0); }
+
+async function renderOut(orig, shapes) {
+  const img = await loadImg(orig); const w = img.naturalWidth, h = img.naturalHeight;
+  const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); x.drawImage(img, 0, 0);
+  const lw = Math.max(5, Math.round(Math.max(w, h) / 160)); for (const s of shapes || []) drawShape(x, s, lw);
+  URL.revokeObjectURL(img.src); return canvasBlob(c, 'image/jpeg', 0.86);
 }
-$('#jsonInput').onchange = async e => {
-  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+/* photo with a caption strip burnt in: readable on its own in the Photos app, WhatsApp or a folder */
+async function captioned(it, ph, i) {
+  const img = await loadImg(ph.out); const w = img.naturalWidth, h = img.naturalHeight;
+  const fs = Math.max(18, Math.round(w / 48)), pad = Math.round(fs * 0.6), lh = Math.round(fs * 1.35);
+  const lines = [`${itemLabel(it)}${it.photos.length > 1 ? ` (${i + 1}/${it.photos.length})` : ''}　${it.locText || ''}`,
+    `${fmtTime(ph.t)}　檢查：${it.by || S.settings.inspector || devOf(it)}　${S.project.name || ''}`];
+  if (it.note) lines.push(it.note.replace(/\s+/g, ' ').slice(0, 80));
+  const c = document.createElement('canvas'); c.width = w; c.height = h + pad * 2 + lh * lines.length; const x = c.getContext('2d');
+  x.drawImage(img, 0, 0); x.fillStyle = '#1d2629'; x.fillRect(0, h, w, c.height - h);
+  x.textBaseline = 'top'; lines.forEach((t, k) => { x.fillStyle = k ? '#d6dedb' : '#ffffff'; x.font = `${k ? '' : 'bold '}${k ? Math.round(fs * 0.85) : fs}px -apple-system,"PingFang TC",sans-serif`; x.fillText(t, pad, h + pad + k * lh, w - pad * 2); });
+  URL.revokeObjectURL(img.src);
+  return canvasBlob(c, 'image/jpeg', 0.86);
+}
+const photoName = (it, i) => safeName(`${itemLabel(it)}_${it.locText || ''}_${i + 1}`).replace(/[\s\u3000]+/g, '_').slice(0, 90) + '.jpg';
+
+/* save captioned photos into the iPad Photos album through the share sheet, in batches */
+async function albumPanel() {
+  const todo = []; for (const it of S.items.slice().sort(byOrder)) it.photos.forEach((p, i) => { if (!p.album) todo.push([it, p, i]); });
+  const N = 20, batches = Math.ceil(todo.length / N);
+  openPanel('album', '存入相簿', todo.length ? `
+    <div class="note">尚有 <b>${todo.length}</b> 張相未存入相簿。每批 ${N} 張，按下後在分享選單揀「儲存 ${Math.min(N, todo.length)} 張影像」。存入的相片底部印有編號、位置、時間及檢查人員。</div>
+    <button class="btn p" id="albGo">存入第 1 批（共 ${batches} 批）</button>`
+    : '<div class="note">全部相片已存入相簿。</div>', { compact: true });
+  const go = $('#albGo'); if (!go) return;
+  go.onclick = async () => {
+    const part = todo.slice(0, N);
+    if (!navigator.canShare) return toast('這個瀏覽器不支援存入相簿，請用 iPad Safari');
+    try {
+      busy('正在準備相片…'); const files = [];
+      for (const [it, p, i] of part) files.push(new File([await captioned(it, p, i)], photoName(it, i), { type: 'image/jpeg' }));
+      busy();
+      if (!navigator.canShare({ files })) return toast('這部機不能經分享選單存相');
+      await navigator.share({ files });
+      for (const [it, p] of part) { p.album = Date.now(); await DB.put('items', it); }
+      toast(`已存入 ${part.length} 張`); albumPanel(); updateBar();
+    } catch (e) { busy(); if (e.name !== 'AbortError') toast('未能存入：' + e.message, 4000); }
+  };
+}
+
+/* ZIP backup: data.json + original photos + captioned photos (viewable without the app) */
+async function exportBackup(onlyNew) {
+  if (!window.JSZip) return toast('備份元件未載入，請連網後重新開啟');
   try {
-    busy('正在匯入…');
-    const data = JSON.parse(await f.text());
+    const since = onlyNew ? (S.settings.lastBackup || 0) : 0;
+    const items = S.items.filter(i => (i.mod || i.created || 0) > since).sort(byOrder);
+    if (!items.length) return toast('沒有新的記錄需要備份');
+    busy('正在打包…'); const zip = new JSZip(); const out = [];
+    let n = 0, tot = items.reduce((s, i) => s + i.photos.length, 0);
+    for (const it of items) {
+      const photos = [];
+      for (const [i, p] of it.photos.entries()) {
+        busy(`正在打包相片 ${++n}／${tot}`);
+        const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' });
+        zip.file(`相片/${photoName(it, i)}`, await captioned(it, p, i), { compression: 'STORE' });
+        const { orig, out: _o, ...meta } = p; photos.push({ ...meta, orig: o });
+      }
+      out.push({ ...it, photos });
+    }
+    const drawings = S.drawings.filter(d => d.src !== 'bundle' || true).map(d => ({ id: d.id, src: d.src, views: d.src === 'user' ? d.views : undefined }));
+    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, inspector: S.settings.inspector, onlyNew: !!onlyNew, project: S.project, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
+    busy('正在壓縮…');
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
+    busy();
+    const stamp = fmtTime().replace(/[-: ]/g, '').slice(0, 12);
+    await deliver(blob, `驗收備份_${S.settings.dev || 'A'}_${onlyNew ? '新增' : '完整'}_${stamp}.zip`);
+    S.settings.lastBackup = Date.now(); await saveKV(); updateBar(); if (S.panel === 'export') exportPanel();
+  } catch (err) { busy(); toast('備份失敗：' + err.message, 6000); }
+}
+async function importBackup(file) {
+  try {
+    busy('正在匯入…'); let data, zip = null;
+    if (/\.zip$/i.test(file.name) || file.type.includes('zip')) { zip = await JSZip.loadAsync(file); data = JSON.parse(await zip.file('data.json').async('string')); }
+    else data = JSON.parse(await file.text());
     if (data.app !== 'handover-inspect') throw new Error('不是本程式的備份檔');
     if (data.project && !S.project.name) S.project = { ...S.project, ...data.project };
-    for (const fl of data.files || []) await DB.put('files', { id: fl.id, name: fl.name, blob: await dataURLToBlob(fl.data) });
-    let nd = 0, ni = 0;
-    for (const d of data.drawings || []) {
-      const ex = S.drawings.find(x => x.id === d.id);
-      const { image, ...rest } = d; const rec = { ...(ex || {}), ...rest };
-      if (image) rec.blob = await dataURLToBlob(image);
-      if (!ex && rec.src === 'bundle') continue; // bundle drawings come from the app itself
-      await DB.put('drawings', rec); if (ex) Object.assign(ex, rec); else S.drawings.push(rec); nd++;
+    let add = 0, upd = 0, skip = 0, i = 0;
+    for (const it of data.items || []) {
+      busy(`正在匯入記錄 ${++i}／${data.items.length}`);
+      if (!it.dev) it.dev = data.dev || 'X';
+      if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
+      const ex = S.items.find(x => x.id === it.id);
+      if (ex && (ex.mod || ex.created || 0) >= (it.mod || it.created || 0)) { skip++; continue; }
+      const photos = [];
+      for (const p of it.photos) {
+        let orig = typeof p.orig === 'string' && p.orig.startsWith('data:') ? await dataURLToBlob(p.orig) : zip ? await zip.file(p.orig).async('blob') : null;
+        if (!orig) continue; orig = new Blob([orig], { type: 'image/jpeg' });
+        const out = typeof p.out === 'string' && p.out.startsWith('data:') ? await dataURLToBlob(p.out) : await renderOut(orig, p.shapes);
+        photos.push({ ...p, orig, out });
+      }
+      const rec = { ...it, photos }; await DB.put('items', rec);
+      if (ex) { Object.assign(ex, rec); upd++; } else { S.items.push(rec); add++; }
     }
-    for (const it of data.items || []) { const photos = []; for (const p of it.photos) photos.push({ ...p, orig: await dataURLToBlob(p.orig), out: await dataURLToBlob(p.out) }); const rec = { ...it, photos }; await DB.put('items', rec); const i = S.items.findIndex(x => x.id === rec.id); if (i >= 0) S.items[i] = rec; else S.items.push(rec); ni++; }
-    await saveKV(); busy(); toast(`已匯入 ${nd} 張圖紙設定、${ni} 個記錄`);
-    await showDrawing(curD() ? S.cur : S.drawings[0]?.id); closePanel();
-  } catch (err) { busy(); toast('匯入失敗：' + err.message, 5000); }
-};
+    await saveKV(); busy(); toast(`匯入完成：新增 ${add}、更新 ${upd}、略過 ${skip}`, 4000);
+    await showDrawing(S.cur || S.drawings[0]?.id); closePanel();
+  } catch (err) { busy(); toast('匯入失敗：' + err.message, 6000); console.error(err); }
+}
+$('#jsonInput').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) importBackup(f); };
+
+function setupPanel(first) {
+  openPanel('setup', first ? '開始前：設定本機' : '本機設定', `
+    <div class="note">多部 iPad 同時驗收時，每部機用不同代號（A、B、C…），編號會變成 A-001、B-001，合併時不會撞號。</div>
+    <div class="grid2"><label class="f">本機代號<input id="sDev" value="${esc(S.settings.dev || '')}" maxlength="3" autocapitalize="characters" placeholder="A"></label>
+    <label class="f">檢查人員<input id="sBy" value="${esc(S.settings.inspector || '')}" placeholder="姓名"></label></div>
+    <button class="btn dk" id="sOk">儲存</button>`, { compact: true });
+  $('#sOk').onclick = async () => {
+    const dev = ($('#sDev').value.trim().toUpperCase() || 'A').replace(/[^A-Z0-9]/g, '') || 'A';
+    const clash = S.items.some(i => i.dev && i.dev !== dev && i.dev === S.settings.dev) && false;
+    S.settings.dev = dev; S.settings.inspector = $('#sBy').value.trim(); if (!S.project.inspector) S.project.inspector = S.settings.inspector;
+    for (const it of S.items) if (!it.dev) { it.dev = dev; await DB.put('items', it); }
+    await saveKV(); closePanel(); updateBar(); renderOverlay(); toast(`本機代號 ${dev}`);
+  };
+}
 
 /* ---------------- bundled drawing package ---------------- */
 async function loadBundle() {
@@ -946,6 +1052,8 @@ async function boot() {
     const cur = await DB.kget('cur');
     await showDrawing(S.drawings.find(d => d.id === cur) ? cur : S.drawings[0]?.id || null);
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { });
+    for (const it of S.items) { if (!it.dev && S.settings.dev) it.dev = S.settings.dev; }
+    if (!S.settings.dev) setupPanel(true);
   } catch (err) { console.error(err); busy(); toast('啟動失敗：' + err.message, 8000); }
   updateBar();
 }

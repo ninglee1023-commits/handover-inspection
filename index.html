@@ -34,11 +34,20 @@
 @media (prefers-color-scheme:dark){:root{
   --paper:#11171a;--surface:#1b2326;--surface-2:#232d30;--line:#33403f;--fg:#e7eceb;--muted:#9aa7a5;--board:#0c1113;color-scheme:dark}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{height:100%;margin:0;overflow:hidden;overscroll-behavior:none}
+html,body{height:100%;margin:0;overflow:hidden;overscroll-behavior:none;touch-action:none;-webkit-text-size-adjust:100%}
+#panel,#panel *{touch-action:pan-y}
+#bar,#bar *,.float,.float *,#editor button{touch-action:manipulation}
 body{font:15px/1.45 var(--sans);background:var(--paper);color:var(--fg);-webkit-user-select:none;user-select:none}
 input,textarea,select{-webkit-user-select:text;user-select:text}
 button{font:inherit;color:inherit;cursor:pointer}
 [hidden]{display:none!important}
+.vh{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;z-index:-1}
+label.btn{display:flex;align-items:center;justify-content:center;cursor:pointer}
+.safe{display:flex;flex-direction:column;gap:2px;border-radius:10px;padding:10px 12px;border:1px solid var(--line)}
+.safe b{font-size:15px}.safe span{font-size:12.5px;color:var(--muted)}
+.safe.warn{background:color-mix(in srgb,var(--red) 10%,var(--surface));border-color:color-mix(in srgb,var(--red) 40%,var(--line))}
+.safe.warn b{color:var(--red)}
+.safe.ok{background:color-mix(in srgb,var(--ok) 10%,var(--surface))}.safe.ok b{color:var(--ok)}
 
 /* top bar */
 #bar{position:fixed;inset:0 0 auto 0;z-index:20;background:var(--board);color:var(--board-fg);
@@ -91,7 +100,7 @@ body.pnl #zoombtns{right:412px}
   padding-bottom:calc(env(safe-area-inset-bottom,0px) + 16px)}
 .no{font:700 15px/1 var(--mono);background:var(--red);color:#fff;border-radius:6px;padding:6px 8px;font-variant-numeric:tabular-nums}
 label.f{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);letter-spacing:.02em}
-label.f input,label.f textarea,label.f select{font:15px/1.4 var(--sans);color:var(--fg);background:var(--surface-2);border:1px solid var(--line);border-radius:9px;padding:9px 10px;width:100%}
+label.f input,label.f textarea,label.f select{font:16px/1.4 var(--sans);color:var(--fg);background:var(--surface-2);border:1px solid var(--line);border-radius:9px;padding:9px 10px;width:100%}
 label.f textarea{resize:vertical;min-height:62px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:8px}
@@ -208,15 +217,16 @@ details[open]{display:flex;flex-direction:column;gap:8px}
   </div>
 </div>
 
-<input type="file" id="camInput" accept="image/*" capture="environment" hidden>
-<input type="file" id="libInput" accept="image/*" hidden>
-<input type="file" id="dwgInput" accept="application/pdf,image/*" hidden>
-<input type="file" id="jsonInput" accept="application/json,.json" hidden>
+<input type="file" id="camInput" class="vh" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
+<input type="file" id="libInput" class="vh" accept="image/*" tabindex="-1" aria-hidden="true">
+<input type="file" id="dwgInput" class="vh" accept="application/pdf,image/*" tabindex="-1" aria-hidden="true">
+<input type="file" id="jsonInput" class="vh" accept=".zip,application/zip,application/json,.json" tabindex="-1" aria-hidden="true">
 <div id="toast" hidden></div>
 <div id="busy" hidden><div id="busyMsg">處理中…</div></div>
 
 <script src="lib/pdf.min.js"></script>
 <script src="lib/docx.umd.js"></script>
+<script src="lib/jszip.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
