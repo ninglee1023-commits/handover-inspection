@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.3.1';
+const VERSION = '0.3.2';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36);
@@ -50,7 +50,18 @@ function busy(msg) { $('#busy').hidden = !msg; if (msg) $('#busyMsg').textConten
 const blobURLs = [];
 function burl(b) { const u = URL.createObjectURL(b); blobURLs.push(u); return u; }
 function freeURLs() { while (blobURLs.length) URL.revokeObjectURL(blobURLs.pop()); }
-function loadImg(src) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('圖片無法讀取')); i.src = typeof src === 'string' ? src : URL.createObjectURL(src); }); }
+function loadImg(src) {
+  return new Promise((res, rej) => {
+    if (!src) return rej(new Error('圖片資料不存在'));
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = async () => { // fallback decoder (helps with very large images on iPad)
+      if (typeof src !== 'string' && window.createImageBitmap) { try { const b = await createImageBitmap(src); b.naturalWidth = b.width; b.naturalHeight = b.height; return res(b); } catch (e) { } }
+      rej(new Error(typeof src === 'string' ? '圖片無法讀取' : `圖片無法讀取（${src.type || '未知格式'}，${Math.round((src.size || 0) / 1024)} KB）`));
+    };
+    i.src = typeof src === 'string' ? src : URL.createObjectURL(src);
+  });
+}
 const canvasBlob = (c, type = 'image/jpeg', q = 0.86) => new Promise(r => c.toBlob(r, type, q));
 async function shrink(blob, max) { const img = await loadImg(blob); const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)); if (k >= 1) { URL.revokeObjectURL(img.src); return blob; } const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(img.src); return canvasBlob(c, 'image/jpeg', 0.8); }
 const blobToDataURL = b => new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); });
@@ -796,12 +807,14 @@ async function cropImage(d, it) { // 4:3, vector-sharp
   x.strokeStyle = '#888'; x.lineWidth = 3; x.strokeRect(1.5, 1.5, c.width - 3, c.height - 3);
   return { blob: await canvasBlob(c, 'image/jpeg', 0.88), w: c.width, h: c.height };
 }
+const ovCache = new Map();
 async function overviewImage(d, it) { // whole plan view, small, with the crop box highlighted
   const v = viewById(d, it.loc.viewId); const b = v ? v.bbox : [0, 0, d.w, d.h]; const R = cropRect(d, it);
   const pad = 0.02 * Math.max(b[2] - b[0], b[3] - b[1]); const bx = Math.max(0, b[0] - pad), by = Math.max(0, b[1] - pad), bw = Math.min(d.w, b[2] + pad) - bx, bh = Math.min(d.h, b[3] + pad) - by;
-  const img = await drawingImg(d); const k = img.naturalWidth / d.w; const outW = 1400, outH = Math.round(outW * bh / bw), s = outW / bw;
+  const outW = 1400, outH = Math.round(outW * bh / bw), s = outW / bw; const key = d.id + '|' + (v ? v.id : '');
+  if (!ovCache.has(key)) ovCache.set(key, await renderRegion(d, bx, by, bw, bh, outW));
   const c = document.createElement('canvas'); c.width = outW; c.height = outH; const x = c.getContext('2d');
-  x.fillStyle = '#fff'; x.fillRect(0, 0, outW, outH); x.drawImage(img, bx * k, by * k, bw * k, bh * k, 0, 0, outW, outH);
+  x.fillStyle = '#fff'; x.fillRect(0, 0, outW, outH); x.drawImage(ovCache.get(key), 0, 0);
   x.fillStyle = 'rgba(255,255,255,.35)'; x.fillRect(0, 0, outW, outH);
   const rx = (R.x - bx) * s, ry = (R.y - by) * s, rw = R.w * s, rh = R.h * s;
   x.fillStyle = 'rgba(242,194,48,.35)'; x.fillRect(rx, ry, rw, rh); x.lineWidth = Math.max(6, outW / 180); x.strokeStyle = '#d42a1e'; x.strokeRect(rx, ry, rw, rh);
@@ -821,7 +834,7 @@ async function exportDocx(onlyDev) {
   const D = window.docx; const P = S.project;
   try {
     busy('正在生成報告…');
-    const items = S.items.filter(i => !onlyDev || devOf(i) === onlyDev).sort(byOrder);
+    const items = S.items.filter(i => !onlyDev || devOf(i) === onlyDev).sort(byOrder); const fails = []; ovCache.clear(); var curLbl = '';
     const FONT = { ascii: 'Arial', hAnsi: 'Arial', eastAsia: 'Microsoft JhengHei', cs: 'Arial' };
     const T = (text, o = {}) => new D.TextRun({ text: String(text ?? ''), font: FONT, size: o.size || 18, bold: o.bold, color: o.color });
     const Pg = (runs, o = {}) => new D.Paragraph({ children: Array.isArray(runs) ? runs : [runs], alignment: o.align, spacing: { after: o.after ?? 40, before: o.before ?? 0 }, keepLines: true, keepNext: o.keepNext });
@@ -836,20 +849,26 @@ async function exportDocx(onlyDev) {
     let n = 0;
     for (const it of items) {
       busy(`正在生成報告… ${++n}／${items.length}`);
+      curLbl = itemLabel(it);
       const d = S.drawings.find(x => x.id === it.drawingId); if (!d) continue;
       if (d.kind === 'pdf') await ensureBase(d, true);
-      const ovw = await overviewImage(d, it), cr = await cropImage(d, it);
-      const ovH = Math.min(Math.round(imgPx * ovw.h / ovw.w), 95), ovW = Math.round(ovH * ovw.w / ovw.h);
-      const dwgParas = [
-        Pg(new D.ImageRun({ data: await ovw.blob.arrayBuffer(), transformation: { width: ovW, height: ovH } }), { align: D.AlignmentType.CENTER, after: 60 }),
-        Pg(new D.ImageRun({ data: await cr.blob.arrayBuffer(), transformation: { width: imgPx, height: Math.round(imgPx * 0.75) } }), { align: D.AlignmentType.CENTER, after: 0 }),
-      ];
+      const failText = what => Pg(T(`（${what}無法生成）`, { color: 'D42A1E', size: 15 }), { align: D.AlignmentType.CENTER, after: 60 });
+      let ovH = 95; const dwgParas = [];
+      try { const ovw = await overviewImage(d, it); ovH = Math.min(Math.round(imgPx * ovw.h / ovw.w), 95); const ovW = Math.round(ovH * ovw.w / ovw.h);
+        dwgParas.push(Pg(new D.ImageRun({ data: await ovw.blob.arrayBuffer(), transformation: { width: ovW, height: ovH } }), { align: D.AlignmentType.CENTER, after: 60 }));
+      } catch (e) { fails.push(`${itemLabel(it)} 總圖：${e.message}`); dwgParas.push(failText('總圖')); console.error(e); }
+      try { const cr = await cropImage(d, it);
+        dwgParas.push(Pg(new D.ImageRun({ data: await cr.blob.arrayBuffer(), transformation: { width: imgPx, height: Math.round(imgPx * 0.75) } }), { align: D.AlignmentType.CENTER, after: 0 }));
+      } catch (e) { fails.push(`${itemLabel(it)} 圖紙截取：${e.message}`); dwgParas.push(failText('圖紙截取')); console.error(e); }
       const phParas = [];
       for (const [i, ph] of it.photos.entries()) {
         let wpx = imgPx, hpx = Math.round(imgPx * 0.75); // 4:3 frame; portrait photos fit inside it
         if (Math.abs(ph.w / ph.h - 4 / 3) > 0.02) { if (ph.w / ph.h > 4 / 3) hpx = Math.round(imgPx * ph.h / ph.w); else { wpx = Math.round(hpx * ph.w / ph.h); } }
-        phParas.push(Pg(new D.ImageRun({ data: await (await shrink(ph.out, 1400)).arrayBuffer(), transformation: { width: wpx, height: hpx } }), { after: 60, align: D.AlignmentType.CENTER }));
-        if (i === 0 && it.photos.length > 0) { /* first photo sits level with the drawing crop */ }
+        try { phParas.push(Pg(new D.ImageRun({ data: await (await shrink(ph.out, 1400)).arrayBuffer(), transformation: { width: wpx, height: hpx } }), { after: 60, align: D.AlignmentType.CENTER })); }
+        catch (e) {
+          try { phParas.push(Pg(new D.ImageRun({ data: await (await shrink(ph.orig, 1400)).arrayBuffer(), transformation: { width: wpx, height: hpx } }), { after: 60, align: D.AlignmentType.CENTER })); fails.push(`${itemLabel(it)} 照片${i + 1}：標記版讀取失敗，已改用原相`); }
+          catch (e2) { fails.push(`${itemLabel(it)} 照片${i + 1}：${e.message}`); phParas.push(failText(`照片${i + 1}`)); console.error(e, e2); }
+        }
       }
       if (it.photos.length) phParas.unshift(Pg(T(''), { after: Math.round(ovH * 15) + 60 })); // push first photo down so it lines up with the crop
       if (!it.photos.length) phParas.push(Pg(T('（無照片）', { color: '888888' })));
@@ -879,7 +898,7 @@ async function exportDocx(onlyDev) {
       for (const [key, its] of groups) {
         const [did, vid] = key.split('|'); const d = S.drawings.find(x => x.id === did); if (!d) continue; const v = viewById(d, vid);
         busy(`正在生成位置總圖：${v ? v.title : d.name}`);
-        const k = await keyPlanImage(d, v, its); const s = Math.min(avail.w / k.w, avail.h / k.h);
+        let k; try { k = await keyPlanImage(d, v, its); } catch (e) { fails.push(`位置總圖 ${v ? v.title : d.name}：${e.message}`); continue; } const s = Math.min(avail.w / k.w, avail.h / k.h);
         children.push(new D.Paragraph({ pageBreakBefore: true, children: [T(`位置總圖：${v ? v.title : d.name}`, { bold: true, size: 24 })], spacing: { after: 60 } }));
         children.push(Pg(T(`${d.no || d.name}　記錄：${its.map(i => itemLabel(i) + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, { size: 16, color: '5F6B69' }), { after: 80 }));
         children.push(Pg(new D.ImageRun({ data: await k.blob.arrayBuffer(), transformation: { width: Math.round(k.w * s), height: Math.round(k.h * s) } }), { align: D.AlignmentType.CENTER }));
@@ -898,7 +917,9 @@ async function exportDocx(onlyDev) {
     const blob = await D.Packer.toBlob(doc);
     busy();
     await deliver(blob, `竣工驗收記錄_${safeName(P.name) || '項目'}_${P.date || today()}.docx`);
-  } catch (err) { busy(); console.error(err); toast('報告生成失敗：' + err.message, 6000); }
+    ovCache.clear();
+    if (fails.length) reportFails(fails);
+  } catch (err) { busy(); console.error(err); toast('報告生成失敗' + (typeof curLbl !== 'undefined' && curLbl ? `（${curLbl}）` : '') + '：' + err.message, 8000); }
 }
 
 /* ---------------- device identity, captions, album, backup & merge ---------------- */
@@ -955,6 +976,9 @@ async function albumPanel() {
 }
 
 /* ZIP backup: data.json + original photos + captioned photos (viewable without the app) */
+function reportFails(fails) {
+  openPanel('fails', '報告已生成，但部分圖片有問題', `<div class="note">以下 ${fails.length} 處在報告內以紅字標示。請截圖這個畫面給我，方便查找原因。</div><div class="list">${fails.map(f => `<div class="li" style="display:block">${esc(f)}</div>`).join('')}</div>`);
+}
 async function exportBackup(onlyNew) {
   if (!window.JSZip) return toast('備份元件未載入，請連網後重新開啟');
   try {
