@@ -151,6 +151,14 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 #editor .ok{background:var(--red);border-color:var(--red);font-weight:600}
 .edgrp{display:flex;gap:6px}
 
+#preview{position:fixed;inset:0;z-index:55;background:#3a4244;display:flex;flex-direction:column}
+.pvbar{display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top,0px) + 8px) max(12px,env(safe-area-inset-right,0px)) 8px max(12px,env(safe-area-inset-left,0px));background:var(--board);color:var(--board-fg);flex-wrap:wrap;touch-action:manipulation}
+.pvbar .pvinfo{flex:1;font-size:13px;opacity:.85;min-width:0}
+.pvbar button{background:transparent;border:1px solid rgba(255,255,255,.25);color:var(--board-fg);border-radius:9px;padding:8px 14px;min-height:42px}
+.pvbar .pvp{background:var(--red);border-color:var(--red);font-weight:600}
+.pvbtns{display:flex;gap:8px}
+.pvpages{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:16px max(12px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 24px) max(12px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;align-items:center;gap:14px;touch-action:pan-x pan-y}
+.pvpages img{width:100%;max-width:1100px;height:auto;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.35)}
 #toast{position:fixed;z-index:60;pointer-events:none;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 80px);background:var(--fg);color:var(--surface);padding:10px 16px;border-radius:10px;font-size:14px;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:90vw}
 #busy{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.45);display:grid;place-items:center;color:#fff;font-size:16px}
 #busy div{background:var(--board);padding:18px 22px;border-radius:12px}
@@ -221,12 +229,17 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 <input type="file" id="libInput" class="vh" accept="image/*" tabindex="-1" aria-hidden="true">
 <input type="file" id="dwgInput" class="vh" accept="application/pdf,image/*" tabindex="-1" aria-hidden="true">
 <input type="file" id="jsonInput" class="vh" accept=".zip,application/zip,application/json,.json" tabindex="-1" aria-hidden="true">
+<div id="preview" hidden>
+  <div class="pvbar"><button data-pv="close">關閉</button><span class="pvinfo"></span><span class="pvbtns"><button data-pv="pdf" class="pvp">導出 PDF</button><button data-pv="docx">導出 Word</button></span></div>
+  <div class="pvpages"></div>
+</div>
 <div id="toast" hidden></div>
 <div id="busy" hidden><div id="busyMsg">處理中…</div></div>
 
 <script src="lib/pdf.min.js"></script>
 <script src="lib/docx.umd.js"></script>
 <script src="lib/jszip.min.js"></script>
+<script src="lib/jspdf.umd.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

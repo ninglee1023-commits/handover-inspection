@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.3.2';
+const VERSION = '0.4.0';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36);
@@ -87,22 +87,43 @@ async function renderRegion(d, rx, ry, rw, rh, outW) {
   if (d.kind === 'pdf') {
     const page = await (await getPdf(d.fileId)).getPage(d.page); const s = outW / rw;
     await page.render({ canvasContext: ctx, viewport: page.getViewport({ scale: s, offsetX: -rx * s, offsetY: -ry * s }) }).promise;
+    page.cleanup();
   } else {
     const img = await drawingImg(d); const k = img.naturalWidth / d.w;
     ctx.drawImage(img, rx * k, ry * k, rw * k, rh * k, 0, 0, outW, outH);
   }
   return c;
 }
-async function ensureBase(d, quiet) {
-  if (d.base) return;
+/* the preview image is only a backdrop: zoomed-in detail is re-rendered from the PDF, so keep it modest
+   (iPad Safari silently returns a blank canvas when it runs short of memory) */
+function blankCanvas(c) {
+  const x = c.getContext('2d'); let dark = 0;
+  for (let i = 0; i < 400; i++) { const px = x.getImageData(Math.floor(Math.random() * c.width), Math.floor(Math.random() * c.height), 1, 1).data; if (px[3] > 0 && (px[0] < 200 || px[1] < 200 || px[2] < 200)) dark++; }
+  // also scan a few full rows: drawings are mostly white, so random samples can miss thin lines
+  for (const fy of [0.3, 0.5, 0.7]) { const row = x.getImageData(0, Math.floor(c.height * fy), c.width, 1).data; for (let i = 0; i < row.length; i += 4) if (row[i + 3] > 0 && row[i] < 160) { dark++; break; } }
+  return dark === 0;
+}
+const suspectBase = d => d.base && (!d.base.blob || !d.base.blob.size || d.base.blob.size / (d.w * d.h * d.base.scale * d.base.scale) < 0.012 || d.base.v !== 2);
+async function ensureBase(d, quiet, force) {
   if (d.kind !== 'pdf') return;
-  if (!quiet) busy(`首次開啟「${d.name}」，正在準備圖紙…`);
-  const s = Math.min(1.4, Math.sqrt(14e6 / (d.w * d.h)));
-  const c = await renderRegion(d, 0, 0, d.w, d.h, Math.floor(d.w * s));
-  d.base = { blob: await canvasBlob(c, 'image/jpeg', 0.85), scale: s };
-  c.width = c.height = 0;
-  await DB.put('drawings', d);
-  if (!quiet) busy();
+  if (d.base && !force && !suspectBase(d)) return;
+  if (!quiet) busy(`正在準備圖紙「${d.name}」…`);
+  try {
+    let err;
+    for (const mp of [7e6, 4e6, 2e6]) {
+      const s = Math.min(1, Math.sqrt(mp / (d.w * d.h)));
+      try {
+        const c = await renderRegion(d, 0, 0, d.w, d.h, Math.floor(d.w * s));
+        if (blankCanvas(c)) { c.width = c.height = 0; err = new Error('圖紙渲染結果空白'); continue; }
+        const blob = await canvasBlob(c, 'image/jpeg', 0.85); c.width = c.height = 0;
+        if (!blob || !blob.size) { err = new Error('圖紙轉換失敗'); continue; }
+        d.base = { blob, scale: s, v: 2 }; d.thumb = null;
+        const cc = imgCache.get(d.id); if (cc) { URL.revokeObjectURL(cc.url); imgCache.delete(d.id); }
+        await DB.put('drawings', d); try { await makeThumb(d); } catch (e) { } return;
+      } catch (e) { err = e; }
+    }
+    throw err || new Error('圖紙轉換失敗');
+  } finally { if (!quiet) busy(); }
 }
 
 /* ---------------- geometry / location ---------------- */
@@ -203,7 +224,7 @@ async function renderHires() {
   let x0 = Math.max(0, -S.view.x / S.view.k), y0 = Math.max(0, -S.view.y / S.view.k);
   let x1 = Math.min(d.w, (r.width - S.view.x) / S.view.k), y1 = Math.min(d.h, (r.height - S.view.y) / S.view.k);
   if (x1 <= x0 || y1 <= y0) return;
-  let sc = s; const maxPx = 9e6; if ((x1 - x0) * (y1 - y0) * sc * sc > maxPx) sc = Math.sqrt(maxPx / ((x1 - x0) * (y1 - y0)));
+  let sc = s; const maxPx = 5e6; if ((x1 - x0) * (y1 - y0) * sc * sc > maxPx) sc = Math.sqrt(maxPx / ((x1 - x0) * (y1 - y0)));
   const seq = ++hiSeq;
   try {
     if (hiTask) { hiTask.cancel(); hiTask = null; }
@@ -296,7 +317,8 @@ async function showDrawing(id) {
   let c = imgCache.get(d.id);
   if (!c) { c = { url: URL.createObjectURL(d.kind === 'pdf' ? d.base.blob : d.blob) }; imgCache.set(d.id, c); }
   dwg.src = c.url; dwg.style.width = d.w + 'px'; dwg.style.height = d.h + 'px';
-  await new Promise(r => { if (dwg.complete && dwg.naturalWidth) r(); else { dwg.onload = r; dwg.onerror = r; } });
+  const ok = await new Promise(r => { if (dwg.complete && dwg.naturalWidth) r(true); else { dwg.onload = () => r(true); dwg.onerror = () => r(false); } });
+  if (!ok && d.kind === 'pdf' && !d._retried) { d._retried = true; URL.revokeObjectURL(c.url); imgCache.delete(d.id); try { await ensureBase(d, false, true); } catch (e) { toast('圖紙準備失敗：' + e.message, 5000); } return showDrawing(id); }
   const fv = (d.views || []).length > 0 && d.views.length <= 1 ? null : null;
   fit(); DB.kset('cur', id);
 }
@@ -557,10 +579,12 @@ function drawingForm(d, isNewFile) {
     ${nw ? `<div class="grid2"><label class="f">座（如 T3，可留空）<input id="nTower"></label><label class="f">樓層（如 GF 或 5-30 略過 13,14,24）<input id="nFloors"></label></div>` :
       views.map((v, i) => `<div class="sec">${esc(v.title)}</div><div class="grid2"><label class="f">座<input data-vt="${i}" value="${esc(v.tower)}"></label><label class="f">樓層<input data-vf="${i}" value="${esc(floorsToText(v.floors))}"></label></div>`).join('')}
     ${nw ? '<button class="btn p" data-a="imp">匯入</button>' : `<button class="btn dk" data-a="save">儲存</button>
+      ${d.kind === 'pdf' ? '<button class="btn" data-a="rebase">重新準備此圖紙（顯示空白時用）</button>' : ''}
       ${d.src === 'bundle' ? '<div class="note">此圖紙隨程式提供。位置設定的修改只存在這部 iPad。</div>' : `<div class="sec">刪除圖紙</div><button class="btn warn" data-a="del">刪除此圖紙及其 ${S.items.filter(i => i.drawingId === d.id).length} 個記錄</button>`}`}`);
   panel.querySelector('.pb').onclick = async e => {
     const a = e.target.dataset.a; if (!a) return;
     if (a === 'imp') { const meta = { name: $('#dName').value.trim() || '未命名圖紙', no: $('#dNo').value.trim(), tower: $('#nTower').value.trim().toUpperCase(), floors: parseFloors($('#nFloors').value) }; closePanel(); await importDrawingFile(isNewFile, meta); }
+    if (a === 'rebase') { try { await ensureBase(d, false, true); await showDrawing(d.id); toast('已重新準備'); } catch (err) { toast('失敗：' + err.message, 5000); } return; }
     if (a === 'save') {
       d.name = $('#dName').value.trim() || d.name; d.no = $('#dNo').value.trim();
       panel.querySelectorAll('[data-vt]').forEach(i => views[+i.dataset.vt].tower = i.value.trim().toUpperCase());
@@ -747,7 +771,9 @@ function exportPanel() {
     ${devs.length > 1 ? `<label class="f">報告範圍<select id="pDevs"><option value="">全部（${devs.join('、')}）</option>${devs.map(d => `<option value="${d}">只限 ${d}</option>`).join('')}</select></label>` : ''}
     <label class="f">圖紙截取範圍<select id="pCrop"><option value="s">細（約 7 米闊）</option><option value="m">中（約 11 米闊）</option><option value="l">大（約 17 米闊）</option></select></label>
     <label class="toggle">報告最後附上每張平面圖的位置總圖<input type="checkbox" id="pKey" ${S.settings.keyPlan ? 'checked' : ''}></label>
-    <button class="btn dk" data-a="docx">導出 Word 報告</button>
+    <button class="btn p" data-a="preview">預覽報告</button>
+    <div class="row"><button class="btn dk" data-a="pdf">導出 PDF</button><button class="btn dk" data-a="docx">導出 Word</button></div>
+    <div class="note">預覽後可直接導出 PDF 或 Word。PDF 與預覽版面相同；Word 可再加文字修改。</div>
     <div class="sec">合併其他 iPad 的記錄</div>
     <button class="btn" data-a="imp">匯入備份檔（ZIP）</button>
     <div class="note">匯入後所有記錄會在同一張圖上顯示，保留原來的編號（如 B-012）及檢查人員；同一記錄以較新的版本為準。</div>
@@ -769,7 +795,10 @@ function exportPanel() {
   })();
   panel.querySelector('.pb').onclick = async e => {
     const a = e.target.dataset.a; if (!a) return; sv();
-    if (a === 'docx') exportDocx($('#pDevs') ? $('#pDevs').value : '');
+    const od = $('#pDevs') ? $('#pDevs').value : '';
+    if (a === 'docx') exportDocx(od);
+    if (a === 'preview') previewReport(od);
+    if (a === 'pdf') { const items = S.items.filter(i => !od || devOf(i) === od).sort(byOrder); if (!items.length) return toast('還沒有任何記錄'); busy('正在生成 PDF…'); ovCache.clear(); try { const r = await buildReportPages(items, (x, y) => busy(`正在生成 PDF… ${x}／${y}`)); ovCache.clear(); await exportPdf(r.pages); if (r.fails.length) reportFails(r.fails); } catch (err) { busy(); toast('PDF 生成失敗：' + err.message, 6000); } }
     if (a === 'bk') exportBackup(false);
     if (a === 'bknew') exportBackup(true);
     if (a === 'album') albumPanel();
@@ -1051,6 +1080,139 @@ function setupPanel(first) {
     await saveKV(); closePanel(); updateBar(); renderOverlay(); toast(`本機代號 ${dev}`);
   };
 }
+
+/* ---------------- report pages drawn on canvas: preview + PDF ---------------- */
+const PG = { W: 842, H: 595, k: 2, M: 28 }; // A4 landscape in pt, 2 px per pt
+const RFONT = '-apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif';
+function wrapLines(x, text, maxW) {
+  const out = []; for (const para of String(text || '').split('\n')) {
+    let line = ''; for (const ch of para) { if (x.measureText(line + ch).width > maxW && line) { out.push(line); line = ch; } else line += ch; }
+    out.push(line);
+  } return out;
+}
+function drawText(x, text, X, Y, maxW, size, o = {}) {
+  x.font = `${o.bold ? '700 ' : ''}${size}px ${RFONT}`; x.fillStyle = o.color || '#1b2224'; x.textBaseline = 'top';
+  const lines = wrapLines(x, text, maxW).slice(0, o.max || 99); const lh = size * 1.3;
+  lines.forEach((l, i) => { const w = x.measureText(l).width; x.fillText(l, o.center ? X + (maxW - w) / 2 : X, Y + i * lh); });
+  return lines.length * lh;
+}
+async function drawBlob(x, blob, X, Y, W, H) { const img = await loadImg(blob); x.drawImage(img, X, Y, W, H); if (img.close) img.close(); else URL.revokeObjectURL(img.src); }
+
+async function buildReportPages(items, progress) {
+  const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M;
+  const pct = [4, 14, 26, 26, 19, 11], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
+  const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進'];
+  const pad = 5, imgW = cw[2] - 2 * pad, cropH = imgW * 0.75, top0 = M + 14, bottom = PG.H - M - 14, headH = 20;
+  const pages = []; let c, x, y, fails = [];
+  const newPage = first => {
+    c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k);
+    x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H);
+    drawText(x, `${P.name || ''}　竣工驗收記錄　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69', center: false });
+    y = top0;
+    if (first) {
+      y += drawText(x, '竣工驗收記錄', M, y, UW, 17, { bold: true }) + 6;
+      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收日期', P.date], ['公司／單位', P.company], ['記錄數量', `${items.length} 項`]]) {
+        drawText(x, a, M, y, 80, 9, { color: '#5f6b69' }); drawText(x, b || '', M + 80, y, 400, 9, { bold: true }); y += 13;
+      }
+      y += 6;
+    }
+    x.fillStyle = '#1d2629'; x.fillRect(M, y, UW, headH);
+    heads.forEach((h, i) => drawText(x, h, cx[i], y + 5, cw[i], 8.5, { bold: true, color: '#fff', center: true }));
+    y += headH; pages.push(c);
+  };
+  const grid = (y0, h) => { x.strokeStyle = '#8a9391'; x.lineWidth = 0.6; x.strokeRect(M, y0, UW, h); cx.slice(1).forEach(X => { x.beginPath(); x.moveTo(X, y0); x.lineTo(X, y0 + h); x.stroke(); }); };
+  newPage(true);
+  let n = 0;
+  for (const it of items) {
+    progress && progress(++n, items.length);
+    const d = S.drawings.find(q => q.id === it.drawingId); if (!d) continue;
+    let ov = null, cr = null;
+    try { ov = await overviewImage(d, it); } catch (e) { fails.push(`${itemLabel(it)} 總圖：${e.message}`); }
+    try { cr = await cropImage(d, it); } catch (e) { fails.push(`${itemLabel(it)} 圖紙截取：${e.message}`); }
+    const ovH = ov ? Math.min(imgW * ov.h / ov.w, 60) : 14, ovW = ov ? ovH * ov.w / ov.h : imgW;
+    const np = it.photos.length;
+    let phH = cropH; const avail = bottom - top0 - headH - 2 * pad;
+    const need = () => Math.max(ovH + 4 + cropH, ovH + 4 + Math.max(1, np) * (phH + 4) - 4);
+    if (need() > avail) phH = Math.max(40, (avail - ovH - 4 - (np - 1) * 4) / np);
+    const rowH = need() + 2 * pad;
+    if (y + rowH > bottom) newPage(false);
+    const y0 = y; grid(y0, rowH);
+    drawText(x, itemLabel(it), cx[0], y0 + rowH / 2 - 16, cw[0], 7.5, { bold: true, color: '#d42a1e', center: true });
+    drawText(x, it.by || '', cx[0], y0 + rowH / 2 - 4, cw[0], 6, { color: '#5f6b69', center: true });
+    drawText(x, fmtTime(it.created).slice(5, 10), cx[0], y0 + rowH / 2 + 5, cw[0], 6, { color: '#5f6b69', center: true });
+    const L = it.loc || {}; const v = viewById(d, L.viewId);
+    let ty = y0 + pad + drawText(x, it.locText || '—', cx[1] + pad, y0 + pad, cw[1] - 2 * pad, 8.5, { bold: true }) + 6;
+    for (const [a, b] of [['座', L.tower], ['層', L.floor], ['單位', L.flat ? 'FLAT ' + L.flat : ''], ['房間／區域', L.room || L.area], ['軸線', L.grid], ['圖紙', [d.no, v ? v.title : d.name].filter(Boolean).join(' ')]])
+      if (b) ty += drawText(x, `${a}：${b}`, cx[1] + pad, ty, cw[1] - 2 * pad, 7, { color: '#3a4544' }) + 1;
+    const ix = cx[2] + pad;
+    if (ov) { await drawBlob(x, ov.blob, ix + (imgW - ovW) / 2, y0 + pad, ovW, ovH); } else drawText(x, '（總圖無法生成）', ix, y0 + pad, imgW, 7, { color: '#d42a1e', center: true });
+    if (cr) await drawBlob(x, cr.blob, ix, y0 + pad + ovH + 4, imgW, cropH); else drawText(x, '（圖紙截取無法生成）', ix, y0 + pad + ovH + 30, imgW, 7, { color: '#d42a1e', center: true });
+    let py = y0 + pad + ovH + 4; const px0 = cx[3] + pad;
+    if (!np) drawText(x, '（無照片）', px0, py + 20, imgW, 8, { color: '#888', center: true });
+    for (const [i, ph] of it.photos.entries()) {
+      let w = phH / 0.75, h = phH; if (w > imgW) { w = imgW; h = imgW * 0.75; }
+      const r = ph.w / ph.h; let dw = w, dh = h; if (r > w / h) dh = w / r; else dw = h * r;
+      try { await drawBlob(x, await shrink(ph.out, 1400), px0 + (imgW - dw) / 2, py + (h - dh) / 2, dw, dh); }
+      catch (e) { try { await drawBlob(x, await shrink(ph.orig, 1400), px0 + (imgW - dw) / 2, py + (h - dh) / 2, dw, dh); fails.push(`${itemLabel(it)} 照片${i + 1}：已改用原相`); } catch (e2) { fails.push(`${itemLabel(it)} 照片${i + 1}：${e.message}`); drawText(x, `（照片${i + 1}無法讀取）`, px0, py + h / 2, imgW, 7, { color: '#d42a1e', center: true }); } }
+      py += h + 4;
+    }
+    drawText(x, it.note || '', cx[4] + pad, y0 + pad, cw[4] - 2 * pad, 8.5);
+    y += rowH;
+  }
+  if (S.settings.keyPlan) {
+    const groups = new Map(); for (const it of items) { const key = it.drawingId + '|' + (it.loc.viewId || ''); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(it); }
+    for (const [key, its] of groups) {
+      const [did, vid] = key.split('|'); const d = S.drawings.find(q => q.id === did); if (!d) continue; const v = viewById(d, vid);
+      try {
+        const kp = await keyPlanImage(d, v, its);
+        newPageRaw(); y = top0;
+        y += drawText(x, `位置總圖：${v ? v.title : d.name}`, M, y, UW, 12, { bold: true }) + 2;
+        y += drawText(x, `${d.no || ''}　記錄：${its.map(i => itemLabel(i) + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, M, y, UW, 7.5, { color: '#5f6b69', max: 3 }) + 6;
+        const s = Math.min(UW / kp.w, (bottom - y) / kp.h); await drawBlob(x, kp.blob, M + (UW - kp.w * s) / 2, y, kp.w * s, kp.h * s);
+      } catch (e) { fails.push(`位置總圖 ${v ? v.title : d.name}：${e.message}`); }
+    }
+  }
+  function newPageRaw() { c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k); x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); drawText(x, `${P.name || ''}　竣工驗收記錄　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69' }); pages.push(c); }
+  const blobs = [];
+  for (const [i, pc] of pages.entries()) {
+    const px = pc.getContext('2d'); drawText(px, `第 ${i + 1} 頁，共 ${pages.length} 頁`, M, PG.H - M + 2, UW, 7.5, { color: '#5f6b69', center: true });
+    blobs.push(await canvasBlob(pc, 'image/jpeg', 0.88)); pc.width = pc.height = 0;
+  }
+  return { pages: blobs, fails };
+}
+
+let PV = null;
+async function previewReport(onlyDev) {
+  const items = S.items.filter(i => !onlyDev || devOf(i) === onlyDev).sort(byOrder);
+  if (!items.length) return toast('還沒有任何記錄');
+  try {
+    busy('正在生成預覽…'); ovCache.clear();
+    const r = await buildReportPages(items, (a, b) => busy(`正在生成預覽… ${a}／${b}`));
+    ovCache.clear(); busy();
+    PV = { ...r, onlyDev, urls: r.pages.map(b => URL.createObjectURL(b)) };
+    const el = $('#preview');
+    el.querySelector('.pvpages').innerHTML = PV.urls.map((u, i) => `<img src="${u}" alt="第 ${i + 1} 頁">`).join('');
+    el.querySelector('.pvinfo').textContent = `共 ${PV.pages.length} 頁　${items.length} 項記錄${PV.fails.length ? `　·　${PV.fails.length} 處圖片有問題` : ''}`;
+    el.hidden = false; el.querySelector('.pvpages').scrollTop = 0;
+  } catch (e) { busy(); toast('預覽失敗：' + e.message, 6000); console.error(e); }
+}
+function closePreview() { $('#preview').hidden = true; if (PV) PV.urls.forEach(u => URL.revokeObjectURL(u)); $('#preview .pvpages').innerHTML = ''; const f = PV && PV.fails; PV = null; if (f && f.length) reportFails(f); }
+async function exportPdf(pages) {
+  if (!window.jspdf) return toast('PDF 元件未載入，請連網後重新開啟');
+  busy('正在生成 PDF…');
+  try {
+    const doc = new jspdf.jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4', compress: true });
+    for (const [i, b] of pages.entries()) { if (i) doc.addPage('a4', 'landscape'); doc.addImage(new Uint8Array(await b.arrayBuffer()), 'JPEG', 0, 0, PG.W, PG.H, undefined, 'FAST'); }
+    const blob = doc.output('blob'); busy();
+    await deliver(blob, `竣工驗收記錄_${safeName(S.project.name) || '項目'}_${S.project.date || today()}.pdf`);
+  } catch (e) { busy(); toast('PDF 生成失敗：' + e.message, 6000); }
+}
+$('#preview').addEventListener('click', async e => {
+  const a = e.target.closest('[data-pv]'); if (!a) return;
+  if (a.dataset.pv === 'close') closePreview();
+  if (a.dataset.pv === 'pdf' && PV) exportPdf(PV.pages);
+  if (a.dataset.pv === 'docx' && PV) { const d = PV.onlyDev; closePreview(); exportDocx(d); }
+});
 
 /* ---------------- bundled drawing package ---------------- */
 async function loadBundle() {
