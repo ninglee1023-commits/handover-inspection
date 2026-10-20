@@ -1,8 +1,14 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.4.1';
+const VERSION = '0.4.2';
 const $ = s => document.querySelector(s);
+// an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
+(() => {
+  let tried = false; try { tried = sessionStorage.getItem('hiStale') === VERSION; } catch (e) { }
+  if (!$('#preview') && !tried) { try { sessionStorage.setItem('hiStale', VERSION); } catch (e) { } location.replace(location.pathname + '?r=' + Date.now()); throw new Error('stale page, reloading'); }
+  if (/[?&]r=\d+/.test(location.search)) history.replaceState(null, '', location.pathname);
+})();
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -1204,7 +1210,7 @@ async function previewReport(onlyDev) {
     const r = await buildReportPages(items, (a, b) => busy(`正在生成預覽… ${a}／${b}`));
     ovCache.clear(); busy();
     PV = { ...r, onlyDev, urls: r.pages.map(b => URL.createObjectURL(b)) };
-    const el = $('#preview');
+    const el = $('#preview'); if (!el) { busy(); return toast('程式未完全更新，請關閉並重新開啟程式', 6000); }
     el.querySelector('.pvpages').innerHTML = PV.urls.map((u, i) => `<img src="${u}" alt="第 ${i + 1} 頁">`).join('');
     el.querySelector('.pvinfo').textContent = `共 ${PV.pages.length} 頁　${items.length} 項記錄${PV.fails.length ? `　·　${PV.fails.length} 處圖片有問題` : ''}`;
     el.hidden = false; el.querySelector('.pvpages').scrollTop = 0;
@@ -1221,7 +1227,7 @@ async function exportPdf(pages) {
     await deliver(blob, `竣工驗收記錄_${safeName(S.project.name) || '項目'}_${S.project.date || today()}.pdf`);
   } catch (e) { busy(); toast('PDF 生成失敗：' + e.message, 6000); }
 }
-$('#preview').addEventListener('click', async e => {
+$('#preview')?.addEventListener('click', async e => {
   const a = e.target.closest('[data-pv]'); if (!a) return;
   if (a.dataset.pv === 'close') closePreview();
   if (a.dataset.pv === 'pdf' && PV) exportPdf(PV.pages);
@@ -1271,5 +1277,17 @@ async function boot() {
   } catch (err) { console.error(err); busy(); toast('啟動失敗：' + err.message, 8000); }
   updateBar();
 }
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  // pick up a new version promptly: check on start and whenever the app comes back to the foreground (iPad keeps it suspended)
+  const hadSW = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+    reg.update().catch(() => { });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => { }); });
+  }).catch(() => { });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadSW) return;
+    if (!S.editing && !S.panel && $('#editor').hidden && $('#busy').hidden) location.reload();
+    else toast('已有新版本，完成手上工作後請關閉並重新開啟程式', 6000);
+  });
+}
 boot();
