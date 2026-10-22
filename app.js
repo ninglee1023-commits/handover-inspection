@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.7.5';
+const VERSION = '0.7.6';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -109,7 +109,10 @@ async function photoOut(it, ph) {
 async function freshItems(items) { const out = []; for (const it of items) { let f = null; try { f = await DB.get('items', it.id); } catch (e) { } out.push(f && f.photos ? f : it); } return out; }
 // Android has no "save image" target in the share sheet: a plain download lands in Download/, which the gallery shows
 const IS_ANDROID = /Android/i.test(navigator.userAgent);
-function saveFile(blob, filename) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000); }
+// iPadOS reports itself as a Mac; touch points tell them apart
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+// only phones and tablets get the share sheet; on a computer (Windows' share dialog cannot save a file) files download
+function saveFile(blob, filename) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 60000); }
 const canvasBlob = (c, type = 'image/jpeg', q = 0.86) => new Promise(r => c.toBlob(r, type, q));
 async function shrink(blob, max) { const img = await loadImg(blob); const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)); if (k >= 1) { URL.revokeObjectURL(img.src); return blob; } const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(img.src); return canvasBlob(c, 'image/jpeg', 0.8); }
 const blobToDataURL = b => new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); });
@@ -954,11 +957,12 @@ function exportPanel() {
 }
 async function deliver(blob, filename) {
   const file = new File([blob], filename, { type: blob.type });
-  if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+  if ((IS_IOS || IS_ANDROID) && navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
     try { await navigator.share({ files: [file], title: filename }); return; } catch (e) { if (e.name === 'AbortError') return; }
   }
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click();
-  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 60000);
+  if (!IS_IOS && !IS_ANDROID) toast(`已下載：${filename}（在瀏覽器的「下載」可找到）`, 5000);
 }
 const safeName = s => (s || '').replace(/[\\/:*?"<>|]+/g, '_').trim();
 
@@ -1578,7 +1582,7 @@ async function exportPdfSet(by, kind, od) {
     }
     ovCache.clear(); busy();
     if (!files.length) return toast('PDF 生成失敗', 5000);
-    if (!IS_ANDROID && navigator.canShare && navigator.share && navigator.canShare({ files })) {
+    if (IS_IOS && navigator.canShare && navigator.share && navigator.canShare({ files })) {
       try { await navigator.share({ files }); } catch (e) { if (e.name !== 'AbortError') toast('分享失敗：' + e.message, 5000); }
     } else if (window.JSZip) {
       busy('正在打包…'); const zip = new JSZip(); for (const f of files) zip.file(f.name, f, { compression: 'STORE' });
