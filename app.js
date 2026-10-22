@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.7.3';
+const VERSION = '0.7.4';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -86,7 +86,7 @@ async function refreshPhotos(it) {
 /* per-field edit times, so merging copies from several devices keeps each field's latest edit instead of
    letting a newer copy of the whole record wipe, say, a 分判 set on another device.
    fs = signature of each field group as last saved, fm = time a group was last really edited */
-const FG = { note: it => it.note || '', sub: it => it.sub || '', code: it => [it.code, it.ord, it.origLabel],
+const FG = { note: it => it.note || '', sub: it => subText(it), code: it => [it.code, it.ord, it.origLabel],
   loc: it => [it.drawingId, it.x, it.y, it.loc, it.locText, it.locEdited], round: it => it.round || '',
   fix: it => it.fix ? [it.fix.status, it.fix.reply || '', it.fix.done || 0, it.fix.by || '', (it.fix.photos || []).map(p => [p.id, p.shapes])] : null };
 const sigOf = (it, g) => { const t = JSON.stringify(FG[g](it)) || ''; let h = 5381; for (let i = 0; i < t.length; i++) h = (h * 33 + t.charCodeAt(i)) | 0; return h.toString(36) + t.length; };
@@ -339,7 +339,7 @@ function renderOverlay() {
     for (const it of all) {
       const act = fixm ? !!(S.fixItem && S.fixItem.id === it.id) : !!(S.editing && S.editing.id === it.id); const r = (act ? 17 : 14) * u;
       // green = 已回復, grey = 不跟進; open records: blue once a 分判 is set, red otherwise
-      const st = fixStatus(it), pf = st === 'done' ? '#2f7d4f' : st === 'na' ? '#8a9391' : it.sub ? '#1f6f9c' : '#d42a1e';
+      const st = fixStatus(it), pf = st === 'done' ? '#2f7d4f' : st === 'na' ? '#8a9391' : subsOf(it).length ? '#1f6f9c' : '#d42a1e';
       h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="${pf}" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
     }
   }
@@ -513,7 +513,7 @@ function newItem(p) {
   if (S.settings.autoCam) $('#camInput').click();
 }
 /* office pass: walk through the records in list order without going back to the list */
-function navPos(it) { const L = roundItems().sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length, noSub = L.filter(x => !x.sub).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項　·　未指定分判 ${noSub} 項`; }
+function navPos(it) { const L = roundItems().sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length, noSub = L.filter(x => !subsOf(x).length).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項　·　未指定分判 ${noSub} 項`; }
 function stepItem(it, how) {
   const L = roundItems().sort(byOrder); const i = L.findIndex(x => x.id === it.id); if (i < 0) return;
   let nx = null;
@@ -553,8 +553,10 @@ function itemPanel() {
     <div class="row"><label class="btn p" for="camInput">拍照</label><label class="btn" for="libInput">從相簿加入</label><label class="btn g" for="fixCam" data-a="reply">回復</label></div>
     ${after ? `<div class="f-l">回復照片（完成後）</div><div class="photos">${after}</div>
     <label class="f">回覆文字（可留空）<input id="fxReply" value="${esc((it.fix && it.fix.reply) || '')}" placeholder="例如：已更換門鉸"></label>` : ''}
-    <div class="grid-note"><label class="f">問題描述（可回辦公室再填）<textarea id="fNote" rows="3" placeholder="例如：門鉸鬆脫">${esc(it.note)}</textarea></label>
-    <label class="f">分判${sel('fSub', allSubs(), it.sub || '', '未指定').replace('</select>', '<option value="+">＋ 新增分判…</option></select>')}</label></div>
+    <label class="f">問題描述（可回辦公室再填）<textarea id="fNote" rows="3" placeholder="例如：門鉸鬆脫">${esc(it.note)}</textarea></label>
+    <div class="f-l">分判（可選多個）</div>
+    <div class="chips pick subs">${subsOf(it).map(x => `<button class="chip on" data-rmsub="${esc(x)}">${esc(x)}　✕</button>`).join('') || '<span class="chip">未指定</span>'}</div>
+    <label class="f"><select id="fSub"><option value="">＋ 加分判…</option>${allSubs().filter(x => !subsOf(it).includes(x)).map(x => `<option>${esc(x)}</option>`).join('')}<option value="+">＋ 新增分判名稱…</option></select></label>
     <div class="row nav"><button class="btn" data-a="prev">‹ 上一個</button><button class="btn" data-a="next">下一個 ›</button><button class="btn" data-a="nextEmpty">下一個未填描述</button></div>
     <div class="note navpos">${navPos(it)}</div>
     <details><summary>手動修改位置文字</summary><label class="f"><textarea id="fLoc" rows="2">${esc(it.locText)}</textarea></label>${it.locEdited ? '<button class="btn" data-a="reloc">按上面選項重新生成</button>' : ''}</details>
@@ -571,16 +573,16 @@ function itemPanel() {
   q('#fLoc').oninput = e => { it.locText = e.target.value; it.locEdited = true; q('.idx').textContent = it.locText; persistItem(); updateBar(); };
   q('#fNote').oninput = e => { it.note = e.target.value; persistItem(); };
   q('#fSub').onchange = async e => {
-    if (e.target.value === '+') {
-      const n = (prompt('新增分判名稱') || '').trim();
-      if (!n) { e.target.value = it.sub || ''; return; }
+    let n = e.target.value; if (!n) return;
+    if (n === '+') {
+      n = (prompt('新增分判名稱') || '').trim(); if (!n) { e.target.value = ''; return; }
       if (!allSubs().includes(n)) { S.settings.customSubs = [...(S.settings.customSubs || []), n]; await saveKV(); toast(`已加入分判：${n}`); }
-      it.sub = n; persistItem(); renderOverlay(); return itemPanel();
     }
-    it.sub = e.target.value; persistItem(); renderOverlay(); q('.navpos').textContent = navPos(it);
+    setSubs(it, [...subsOf(it), n]); persistItem(); renderOverlay(); itemPanel();
   };
   const fr = q('#fxReply'); if (fr) fr.oninput = e => { fixOf(it).reply = e.target.value; persistItem(); };
   panel.querySelector('.pb').onclick = async e => {
+    const rs = e.target.closest('[data-rmsub]'); if (rs) { setSubs(it, subsOf(it).filter(x => x !== rs.dataset.rmsub)); persistItem(); renderOverlay(); return itemPanel(); }
     const rb = e.target.closest('[data-room]'); if (rb) { L.room = L.room === rb.dataset.room ? '' : rb.dataset.room; upd(true); return; }
     if (e.target.closest('[data-a="reply"]')) { S.fixItem = it; return; }
     const a = e.target.dataset.a; if (!a) return;
@@ -625,12 +627,12 @@ function itemsPanel() {
   freeURLs();
   const d = curD();
   const scoped = (S.listScope === 'cur' && d ? roundItems().filter(i => i.drawingId === d.id) : roundItems());
-  const subF = S.listSub || ''; const nNone = scoped.filter(i => !i.sub).length;
-  const list = scoped.filter(i => !subF || (subF === '-' ? !i.sub : i.sub === subF)).slice().sort(byOrder);
-  const subOpts = allSubs().map(x => [x, scoped.filter(i => i.sub === x).length]).filter(([, n]) => n);
+  const subF = S.listSub || ''; const nNone = scoped.filter(i => !subsOf(i).length).length;
+  const list = scoped.filter(i => !subF || (subF === '-' ? !subsOf(i).length : subsOf(i).includes(subF))).slice().sort(byOrder);
+  const subOpts = allSubs().map(x => [x, scoped.filter(i => subsOf(i).includes(x)).length]).filter(([, n]) => n);
   const rows = list.map(it => {
     const th = it.photos[0] ? `style="background-image:url('${burl(it.photos[0].out)}')"` : '';
-    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${it.sub ? `<em class="sub">${esc(it.sub)}</em>` : '<em class="sub none">未指定分判</em>'}　${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${fixStatus(it) === 'done' ? '　·　已回復' : ''}${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
+    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${subsOf(it).length ? `<em class="sub">${esc(subText(it))}</em>` : '<em class="sub none">未指定分判</em>'}　${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${fixStatus(it) === 'done' ? '　·　已回復' : ''}${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
   }).join('') || (scoped.length ? '' : '<div class="note">這張圖紙還沒有記錄。在「驗收」模式點選圖上的位置即可開始。</div>');
   openPanel('items', `${esc(curRound().name)}（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
@@ -897,7 +899,7 @@ function exportPanel() {
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
     <div class="grid2"><label class="f">地盤／地址<input id="pSite" value="${esc(P.site)}"></label><label class="f">驗收日期<input id="pDate" type="date" value="${esc(P.date)}"></label></div>
     <label class="f">公司／單位<input id="pCo" value="${esc(P.company)}"></label>
-    <label class="f">分判<select id="pSub"><option value="">全部分判</option>${allSubs().filter(x => S.items.some(i => i.sub === x)).map(x => `<option ${S.repSub === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}<option value="-" ${S.repSub === '-' ? 'selected' : ''}>未指定分判</option></select></label>
+    <label class="f">分判<select id="pSub"><option value="">全部分判</option>${allSubs().filter(x => S.items.some(i => subsOf(i).includes(x))).map(x => `<option ${S.repSub === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}<option value="-" ${S.repSub === '-' ? 'selected' : ''}>未指定分判</option></select></label>
     ${devs.length > 1 ? `<label class="f">報告範圍<select id="pDevs"><option value="">全部（${devs.join('、')}）</option>${devs.map(d => `<option value="${d}">只限 ${d}</option>`).join('')}</select></label>` : ''}
     <label class="f">圖紙截取範圍<select id="pCrop"><option value="s">細（約 7 米闊）</option><option value="m">中（約 11 米闊）</option><option value="l">大（約 17 米闊）</option></select></label>
     <label class="toggle">報告最後附上每張平面圖的位置總圖<input type="checkbox" id="pKey" ${S.settings.keyPlan ? 'checked' : ''}></label>
@@ -1099,7 +1101,7 @@ async function exportDocx(onlyDev) {
       rows.push(new D.TableRow({
         cantSplit: true, children: [
           cell([Pg(T(itemLabel(it), { bold: true, size: 16, color: 'D42A1E' }), { align: D.AlignmentType.CENTER }), Pg(T(it.by || '', { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER }), Pg(T(fmtTime(it.created).slice(5, 10), { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER })], 0, { v: D.VerticalAlign.CENTER }),
-          cell(locParas, 1), cell(dwgParas, 2), cell(phParas, 3), cell(noteParas.length ? noteParas : [Pg(T(''))], 4), cell([...(it.sub ? [Pg(T(it.sub, { bold: true, size: 18 }), { align: D.AlignmentType.CENTER, after: 60 })] : []), ...(await replyParas(it))], 5),
+          cell(locParas, 1), cell(dwgParas, 2), cell(phParas, 3), cell(noteParas.length ? noteParas : [Pg(T(''))], 4), cell([...subsOf(it).map((x, j, A) => Pg(T(x, { bold: true, size: 18 }), { align: D.AlignmentType.CENTER, after: j === A.length - 1 ? 60 : 0 })), ...(await replyParas(it))], 5),
         ]
       }));
     }
@@ -1147,9 +1149,14 @@ const devOf = it => it.dev || S.settings.dev || 'A';
 // after 整理編號 a record carries a unified code (e.g. B1-003) that replaces the per-device number
 const SUBS = ['承達', '遠東', '偉業', '富盈', '美的', '新宇宙', '思語', '廣林', '新寶', '歐吊', '卓裕', '定安（水）', '定安（消防）', '星滿', '通力', '元大', '洪興', '明記', '鈴木', '創基', '其士', '中海', '俊盈'];
 // built-in list + ones added on this device + any that arrived on imported records
-const allSubs = () => [...new Set([...SUBS, ...(S.settings.customSubs || []), ...S.items.map(i => i.sub).filter(Boolean)])];
+// a defect can need several 分判: subs holds them all, sub keeps the first for older app versions
+// (if sub no longer matches subs[0], an older app version changed the 分判: trust that)
+const subsOf = it => it.subs && it.subs.length && it.subs[0] === (it.sub || '') ? it.subs : it.sub ? [it.sub] : [];
+function setSubs(it, list) { const L = [...new Set(list.filter(Boolean))]; it.subs = L; it.sub = L[0] || ''; }
+const subText = it => subsOf(it).join('、');
+const allSubs = () => [...new Set([...SUBS, ...(S.settings.customSubs || []), ...S.items.flatMap(subsOf)])];
 // report scope: device and/or subcontractor ('-' = records without one)
-const inScope = (i, od) => (!od || devOf(i) === od) && (!S.repSub || (S.repSub === '-' ? !i.sub : i.sub === S.repSub));
+const inScope = (i, od) => (!od || devOf(i) === od) && (!S.repSub || (S.repSub === '-' ? !subsOf(i).length : subsOf(i).includes(S.repSub)));
 const itemLabel = it => it.code || `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
 const byOrder = (a, b) => (a.ord ?? 1e9) - (b.ord ?? 1e9) || devOf(a).localeCompare(devOf(b)) || a.no - b.no;
 // pins have little room: number only, or floor + number where one plan stands for several floors
@@ -1322,9 +1329,9 @@ async function exportBackup(onlyNew) {
    photos are combined (a lost local photo is replaced by the incoming one) */
 async function mergeRecord(ex, inc, conv) {
   const tm = r => r.mod || r.created || 0, incNewer = tm(inc) > tm(ex);
-  const empty = (r, g) => g === 'note' ? !(r.note || '').trim() : g === 'sub' ? !r.sub : g === 'code' ? !r.code
+  const empty = (r, g) => g === 'note' ? !(r.note || '').trim() : g === 'sub' ? !subsOf(r).length : g === 'code' ? !r.code
     : g === 'fix' ? !r.fix || ((r.fix.status || 'open') === 'open' && !r.fix.reply && !(r.fix.photos || []).length) : false;
-  const keys = { code: ['code', 'ord', 'origLabel'], loc: ['drawingId', 'x', 'y', 'loc', 'locText', 'locEdited'] };
+  const keys = { sub: ['sub', 'subs'], code: ['code', 'ord', 'origLabel'], loc: ['drawingId', 'x', 'y', 'loc', 'locText', 'locEdited'] };
   let changed = false; const fm = { ...(ex.fm || {}) };
   for (const g of Object.keys(FG)) {
     if (sigOf(ex, g) === sigOf(inc, g)) continue;
@@ -1461,7 +1468,7 @@ async function buildReportPages(items, progress) {
     if (need() > avail) phH = Math.max(40, (avail - ovH - 4 - (np - 1) * 4) / np);
     const rps = (it.fix && it.fix.photos) || [], rW = cw[5] - 2 * pad; let rH = rW * 0.75;
     if (rps.length && rps.length * (rH + 14) > avail - 30) rH = Math.max(30, (avail - 30) / rps.length - 14);
-    const subH = it.sub ? 14 : 0, replyH = (rps.length ? rps.length * (rH + 14) + 30 : 0) + subH;
+    const subH = subsOf(it).length ? 4 + 11 * subsOf(it).length : 0, replyH = (rps.length ? rps.length * (rH + 14) + 30 : 0) + subH;
     const rowH = Math.max(need(), replyH) + 2 * pad;
     if (y + rowH > bottom) newPage(false);
     const y0 = y; grid(y0, rowH);
@@ -1492,7 +1499,7 @@ async function buildReportPages(items, progress) {
       py += h + 4;
     }
     drawText(x, it.note || '', cx[4] + pad, y0 + pad, cw[4] - 2 * pad, 8.5);
-    if (it.sub) drawText(x, it.sub, cx[5] + pad, y0 + pad, cw[5] - 2 * pad, 8.5, { bold: true, center: true });
+    subsOf(it).forEach((sb, j) => drawText(x, sb, cx[5] + pad, y0 + pad + j * 11, cw[5] - 2 * pad, 8.5, { bold: true, center: true }));
     y += rowH;
   }
   if (S.settings.keyPlan) {
@@ -1549,9 +1556,9 @@ async function exportPdfSet(by, kind, od) {
   if (!window.jspdf) return toast('PDF 元件未載入，請連網後重新開啟');
   const L = roundItems().filter(i => !od || devOf(i) === od).filter(i => kind !== 'fixdone' || fixStatus(i) === 'done').sort(byOrder);
   if (!L.length) return toast('目前批次還沒有記錄');
-  const subOf = i => i.sub || '未指定分判';
-  const keyOf = by === 'sub' ? subOf : by === 'area' ? areaOf : i => `${areaOf(i)}_${subOf(i)}`;
-  const groups = new Map(); for (const it of L) { const k = keyOf(it); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(it); }
+  const subsOr = i => subsOf(i).length ? subsOf(i) : ['未指定分判'];
+  const keysOf = by === 'sub' ? subsOr : by === 'area' ? i => [areaOf(i)] : i => subsOr(i).map(x => `${areaOf(i)}_${x}`);
+  const groups = new Map(); for (const it of L) for (const k of keysOf(it)) { if (!groups.has(k)) groups.set(k, []); groups.get(k).push(it); }
   const subRank = x => { const i = allSubs().indexOf(x); return i < 0 ? 999 : i; }, areaRank = x => { const i = AREA_ORDER.indexOf(x); return i < 0 ? 99 : i; };
   const rank = k => by === 'sub' ? [subRank(k)] : by === 'area' ? [areaRank(k)] : [areaRank(k.split('_')[0]), subRank(k.split('_').slice(1).join('_'))];
   const keys = [...groups.keys()].sort((a, b) => { const A = rank(a), B = rank(b); return A[0] - B[0] || (A[1] || 0) - (B[1] || 0) || a.localeCompare(b); });
