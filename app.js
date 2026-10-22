@@ -1,12 +1,12 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.5.5';
+const VERSION = '0.7.0';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
   let tried = false; try { tried = sessionStorage.getItem('hiStale') === VERSION; } catch (e) { }
-  if (!$('#preview') && !tried) { try { sessionStorage.setItem('hiStale', VERSION); } catch (e) { } location.replace(location.pathname + '?r=' + Date.now()); throw new Error('stale page, reloading'); }
+  if (!$('#fixCam') && !tried) { try { sessionStorage.setItem('hiStale', VERSION); } catch (e) { } location.replace(location.pathname + '?r=' + Date.now()); throw new Error('stale page, reloading'); }
   if (/[?&]r=\d+/.test(location.search)) history.replaceState(null, '', location.pathname);
 })();
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -44,7 +44,7 @@ const S = {
   project: { name: '', site: '', date: today(), inspector: '', company: '' },
   settings: { autoCam: true, showZones: true, crop: 'm', keyPlan: true },
   floorSel: {}, recentAreas: [], views: {}, repSub: '',
-  drawings: [], items: [], cur: null, mode: 'inspect', tool: 'select',
+  drawings: [], items: [], rounds: [], fixOnlyOpen: false, fixItem: null, cur: null, mode: 'inspect', tool: 'select',
   view: { x: 0, y: 0, k: 1 }, editing: null, draft: null, sel: null, panel: null, listScope: 'cur',
 };
 const imgCache = new Map(); // drawingId -> {url, img}
@@ -56,18 +56,25 @@ function busy(msg) { $('#busy').hidden = !msg; if (msg) $('#busyMsg').textConten
 const blobURLs = [];
 function burl(b) { const u = URL.createObjectURL(b); blobURLs.push(u); return u; }
 function freeURLs() { while (blobURLs.length) URL.revokeObjectURL(blobURLs.pop()); }
-function loadImg(src) {
-  return new Promise((res, rej) => {
-    if (!src) return rej(new Error('圖片資料不存在'));
-    const i = new Image();
-    i.onload = () => res(i);
-    i.onerror = async () => { // fallback decoder (helps with very large images on iPad)
-      if (typeof src !== 'string' && window.createImageBitmap) { try { const b = await createImageBitmap(src); b.naturalWidth = b.width; b.naturalHeight = b.height; return res(b); } catch (e) { } }
-      rej(new Error(typeof src === 'string' ? '圖片無法讀取' : `圖片無法讀取（${src.type || '未知格式'}，${Math.round((src.size || 0) / 1024)} KB）`));
-    };
-    i.src = typeof src === 'string' ? src : URL.createObjectURL(src);
-  });
+function loadImgOnce(url) { return new Promise((res, rej) => { const i = new Image(); i.decoding = 'async'; i.onload = () => res(i); i.onerror = () => rej(new Error('decode')); i.src = url; }); }
+/* iPad Safari sometimes loses the file behind a photo blob kept from IndexedDB (often on the 2nd report in a row),
+   so try several ways: object URL → bitmap → a fresh copy of the bytes → data URL */
+async function loadImg(src) {
+  if (!src) throw new Error('圖片資料不存在');
+  if (typeof src === 'string') { try { return await loadImgOnce(src); } catch (e) { throw new Error('圖片無法讀取'); } }
+  const tryUrl = async b => { const u = URL.createObjectURL(b); try { return await loadImgOnce(u); } catch (e) { URL.revokeObjectURL(u); throw e; } };
+  try { return await tryUrl(src); } catch (e) { }
+  if (window.createImageBitmap) { try { const bm = await createImageBitmap(src); bm.naturalWidth = bm.width; bm.naturalHeight = bm.height; return bm; } catch (e) { } }
+  let bytes = null; try { bytes = await src.arrayBuffer(); } catch (e) { }
+  if (bytes && bytes.byteLength) {
+    const fresh = new Blob([bytes], { type: src.type || 'image/jpeg' });
+    try { return await tryUrl(fresh); } catch (e) { }
+    try { return await loadImgOnce(await blobToDataURL(fresh)); } catch (e) { }
+  }
+  throw new Error(`圖片無法讀取（${src.type || '未知格式'}，${Math.round((src.size || 0) / 1024)} KB${bytes ? '' : '，檔案已失效'}）`);
 }
+/* re-read records from IndexedDB before a report, so every photo comes with a fresh, valid file handle */
+async function freshItems(items) { const out = []; for (const it of items) { let f = null; try { f = await DB.get('items', it.id); } catch (e) { } out.push(f && f.photos ? f : it); } return out; }
 // Android has no "save image" target in the share sheet: a plain download lands in Download/, which the gallery shows
 const IS_ANDROID = /Android/i.test(navigator.userAgent);
 function saveFile(blob, filename) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000); }
@@ -147,6 +154,7 @@ function span(lines, v, other) {
   let s = lines.filter(l => l.from == null || (other >= l.from - 30 && other <= l.to + 30));
   if (!s.length) s = lines;
   s = [...s].sort((a, b) => a.pos - b.pos);
+  if (s.length === 1) return stripPre(s[0].label); // part plans often show a single grid line
   if (v < s[0].pos) return `${stripPre(s[0].label)}外`;
   for (let i = 0; i < s.length - 1; i++) if (v >= s[i].pos && v <= s[i + 1].pos) { const p = [stripPre(s[i].label), stripPre(s[i + 1].label)].sort((a, b) => a.localeCompare(b, 'en', { numeric: true })); return `${p[0]}-${p[1]}`; }
   return `${stripPre(s[s.length - 1].label)}外`;
@@ -173,7 +181,7 @@ function resolveLoc(d, x, y) {
 }
 function indexText(L) { return [L.tower, L.floor, L.flat ? 'FLAT ' + L.flat : '', L.room || L.area].filter(Boolean).join('-'); }
 function fmtLoc(L) { const i = indexText(L); return [i, L.grid ? 'Grid ' + L.grid : ''].filter(Boolean).join('　'); }
-function nextNo() { const d = S.settings.dev || 'A'; return S.items.filter(i => devOf(i) === d).reduce((m, i) => Math.max(m, i.no || 0), 0) + 1; }
+function nextNo() { const d = S.settings.dev || 'A'; return S.items.filter(i => devOf(i) === d && inRound(i)).reduce((m, i) => Math.max(m, i.no || 0), 0) + 1; }
 function nextLabel(lines, axis) {
   if (!lines.length) return axis === 'gx' ? '1' : 'A';
   const last = [...lines].sort((a, b) => a.pos - b.pos).pop().label; const pre = (last.match(/^T\d+-/) || [''])[0], core = last.slice(pre.length);
@@ -290,11 +298,15 @@ function renderOverlay() {
     if (S.draft.type === 'poly' && S.draft.pts.length) { h += `<polyline points="${S.draft.pts.map(p => p.join(',')).join(' ')}" fill="rgba(242,194,48,.25)" stroke="#b8860b" stroke-width="2" vector-effect="non-scaling-stroke"/>`; S.draft.pts.forEach(q => h += `<circle cx="${q[0]}" cy="${q[1]}" r="${5 * u}" fill="#b8860b"/>`); }
   }
   if (!map) {
-    const items = S.items.filter(i => i.drawingId === d.id && onFloor(d, i));
-    const all = S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
+    const fixm = S.mode === 'fix';
+    let items = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i));
+    if (fixm && S.fixOnlyOpen) items = items.filter(i => fixStatus(i) === 'open' || (S.fixItem && S.fixItem.id === i.id));
+    const all = !fixm && S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
     for (const it of all) {
-      const act = S.editing && S.editing.id === it.id; const r = (act ? 17 : 14) * u;
-      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="${it.sub ? '#1f6f9c' : '#d42a1e'}" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
+      const act = fixm ? !!(S.fixItem && S.fixItem.id === it.id) : !!(S.editing && S.editing.id === it.id); const r = (act ? 17 : 14) * u;
+      // green = 已回復, grey = 不跟進; open records: blue once a 分判 is set, red otherwise
+      const st = fixStatus(it), pf = st === 'done' ? '#2f7d4f' : st === 'na' ? '#8a9391' : it.sub ? '#1f6f9c' : '#d42a1e';
+      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="${pf}" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
     }
   }
   ov.innerHTML = h;
@@ -308,14 +320,15 @@ function updateBar() {
   const d = curD();
   $('#curName').textContent = d ? d.name : (S.project.name || '竣工驗收記錄');
   $('#curSub').textContent = d ? [d.no, S.project.name].filter(Boolean).join('　') : '';
-  $('#cnt').textContent = S.items.length;
+  $('#cnt').textContent = roundItems().length;
+  $('#btnRound').textContent = shortRound(curRound());
   const ub = unbacked(); $('#btnExport').innerHTML = '導出' + (ub ? `<span class="n" title="未備份">${ub}</span>` : '');
   $('#mInspect').setAttribute('aria-pressed', S.mode === 'inspect'); $('#mMap').setAttribute('aria-pressed', S.mode === 'map');
   const mv = multiFloorViews(d);
-  $('#btnFloor').hidden = !mv.length || S.mode !== 'inspect';
+  $('#btnFloor').hidden = !mv.length || S.mode === 'map';
   if (mv.length) $('#btnFloor').innerHTML = `樓層 <b>${esc(mv.map(v => floorFor(v)).filter((f, i, a) => a.indexOf(f) === i).join('/'))}</b>`;
   // zones and grids of the bundled plans come with the package; 位置設定 is only offered for drawings imported on the device
-  $('#mMap').parentElement.hidden = !d || d.src === 'bundle';
+  $('#mMap').hidden = !d || d.src === 'bundle';
   if (S.mode === 'map' && (!d || d.src === 'bundle')) { S.mode = 'inspect'; S.draft = null; renderOverlay(); }
   $('#maptools').hidden = S.mode !== 'map' || !d;
   document.querySelectorAll('#maptools [data-tool]').forEach(b => b.setAttribute('aria-pressed', b.dataset.tool === S.tool));
@@ -324,7 +337,7 @@ function updateBar() {
   $('#empty').hidden = !!d; $('#zoombtns').hidden = !d;
   const hints = { select: '點選區域或軸線可修改；兩指縮放、拖動', rect: '在圖上拖出矩形，框住單位、房間或區域', poly: '逐點點選邊界，完成後按「完成多邊形」', gx: '在每條縱向軸線上點一下（會自動編號）', gy: '在每條橫向軸線上點一下（會自動編號）' };
   const hint = $('#hint');
-  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : '點選圖上的問題位置 → 拍照');
+  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : S.mode === 'fix' ? (S.fixItem ? `${itemLabel(S.fixItem)}：${S.fixItem.locText || ''}` : (c => `執修（${curRound().name}）：未完成 ${c.open}／共 ${c.all}　點選紅點處理`)(fixCounts())) : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : '點選圖上的問題位置 → 拍照');
   hint.hidden = !d;
 }
 
@@ -401,8 +414,13 @@ function onTap(cx, cy) {
   const d = curD(); if (!d) return;
   const p = toDwg(cx, cy); const u = 1 / S.view.k;
   if (p.x < 0 || p.y < 0 || p.x > d.w || p.y > d.h) return;
+  if (S.mode === 'fix') {
+    const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && (!S.fixOnlyOpen || fixStatus(i) === 'open')).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
+    if (hit) { fixPanel(hit.i); renderOverlay(); updateBar(); return; }
+    return toast('執修模式：請點選圖上已有的紅點');
+  }
   if (S.mode === 'inspect') {
-    const hit = S.items.filter(i => i.drawingId === d.id && onFloor(d, i)).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
+    const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i)).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
     if (hit) return openItem(hit.i);
     return newItem(p);
   }
@@ -448,6 +466,7 @@ function openPanel(kind, title, body, opts = {}) {
 }
 function closePanel() {
   if (S.panel === 'item') finishItem();
+  if (S.panel === 'fix') S.fixItem = null;
   panel.hidden = true; document.body.classList.remove('pnl'); S.panel = null; S.sel = null; freeURLs(); renderOverlay(); updateBar();
 }
 
@@ -455,14 +474,14 @@ function closePanel() {
 function newItem(p) {
   if (S.editing) finishItem();
   const d = curD(); const loc = resolveLoc(d, p.x, p.y);
-  S.editing = { id: uid(), dev: S.settings.dev || 'A', by: S.settings.inspector || '', drawingId: d.id, no: nextNo(), x: Math.round(p.x), y: Math.round(p.y), loc, locText: fmtLoc(loc), locEdited: false, photos: [], note: '', created: Date.now(), _new: true };
+  S.editing = { id: uid(), round: curRound().id, dev: S.settings.dev || 'A', by: S.settings.inspector || '', drawingId: d.id, no: nextNo(), x: Math.round(p.x), y: Math.round(p.y), loc, locText: fmtLoc(loc), locEdited: false, photos: [], note: '', created: Date.now(), _new: true };
   renderOverlay(); itemPanel(); updateBar(); ensureVisible(p);
   if (S.settings.autoCam) $('#camInput').click();
 }
 /* office pass: walk through the records in list order without going back to the list */
-function navPos(it) { const L = S.items.slice().sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length, noSub = L.filter(x => !x.sub).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項　·　未指定分判 ${noSub} 項`; }
+function navPos(it) { const L = roundItems().sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length, noSub = L.filter(x => !x.sub).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項　·　未指定分判 ${noSub} 項`; }
 function stepItem(it, how) {
-  const L = S.items.slice().sort(byOrder); const i = L.findIndex(x => x.id === it.id); if (i < 0) return;
+  const L = roundItems().sort(byOrder); const i = L.findIndex(x => x.id === it.id); if (i < 0) return;
   let nx = null;
   if (how === 'prev') nx = L[i - 1];
   else if (how === 'next') nx = L[i + 1];
@@ -485,6 +504,7 @@ function itemPanel() {
   const roomOpts = [...new Set([...(v ? (v.zones || []).filter(z => z.kind === 'room' && (!L.flat || z.flat === L.flat) && (!z.tower || z.tower === L.tower)).map(z => z.name) : []), ...ROOMS])];
   const sel = (id, opts, val, blank) => `<select id="${id}">${blank !== undefined ? `<option value="">${blank}</option>` : ''}${opts.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}${val && !opts.includes(val) ? `<option selected>${esc(val)}</option>` : ''}</select>`;
   const photos = it.photos.map((ph, i) => `<div class="ph1"><img src="${burl(ph.out)}" data-a="ed" data-i="${i}" alt="照片 ${i + 1}"><button class="del" data-a="delph" data-i="${i}" aria-label="刪除照片">✕</button><span class="ed">點擊修改標記</span></div>`).join('');
+  const after = ((it.fix && it.fix.photos) || []).map((ph, i) => `<div class="ph1" style="outline:2px solid var(--ok)"><img src="${burl(ph.out)}" data-a="edA" data-i="${i}" alt="回復 ${i + 1}"><button class="del" data-a="delA" data-i="${i}" aria-label="刪除照片">✕</button><span class="ed" style="background:var(--ok)">回復 ${i + 1}</span></div>`).join('');
   openPanel('item', esc(v ? v.title : (d ? d.name : '')), `
     <div class="idx">${esc(it.locText || '未設定位置')}</div>
     <div class="grid3">
@@ -496,7 +516,9 @@ function itemPanel() {
       : `<label class="f">區域名稱（如 Lift Lobby、平台花園）<input id="fArea" list="areaList" value="${esc(L.area)}"><datalist id="areaList">${S.recentAreas.map(a => `<option value="${esc(a)}">`).join('')}</datalist></label>`}
     ${L.grid ? `<div class="chips"><span class="chip">Grid <b>${esc(L.grid)}</b></span></div>` : ''}
     <div class="photos">${photos}</div>
-    <div class="row"><label class="btn p" for="camInput">拍照</label><label class="btn" for="libInput">從相簿加入</label></div>
+    <div class="row"><label class="btn p" for="camInput">拍照</label><label class="btn" for="libInput">從相簿加入</label><label class="btn g" for="fixCam" data-a="reply">回復</label></div>
+    ${after ? `<div class="f-l">回復照片（完成後）</div><div class="photos">${after}</div>
+    <label class="f">回覆文字（可留空）<input id="fxReply" value="${esc((it.fix && it.fix.reply) || '')}" placeholder="例如：已更換門鉸"></label>` : ''}
     <div class="grid-note"><label class="f">問題描述（可回辦公室再填）<textarea id="fNote" rows="3" placeholder="例如：門鉸鬆脫">${esc(it.note)}</textarea></label>
     <label class="f">分判${sel('fSub', allSubs(), it.sub || '', '未指定').replace('</select>', '<option value="+">＋ 新增分判…</option></select>')}</label></div>
     <div class="row nav"><button class="btn" data-a="prev">‹ 上一個</button><button class="btn" data-a="next">下一個 ›</button><button class="btn" data-a="nextEmpty">下一個未填描述</button></div>
@@ -522,9 +544,13 @@ function itemPanel() {
     }
     it.sub = e.target.value; persistItem(); renderOverlay(); q('.navpos').textContent = navPos(it);
   };
+  const fr = q('#fxReply'); if (fr) fr.oninput = e => { fixOf(it).reply = e.target.value; persistItem(); };
   panel.querySelector('.pb').onclick = async e => {
     const rb = e.target.closest('[data-room]'); if (rb) { L.room = L.room === rb.dataset.room ? '' : rb.dataset.room; upd(true); return; }
+    if (e.target.closest('[data-a="reply"]')) { S.fixItem = it; return; }
     const a = e.target.dataset.a; if (!a) return;
+    if (a === 'edA') { const i = +e.target.dataset.i; const F = fixOf(it); const ph = F.photos[i]; const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistItem(true); itemPanel(); } }
+    if (a === 'delA') { if (e.target.dataset.armed) { const F = fixOf(it); F.photos.splice(+e.target.dataset.i, 1); if (!F.photos.length) { F.status = 'open'; F.done = null; } await persistItem(true); renderOverlay(); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
     if (a === 'cam') $('#camInput').click();
     if (a === 'lib') $('#libInput').click();
     if (a === 'done') closePanel();
@@ -534,7 +560,7 @@ function itemPanel() {
     if (a === 'delph') { if (e.target.dataset.armed) { it.photos.splice(+e.target.dataset.i, 1); await persistItem(true); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
     if (a === 'del') {
       if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = '再按一次確認刪除'; return; }
-      S.items = S.items.filter(x => x.id !== it.id); await DB.del('items', it.id); S.editing = null; closePanel(); toast(`已刪除 ${itemLabel(it)}`);
+      S.items = S.items.filter(x => x.id !== it.id); await DB.del('items', it.id); DB.del('kv', 'rc:' + it.id).catch(() => { }); S.editing = null; closePanel(); toast(`已刪除 ${itemLabel(it)}`);
     }
   };
   updateBar();
@@ -542,7 +568,7 @@ function itemPanel() {
 let persistT;
 async function persistItem(now) {
   const it = S.editing; if (!it) return;
-  if (it._new && !it.photos.length && !it.note.trim()) return;
+  if (it._new && !it.photos.length && !it.note.trim() && !(it.fix && it.fix.photos && it.fix.photos.length)) return;
   it.mod = Date.now();
   if (it._new) { delete it._new; S.items.push(it); updateBar(); }
   clearTimeout(persistT);
@@ -563,15 +589,15 @@ $('#libInput').onchange = e => { const f = e.target.files[0]; e.target.value = '
 function itemsPanel() {
   freeURLs();
   const d = curD();
-  const scoped = (S.listScope === 'cur' && d ? S.items.filter(i => i.drawingId === d.id) : S.items);
+  const scoped = (S.listScope === 'cur' && d ? roundItems().filter(i => i.drawingId === d.id) : roundItems());
   const subF = S.listSub || ''; const nNone = scoped.filter(i => !i.sub).length;
   const list = scoped.filter(i => !subF || (subF === '-' ? !i.sub : i.sub === subF)).slice().sort(byOrder);
   const subOpts = allSubs().map(x => [x, scoped.filter(i => i.sub === x).length]).filter(([, n]) => n);
   const rows = list.map(it => {
     const th = it.photos[0] ? `style="background-image:url('${burl(it.photos[0].out)}')"` : '';
-    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${it.sub ? `<em class="sub">${esc(it.sub)}</em>` : '<em class="sub none">未指定分判</em>'}　${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
+    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${it.sub ? `<em class="sub">${esc(it.sub)}</em>` : '<em class="sub none">未指定分判</em>'}　${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${fixStatus(it) === 'done' ? '　·　已回復' : ''}${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
   }).join('') || (scoped.length ? '' : '<div class="note">這張圖紙還沒有記錄。在「驗收」模式點選圖上的位置即可開始。</div>');
-  openPanel('items', `驗收記錄（${list.length}）`, `
+  openPanel('items', `${esc(curRound().name)}（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
     <label class="f">分判<select id="lSub"><option value="">全部（${scoped.length}）</option><option value="-" ${subF === '-' ? 'selected' : ''}>未指定分判（${nNone}）</option>${subOpts.map(([x, n]) => `<option value="${esc(x)}" ${subF === x ? 'selected' : ''}>${esc(x)}（${n}）</option>`).join('')}</select></label>
     <div class="note">圖上：<b style="color:#d42a1e">紅點</b>＝未指定分判，<b style="color:#1f6f9c">藍點</b>＝已指定分判。</div>
@@ -581,6 +607,7 @@ function itemsPanel() {
     const s = e.target.closest('[data-s]'); if (s) { S.listScope = s.dataset.s; return itemsPanel(); }
     const b = e.target.closest('.li'); if (!b) return;
     const it = S.items.find(i => i.id === b.dataset.id);
+    if (S.mode === 'fix') { const go = () => { fixPanel(it); centerOn(it.x, it.y, Math.max(S.view.k, 1)); renderOverlay(); updateBar(); }; if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(go); else go(); return; }
     if (S.mode !== 'inspect') setMode('inspect');
     S.editing = it; showFloorOf(it);
     if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { itemPanel(); centerOn(it.x, it.y, 1); });
@@ -731,6 +758,10 @@ $('#btnDrawings').onclick = () => S.panel === 'drawings' ? closePanel() : drawin
 $('#btnItems').onclick = () => S.panel === 'items' ? closePanel() : itemsPanel();
 $('#btnExport').onclick = () => S.panel === 'export' ? closePanel() : exportPanel();
 $('#btnFloor').onclick = () => S.panel === 'floor' ? closePanel() : floorPanel();
+$('#btnRound').onclick = () => S.panel === 'round' ? closePanel() : roundPanel();
+$('#fixLib').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
+$('#fixCam').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
+$('#photoRestore').onchange = e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) restoreFromPhotos(fs); };
 $('#zIn').onclick = () => zoomAt(1.6); $('#zOut').onclick = () => zoomAt(1 / 1.6); $('#zFit').onclick = () => fit();
 // the iPad resizes the page when the camera or keyboard comes and goes: keep the spot in the middle where it was
 let rzT;
@@ -775,11 +806,11 @@ function openEditor(src, prev) {
     const draw = () => { ctx.drawImage(base, 0, 0, w, h); for (const s of shapes) drawShape(ctx, s, lw); if (cur) drawShape(ctx, cur, lw); };
     draw();
     // auto save to Photos: keep a captioned copy ready so the share sheet can open straight from the 完成 tap
-    const it0 = S.editing, t0 = prev ? prev.t : Date.now(); let pv = 0, ready = null, prepT = 0;
-    const autoAlb = !prev && it0 && S.settings.autoAlbum !== false && (IS_ANDROID || (navigator.canShare && navigator.share));
+    const it0 = S.editing, t0 = prev ? prev.t : Date.now(), phId = prev ? prev.id : uid(); let pv = 0, ready = null, prepT = 0;
+    const autoAlb = !prev && it0 && !S.replyShot && S.settings.autoAlbum !== false && (IS_ANDROID || (navigator.canShare && navigator.share));
     const prep = () => { if (!autoAlb) return; const v = ++pv; ready = null; clearTimeout(prepT); prepT = setTimeout(async () => {
       try { const out = await canvasBlob(cv, 'image/jpeg', 0.86); if (v !== pv) return;
-        const f = new File([await captioned({ ...it0, photos: [...it0.photos, 0] }, { out, t: t0 }, it0.photos.length)], photoName(it0, it0.photos.length), { type: 'image/jpeg' });
+        const f = new File([await captioned({ ...it0, photos: [...it0.photos, 0] }, { id: phId, out, t: t0, w, h }, it0.photos.length)], photoName(it0, it0.photos.length), { type: 'image/jpeg' });
         if (v === pv && (IS_ANDROID || navigator.canShare({ files: [f] }))) ready = { v, f }; } catch (e) { } }, 120); };
     prep();
     const pos = e => { const r = cv.getBoundingClientRect(); return { x: Math.round((e.clientX - r.left) * w / r.width), y: Math.round((e.clientY - r.top) * h / r.height) }; };
@@ -797,9 +828,9 @@ function openEditor(src, prev) {
       if (!orig) { ctx.drawImage(base, 0, 0, w, h); orig = await canvasBlob(cv, 'image/jpeg', 0.88); draw(); }
       const out = await canvasBlob(cv, 'image/jpeg', 0.86);
       busy(); ed.hidden = true;
-      const r = { id: prev ? prev.id : uid(), orig, out, shapes, w, h, t: t0 };
+      const r = { id: phId, orig, out, shapes, w, h, t: t0 };
       if (autoAlb && IS_ANDROID) {
-        try { const f = ready && ready.v === pv ? ready.f : new File([await captioned({ ...it0, photos: [...it0.photos, 0] }, { out, t: t0 }, it0.photos.length)], photoName(it0, it0.photos.length), { type: 'image/jpeg' });
+        try { const f = ready && ready.v === pv ? ready.f : new File([await captioned({ ...it0, photos: [...it0.photos, 0] }, { id: phId, out, t: t0, w, h }, it0.photos.length)], photoName(it0, it0.photos.length), { type: 'image/jpeg' });
           saveFile(f, f.name); r.album = Date.now(); } catch (e) { toast('相片未能存入手機，可稍後在「導出 → 存入相簿」補存', 3500); }
       } else if (albumP) albumP.then(async okA => { if (!okA) return toast('未存入相簿，可稍後在「導出 → 存入相簿」補存', 3500); r.album = Date.now(); if (S.items.includes(it0)) await DB.put('items', it0); updateBar(); });
       else if (autoAlb) toast('相片未能即時存入相簿，可稍後在「導出 → 存入相簿」補存', 3500);
@@ -827,7 +858,7 @@ function exportPanel() {
     <div class="row"><button class="btn ${ub ? 'p' : ''}" data-a="bknew">備份新增記錄</button><button class="btn" data-a="album">存入相簿（${ua}）</button></div>
     <button class="btn" data-a="bk">完整備份（全部 ${S.items.length} 項）</button>
     <div class="note">備份檔是 ZIP，可用分享選單存到「檔案」、iCloud Drive、Google Drive 或 WhatsApp。ZIP 內的「相片」資料夾在電腦上可直接開啟，每張相底部印有編號、位置、時間及檢查人員。</div>
-    <div class="sec">報告</div>
+    <div class="sec">報告（${esc(curRound().name)}，${roundItems().length} 項）</div>
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
     <div class="grid2"><label class="f">地盤／地址<input id="pSite" value="${esc(P.site)}"></label><label class="f">驗收日期<input id="pDate" type="date" value="${esc(P.date)}"></label></div>
     <label class="f">公司／單位<input id="pCo" value="${esc(P.company)}"></label>
@@ -835,11 +866,14 @@ function exportPanel() {
     ${devs.length > 1 ? `<label class="f">報告範圍<select id="pDevs"><option value="">全部（${devs.join('、')}）</option>${devs.map(d => `<option value="${d}">只限 ${d}</option>`).join('')}</select></label>` : ''}
     <label class="f">圖紙截取範圍<select id="pCrop"><option value="s">細（約 7 米闊）</option><option value="m">中（約 11 米闊）</option><option value="l">大（約 17 米闊）</option></select></label>
     <label class="toggle">報告最後附上每張平面圖的位置總圖<input type="checkbox" id="pKey" ${S.settings.keyPlan ? 'checked' : ''}></label>
+    <label class="f">報告類型<select id="pKind"><option value="inspect">驗收報告</option><option value="fixdone">回復報告（只限已回復項目，完成前後對照）</option><option value="fixall">回復報告（全部項目，列出是否已回復）</option></select></label>
     <button class="btn p" data-a="preview">預覽報告</button>
     <div class="row"><button class="btn dk" data-a="pdf">導出 PDF</button><button class="btn dk" data-a="docx">導出 Word</button></div>
     <div class="note">預覽後可直接導出 PDF 或 Word。PDF 與預覽版面相同；Word 可再加文字修改。</div>
     <div class="sec">合併其他 iPad 的記錄</div>
     <button class="btn" data-a="imp">匯入備份檔（ZIP）</button>
+    <label class="btn" for="photoRestore">從相片還原記錄</label>
+    <div class="note">本程式存的每張相片都帶有圖紙坐標（相片資料內及底部二維碼）。即使只剩下相片，在這裏一次揀選多張，就可以把記錄放回原來的圖紙位置及驗收批次。</div>
     <div class="note">匯入後所有記錄會在同一張圖上顯示，連同圖上位置、照片標註及檢查人員；同一記錄以較新的版本為準。</div>
     <button class="btn" data-a="renum">整理編號（按樓層、位置）</button>
     <div class="note">全部記錄匯入後按這裏，編號會改為按樓層排列，例如 B1-001、B1-002、B2-001，同一單位或區域的記錄排在一起，就像一個人做了全部記錄。原來的編號會保留在記錄內。之後再匯入或新增記錄，可再按一次重新整理。</div>
@@ -850,7 +884,7 @@ function exportPanel() {
     <label class="toggle">驗收時顯示單位範圍<input type="checkbox" id="sZone" ${S.settings.showZones ? 'checked' : ''}></label>
     <div class="note" id="stor">記錄存在這部 iPad 的程式資料內。</div>
     <div class="note">版本 ${VERSION}${S.pkgVersion ? '　圖紙包 ' + esc(S.pkgVersion) : ''}</div>`);
-  $('#pCrop').value = S.settings.crop;
+  $('#pCrop').value = S.settings.crop; $('#pKind').value = 'inspect';
   const sv = () => { Object.assign(P, { name: $('#pName').value, site: $('#pSite').value, date: $('#pDate').value, company: $('#pCo').value }); S.settings.keyPlan = $('#pKey').checked; S.repSub = $('#pSub').value; S.settings.crop = $('#pCrop').value; S.settings.autoCam = $('#sCam').checked; S.settings.showZones = $('#sZone').checked; S.settings.autoAlbum = $('#sAlb').checked; saveKV(); updateBar(); renderOverlay(); };
   panel.querySelectorAll('input,select').forEach(i => i.onchange = sv);
   (async () => {
@@ -862,9 +896,10 @@ function exportPanel() {
   panel.querySelector('.pb').onclick = async e => {
     const a = e.target.dataset.a; if (!a) return; sv();
     const od = $('#pDevs') ? $('#pDevs').value : '';
-    if (a === 'docx') exportDocx(od);
-    if (a === 'preview') previewReport(od);
-    if (a === 'pdf') { const items = S.items.filter(i => inScope(i, od)).sort(byOrder); if (!items.length) return toast('還沒有任何記錄'); busy('正在生成 PDF…'); ovCache.clear(); try { const r = await buildReportPages(items, (x, y) => busy(`正在生成 PDF… ${x}／${y}`)); ovCache.clear(); await exportPdf(r.pages); if (r.fails.length) reportFails(r.fails); } catch (err) { busy(); toast('PDF 生成失敗：' + err.message, 6000); } }
+    const kind = $('#pKind').value;
+    if (a === 'docx') { if (kind === 'inspect') exportDocx(od); else exportFixDocx(reportItems(kind, od), kind); }
+    if (a === 'preview') previewReport(od, kind);
+    if (a === 'pdf') { const items = reportItems(kind, od); if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '還沒有任何記錄'); busy('正在生成 PDF…'); ovCache.clear(); try { const pr = (x, y) => busy(`正在生成 PDF… ${x}／${y}`); const r = kind === 'inspect' ? await buildReportPages(items, pr) : await buildFixPages(items, pr, kind); ovCache.clear(); await exportPdf(r.pages, kind); if (r.fails.length) reportFails(r.fails); } catch (err) { busy(); toast('PDF 生成失敗：' + err.message, 6000); } }
     if (a === 'bk') exportBackup(false);
     if (a === 'bknew') exportBackup(true);
     if (a === 'album') albumPanel();
@@ -904,21 +939,28 @@ async function cropImage(d, it) { // 4:3, vector-sharp
   return { blob: await canvasBlob(c, 'image/jpeg', 0.88), w: c.width, h: c.height };
 }
 const ovCache = new Map();
-/* report images are kept with the record, so the next export only redoes what changed.
-   They are derived data: left out of backups and rebuilt whenever an input changes. */
-const RC_V = 1, REP_PX = 1200;
+/* report images (overview, crop, report-size photos) are cached per record in the kv store under
+   'rc:<item id>', apart from the record itself: saving a record never touches them, they are read
+   fresh from storage for every report, never go into backups, and are rebuilt when an input changes */
+const RC_V = 2, REP_PX = 1200;
 const rcKey = (d, it) => JSON.stringify([RC_V, d.id, d.w, d.h, it.x, it.y, S.settings.crop, it.loc.viewId, it.loc.zoneIds || [], pinLabel(it, !multiFloorViews(d).length)]);
-const rcDirty = new Set();
-async function reportDrawings(d, it) {
-  const k = rcKey(d, it); const c = it.rcache && it.rcache.k === k ? it.rcache : { k };
-  let ovErr = null, crErr = null;
-  if (!(c.ov && c.ov.blob instanceof Blob)) try { c.ov = await overviewImage(d, it); it.rcache = c; rcDirty.add(it); } catch (e) { ovErr = e; }
-  if (!(c.cr && c.cr.blob instanceof Blob)) try { c.cr = await cropImage(d, it); it.rcache = c; rcDirty.add(it); } catch (e) { crErr = e; }
-  return { ov: ovErr ? null : c.ov, cr: crErr ? null : c.cr, ovErr, crErr };
-}
-async function reportPhoto(it, ph) {
-  if (ph.rep instanceof Blob && ph.repK === REP_PX && ph.repOf === ph.out.size) return ph.rep;
-  const b = await shrink(ph.out, REP_PX); ph.rep = b; ph.repK = REP_PX; ph.repOf = ph.out.size; rcDirty.add(it); return b;
+const repKey = ph => `${REP_PX}|${ph.out && ph.out.size}`;
+const rcSig = (d, it) => rcKey(d, it) + it.photos.map(ph => ph.id + repKey(ph)).join(',');
+const rcDone = new Map(); // item id -> signature already cached (this session)
+async function reportImages(d, it) {
+  const k = rcKey(d, it); let c = null; try { c = await DB.kget('rc:' + it.id); } catch (e) { }
+  if (!c || c.k !== k) c = { k, reps: (c && c.reps) || {} };
+  let dirty = false, ovErr = null, crErr = null;
+  if (!(c.ov && c.ov.blob)) try { c.ov = await overviewImage(d, it); dirty = true; } catch (e) { ovErr = e; }
+  if (!(c.cr && c.cr.blob)) try { c.cr = await cropImage(d, it); dirty = true; } catch (e) { crErr = e; }
+  const reps = await Promise.all(it.photos.map(async ph => {
+    const r = c.reps[ph.id]; if (r && r.k === repKey(ph) && r.blob) return r.blob;
+    try { const blob = await shrink(ph.out, REP_PX); c.reps[ph.id] = { k: repKey(ph), blob }; dirty = true; return blob; } catch (e) { return null; }
+  }));
+  const keep = new Set(it.photos.map(ph => ph.id)); for (const id of Object.keys(c.reps)) if (!keep.has(id)) { delete c.reps[id]; dirty = true; }
+  if (dirty) try { await DB.kset('rc:' + it.id, c); } catch (e) { console.warn(e); }
+  if (!ovErr && !crErr && reps.every(Boolean)) rcDone.set(it.id, rcSig(d, it));
+  return { ov: ovErr ? null : c.ov, cr: crErr ? null : c.cr, reps, ovErr, crErr };
 }
 // build the caches quietly while the app is idle, one record at a time, so the first export is quick too
 let warmT = 0, warming = false; const warmFail = new Map();
@@ -926,17 +968,16 @@ function warmLater(ms = 4000) { clearTimeout(warmT); warmT = setTimeout(warmStep
 async function warmStep() {
   if (warming) return; const idle = $('#editor').hidden && $('#busy').hidden && !S.editing && $('#preview')?.hidden !== false;
   if (!idle || document.hidden) return warmLater(5000);
-  const it = S.items.find(i => { const d = S.drawings.find(x => x.id === i.drawingId); return d && (warmFail.get(i.id) || 0) < 2 && (!i.rcache || i.rcache.k !== rcKey(d, i) || !i.rcache.cr || !i.rcache.ov || i.photos.some(ph => !(ph.rep instanceof Blob) || ph.repK !== REP_PX || ph.repOf !== ph.out?.size)); });
+  const it = S.items.find(i => { const d = S.drawings.find(x => x.id === i.drawingId); return d && (warmFail.get(i.id) || 0) < 2 && rcDone.get(i.id) !== rcSig(d, i); });
   if (!it) return;
   warming = true;
-  try { const d = S.drawings.find(x => x.id === it.drawingId); if (d.kind === 'pdf') await ensureBase(d, true); await reportDrawings(d, it); for (const ph of it.photos) await reportPhoto(it, ph).catch(() => { }); }
+  try { const [f] = await freshItems([it]); const d = S.drawings.find(x => x.id === f.drawingId); if (d.kind === 'pdf') await ensureBase(d, true); await reportImages(d, f); }
   catch (e) { console.warn(e); }
-  finally { await saveReportCache(); warming = false; }
+  finally { warming = false; }
   // a record whose images can't be built is retried once, then left to the export to report
-  if (!it.rcache || !it.rcache.cr || !it.rcache.ov || it.photos.some(ph => !(ph.rep instanceof Blob))) warmFail.set(it.id, (warmFail.get(it.id) || 0) + 1);
+  const d = S.drawings.find(x => x.id === it.drawingId); if (rcDone.get(it.id) !== rcSig(d, it)) warmFail.set(it.id, (warmFail.get(it.id) || 0) + 1);
   warmLater(800);
 }
-async function saveReportCache() { for (const it of rcDirty) { try { await DB.put('items', it); } catch (e) { console.warn(e); } } rcDirty.clear(); }
 async function overviewImage(d, it) { // whole plan view, small, with the crop box highlighted
   const v = viewById(d, it.loc.viewId); const b = v ? v.bbox : [0, 0, d.w, d.h]; const R = cropRect(d, it);
   const pad = 0.02 * Math.max(b[2] - b[0], b[3] - b[1]); const bx = Math.max(0, b[0] - pad), by = Math.max(0, b[1] - pad), bw = Math.min(d.w, b[2] + pad) - bx, bh = Math.min(d.h, b[3] + pad) - by;
@@ -958,23 +999,32 @@ async function keyPlanImage(d, v, items) {
 }
 
 async function exportDocx(onlyDev) {
-  if (!S.items.length) return toast('還沒有任何記錄');
+  if (!roundItems().length) return toast('目前批次還沒有記錄');
   if (!window.docx) return toast('報告元件未載入，請連網後重新開啟一次');
   const D = window.docx; const P = S.project;
   try {
     busy('正在生成報告…');
-    const items = S.items.filter(i => inScope(i, onlyDev)).sort(byOrder); const fails = []; ovCache.clear(); var curLbl = '';
+    const items = await freshItems(roundItems().filter(i => inScope(i, onlyDev)).sort(byOrder)); const fails = []; ovCache.clear(); var curLbl = '';
     const FONT = { ascii: 'Arial', hAnsi: 'Arial', eastAsia: 'Microsoft JhengHei', cs: 'Arial' };
     const T = (text, o = {}) => new D.TextRun({ text: String(text ?? ''), font: FONT, size: o.size || 18, bold: o.bold, color: o.color });
     const Pg = (runs, o = {}) => new D.Paragraph({ children: Array.isArray(runs) ? runs : [runs], alignment: o.align, spacing: { after: o.after ?? 40, before: o.before ?? 0 }, keepLines: true, keepNext: o.keepNext });
     const border = { style: D.BorderStyle.SINGLE, size: 4, color: '8A9391' };
     const borders = { top: border, bottom: border, left: border, right: border };
     // A4 landscape 16838 x 11906 twips; margins 600 → 15638 usable
-    const usable = 15638; const colPct = [4, 14, 26, 26, 19, 11]; const colTw = colPct.map(p => Math.round(usable * p / 100));
+    const usable = 15638; const colPct = [6, 13, 25, 25, 13, 18]; const colTw = colPct.map(p => Math.round(usable * p / 100));
     const imgPx = Math.floor(colTw[2] / 15) - 12; // drawing crop and photo share one width → same 4:3 size
     const cell = (children, i, o = {}) => new D.TableCell({ children, width: { size: colTw[i], type: D.WidthType.DXA }, borders, verticalAlign: o.v || D.VerticalAlign.TOP, shading: o.shade ? { type: D.ShadingType.CLEAR, color: 'auto', fill: o.shade } : undefined, margins: { top: 70, bottom: 70, left: 80, right: 80 } });
-    const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進'];
+    const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進／回復'];
     const rows = [new D.TableRow({ tableHeader: true, cantSplit: true, children: heads.map((h, i) => cell([Pg(T(h, { bold: true, color: 'FFFFFF', size: 17 }), { align: D.AlignmentType.CENTER, after: 0 })], i, { shade: '1D2629', v: D.VerticalAlign.CENTER })) })];
+    const rPx = Math.floor(colTw[5] / 15) - 12;
+    const replyParas = async it => { const out = [];
+      for (const [i, ph] of ((it.fix && it.fix.photos) || []).entries()) {
+        let w = rPx, h = rPx * 0.75; const r = ph.w / ph.h; if (r > 4 / 3) h = w / r; else w = h * r;
+        try { out.push(Pg(new D.ImageRun({ data: await (await shrink(ph.out, 1000)).arrayBuffer(), transformation: { width: Math.round(w), height: Math.round(h) } }), { align: D.AlignmentType.CENTER, after: 20 })); } catch (e) { fails.push(`${itemLabel(it)} 回復照片${i + 1}：${e.message}`); }
+        out.push(Pg(T(`回復 ${i + 1}　${fmtTime(ph.t).slice(0, 10)}`, { size: 13, color: '2F7D4F' }), { align: D.AlignmentType.CENTER, after: 80 }));
+      }
+      if (it.fix && it.fix.reply) out.push(Pg([T('回覆：', { bold: true, size: 15, color: '2F7D4F' }), T(it.fix.reply, { size: 15, color: '2F7D4F' })]));
+      return out.length ? out : [Pg(T(''))]; };
     let n = 0;
     for (const it of items) {
       busy(`正在生成報告… ${++n}／${items.length}`);
@@ -983,7 +1033,7 @@ async function exportDocx(onlyDev) {
       if (d.kind === 'pdf') await ensureBase(d, true);
       const failText = what => Pg(T(`（${what}無法生成）`, { color: 'D42A1E', size: 15 }), { align: D.AlignmentType.CENTER, after: 60 });
       let ovH = 95; const dwgParas = [];
-      const rd = await reportDrawings(d, it); const reps = await Promise.all(it.photos.map(ph => reportPhoto(it, ph).catch(() => null)));
+      const rd = await reportImages(d, it); const reps = rd.reps;
       try { const ovw = rd.ov; if (!ovw) throw rd.ovErr; ovH = Math.min(Math.round(imgPx * ovw.h / ovw.w), 95); const ovW = Math.round(ovH * ovw.w / ovw.h);
         dwgParas.push(Pg(new D.ImageRun({ data: await ovw.blob.arrayBuffer(), transformation: { width: ovW, height: ovH } }), { align: D.AlignmentType.CENTER, after: 60 }));
       } catch (e) { fails.push(`${itemLabel(it)} 總圖：${e.message}`); dwgParas.push(failText('總圖')); console.error(e); }
@@ -1009,7 +1059,7 @@ async function exportDocx(onlyDev) {
       rows.push(new D.TableRow({
         cantSplit: true, children: [
           cell([Pg(T(itemLabel(it), { bold: true, size: 16, color: 'D42A1E' }), { align: D.AlignmentType.CENTER }), Pg(T(it.by || '', { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER }), Pg(T(fmtTime(it.created).slice(5, 10), { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER })], 0, { v: D.VerticalAlign.CENTER }),
-          cell(locParas, 1), cell(dwgParas, 2), cell(phParas, 3), cell(noteParas.length ? noteParas : [Pg(T(''))], 4), cell([Pg(T(it.sub || '', { bold: true, size: 18 }), { align: D.AlignmentType.CENTER })], 5),
+          cell(locParas, 1), cell(dwgParas, 2), cell(phParas, 3), cell(noteParas.length ? noteParas : [Pg(T(''))], 4), cell([...(it.sub ? [Pg(T(it.sub, { bold: true, size: 18 }), { align: D.AlignmentType.CENTER, after: 60 })] : []), ...(await replyParas(it))], 5),
         ]
       }));
     }
@@ -1017,7 +1067,7 @@ async function exportDocx(onlyDev) {
     const infoRow = (k, v) => new D.TableRow({ children: [new D.TableCell({ children: [Pg(T(k, { color: '5F6B69' }), { after: 0 })], width: { size: 2000, type: D.WidthType.DXA }, borders: nb }), new D.TableCell({ children: [Pg(T(v || '', { bold: true }), { after: 0 })], width: { size: 6000, type: D.WidthType.DXA }, borders: nb })] });
     const children = [
       Pg(T('竣工驗收記錄', { bold: true, size: 32 }), { after: 120 }),
-      new D.Table({ rows: [infoRow('項目名稱', P.name), infoRow('地盤／地址', P.site), infoRow('驗收日期', P.date), infoRow('檢查人員', [P.inspector, P.company].filter(Boolean).join('　')), infoRow('記錄數量', `${items.length} 項`)], width: { size: 8000, type: D.WidthType.DXA }, columnWidths: [2000, 6000] }),
+      new D.Table({ rows: [infoRow('項目名稱', P.name), infoRow('地盤／地址', P.site), infoRow('驗收批次', curRound().name), infoRow('驗收日期', P.date), infoRow('檢查人員', [P.inspector, P.company].filter(Boolean).join('　')), infoRow('記錄數量', `${items.length} 項`)], width: { size: 8000, type: D.WidthType.DXA }, columnWidths: [2000, 6000] }),
       Pg(T(''), { after: 120 }),
       new D.Table({ rows, width: { size: usable, type: D.WidthType.DXA }, columnWidths: colTw, layout: D.TableLayoutType.FIXED }),
     ];
@@ -1039,14 +1089,14 @@ async function exportDocx(onlyDev) {
       styles: { default: { document: { run: { font: FONT, size: 18 } } } },
       sections: [{
         properties: { page: { size: { width: 11906, height: 16838, orientation: D.PageOrientation.LANDSCAPE }, margin: { top: 600, bottom: 600, left: 600, right: 600, header: 300, footer: 300 } } },
-        headers: { default: new D.Header({ children: [Pg([T(`${P.name || ''}　竣工驗收記錄　${P.date || ''}`, { size: 15, color: '5F6B69' })], { align: D.AlignmentType.RIGHT })] }) },
+        headers: { default: new D.Header({ children: [Pg([T(`${P.name || ''}　竣工驗收記錄　${curRound().name}　${P.date || ''}`, { size: 15, color: '5F6B69' })], { align: D.AlignmentType.RIGHT })] }) },
         footers: { default: new D.Footer({ children: [new D.Paragraph({ alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ children: ['第 ', D.PageNumber.CURRENT, ' 頁，共 ', D.PageNumber.TOTAL_PAGES, ' 頁'], font: FONT, size: 15, color: '5F6B69' })] })] }) },
         children,
       }],
     });
-    const blob = await D.Packer.toBlob(doc); await saveReportCache();
+    const blob = await D.Packer.toBlob(doc);
     busy();
-    await deliver(blob, `竣工驗收記錄_${safeName(P.name) || '項目'}_${P.date || today()}.docx`);
+    await deliver(blob, `竣工驗收記錄_${safeName(curRound().name)}_${safeName(P.name) || '項目'}_${P.date || today()}.docx`);
     ovCache.clear();
     if (fails.length) reportFails(fails);
   } catch (err) { busy(); console.error(err); toast('報告生成失敗' + (typeof curLbl !== 'undefined' && curLbl ? `（${curLbl}）` : '') + '：' + err.message, 8000); }
@@ -1072,13 +1122,21 @@ function floorRank(f) {
   if (/^(G|GF|LG|UG)$/.test(s)) return 0;
   m = s.match(/(\d+)/); return m ? Number(m[1]) : 999;
 }
+// a record in a part plan (stairs, details) has no floor of its own: use the floor of the sheet's main plan
+function floorOfItem(it) {
+  if (it.loc && it.loc.floor) return it.loc.floor;
+  const d = S.drawings.find(x => x.id === it.drawingId); if (!d) return '';
+  const area = v => (v.bbox[2] - v.bbox[0]) * (v.bbox[3] - v.bbox[1]);
+  const main = (d.views || []).filter(v => v.floors && v.floors.length === 1).sort((a, b) => area(b) - area(a))[0];
+  return main ? main.floors[0] : '';
+}
 async function renumberAll() {
-  const key = it => { const L = it.loc || {}; return [L.tower || '', L.floor || ''].filter(Boolean).join('-') || '其他'; };
+  const key = it => { const L = it.loc || {}; return [L.tower || '', floorOfItem(it)].filter(Boolean).join('-') || '其他'; };
   const cmp = (a, b) => { const A = a.loc || {}, B = b.loc || {};
-    return floorRank(A.floor) - floorRank(B.floor) || (A.tower || '').localeCompare(B.tower || '', 'en', { numeric: true })
+    return floorRank(floorOfItem(a)) - floorRank(floorOfItem(b)) || (A.tower || '').localeCompare(B.tower || '', 'en', { numeric: true })
       || (A.flat || '').localeCompare(B.flat || '', 'en', { numeric: true }) || (A.room || A.area || '').localeCompare(B.room || B.area || '', 'zh-Hant')
       || a.y - b.y || a.x - b.x; };
-  const list = S.items.slice().sort(cmp); const cnt = new Map(); const now = Date.now();
+  const list = roundItems().sort(cmp); const cnt = new Map(); const now = Date.now();
   for (const [i, it] of list.entries()) {
     const k = key(it); const n = (cnt.get(k) || 0) + 1; cnt.set(k, n);
     if (!it.origLabel) it.origLabel = `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
@@ -1089,7 +1147,7 @@ async function renumberAll() {
 }
 const fmtTime = t => { const d = new Date(t || Date.now()); const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 function unbacked() { const t = S.settings.lastBackup || 0; return S.items.filter(i => (i.mod || i.created || 0) > t).length; }
-function unalbum() { return S.items.reduce((n, i) => n + i.photos.filter(p => !p.album).length, 0); }
+function unalbum() { return S.items.reduce((n, i) => n + i.photos.filter(p => !p.album).length + ((i.fix && i.fix.photos) || []).filter(p => !p.album).length, 0); }
 
 async function renderOut(orig, shapes) {
   const img = await loadImg(orig); const w = img.naturalWidth, h = img.naturalHeight;
@@ -1098,23 +1156,34 @@ async function renderOut(orig, shapes) {
   URL.revokeObjectURL(img.src); return canvasBlob(c, 'image/jpeg', 0.86);
 }
 /* photo with a caption strip burnt in: readable on its own in the Photos app, WhatsApp or a folder */
-async function captioned(it, ph, i) {
+async function captioned(it, ph, i, after) {
   const img = await loadImg(ph.out); const w = img.naturalWidth, h = img.naturalHeight;
   const fs = Math.max(18, Math.round(w / 48)), pad = Math.round(fs * 0.6), lh = Math.round(fs * 1.35);
-  const lines = [`${itemLabel(it)}${it.photos.length > 1 ? ` (${i + 1}/${it.photos.length})` : ''}　${it.locText || ''}`,
-    `${fmtTime(ph.t)}　檢查：${it.by || S.settings.inspector || devOf(it)}　${S.project.name || ''}`];
-  if (it.note) lines.push(it.note.replace(/\s+/g, ' ').slice(0, 80));
-  const c = document.createElement('canvas'); c.width = w; c.height = h + pad * 2 + lh * lines.length; const x = c.getContext('2d');
-  x.drawImage(img, 0, 0); x.fillStyle = '#1d2629'; x.fillRect(0, h, w, c.height - h);
-  x.textBaseline = 'top'; lines.forEach((t, k) => { x.fillStyle = k ? '#d6dedb' : '#ffffff'; x.font = `${k ? '' : 'bold '}${k ? Math.round(fs * 0.85) : fs}px -apple-system,"PingFang TC",sans-serif`; x.fillText(t, pad, h + pad + k * lh, w - pad * 2); });
+  const list = after ? ((it.fix && it.fix.photos) || []) : it.photos, cntN = Math.max(list.length, i + 1);
+  const d = S.drawings.find(x => x.id === it.drawingId) || {};
+  const lines = [`${itemLabel(it)}${after ? '　完成後' : ''}${cntN > 1 ? ` (${i + 1}/${cntN})` : ''}　${it.locText || ''}`,
+    `${fmtTime(ph.t)}　${after ? '執修' : '檢查'}：${(after ? it.fix && it.fix.by : it.by) || S.settings.inspector || devOf(it)}　${roundName(roundOf(it))}　${S.project.name || ''}`,
+    `坐標：${d.no || it.drawingId}　x ${Math.round(it.x)}　y ${Math.round(it.y)}`];
+  const note = after ? (it.fix && it.fix.reply ? '回覆：' + it.fix.reply : '') : it.note;
+  if (note) lines.push(note.replace(/\s+/g, ' ').slice(0, 80));
+  const qr = qrFor(asciiJSON(photoMeta(it, ph, i, after, false)));
+  const cell = qr ? Math.max(3, Math.round(fs / 6)) : 0, qpx = qr ? (qr.getModuleCount() + 8) * cell : 0;
+  const stripH = Math.max(pad * 2 + lh * lines.length, qpx + pad);
+  const c = document.createElement('canvas'); c.width = w; c.height = h + stripH; const x = c.getContext('2d');
+  x.drawImage(img, 0, 0); x.fillStyle = '#1d2629'; x.fillRect(0, h, w, stripH);
+  const tw = w - pad * 2 - (qpx ? qpx + pad : 0);
+  x.textBaseline = 'top'; lines.forEach((t, k) => { x.fillStyle = k ? '#d6dedb' : '#ffffff'; x.font = `${k ? '' : 'bold '}${k ? Math.round(fs * 0.85) : fs}px -apple-system,"PingFang TC",sans-serif`; x.fillText(t, pad, h + pad + k * lh, tw); });
+  if (qr) { const n = qr.getModuleCount(), qx = w - pad - qpx, qy = h + Math.round((stripH - qpx) / 2); x.fillStyle = '#fff'; x.fillRect(qx, qy, qpx, qpx); x.fillStyle = '#000';
+    for (let r = 0; r < n; r++) for (let cc = 0; cc < n; cc++) if (qr.isDark(r, cc)) x.fillRect(qx + (cc + 4) * cell, qy + (r + 4) * cell, cell, cell); }
   URL.revokeObjectURL(img.src);
-  return canvasBlob(c, 'image/jpeg', 0.86);
+  const blob = await canvasBlob(c, 'image/jpeg', 0.9); c.width = c.height = 0;
+  try { return new Blob([exifWithDesc(new Uint8Array(await blob.arrayBuffer()), asciiJSON(photoMeta(it, ph, i, after, true)))], { type: 'image/jpeg' }); } catch (e) { return blob; }
 }
-const photoName = (it, i) => safeName(`${itemLabel(it)}_${it.locText || ''}_${i + 1}`).replace(/[\s\u3000]+/g, '_').slice(0, 90) + '.jpg';
+const photoName = (it, i, after) => safeName(`${itemLabel(it)}_${it.locText || ''}_${after ? '完成' : ''}${i + 1}`).replace(/[\s\u3000]+/g, '_').slice(0, 90) + '.jpg';
 
 /* save captioned photos into the iPad Photos album through the share sheet, in batches */
 async function albumPanel() {
-  const todo = []; for (const it of S.items.slice().sort(byOrder)) it.photos.forEach((p, i) => { if (!p.album) todo.push([it, p, i]); });
+  const todo = []; for (const it of S.items.slice().sort(byOrder)) { it.photos.forEach((p, i) => { if (!p.album) todo.push([it, p, i]); }); ((it.fix && it.fix.photos) || []).forEach((p, i) => { if (!p.album) todo.push([it, p, i, true]); }); }
   const N = 20, batches = Math.ceil(todo.length / N);
   openPanel('album', '存入相簿', todo.length ? `
     <div class="note">尚有 <b>${todo.length}</b> 張相未存入相簿。每批 ${N} 張，${IS_ANDROID ? '按下後直接存入手機的「Download」資料夾（第一次請在提示中按「允許」下載多個檔案）' : `按下後在分享選單揀「儲存 ${Math.min(N, todo.length)} 張影像」`}。存入的相片底部印有編號、位置、時間及檢查人員。</div>
@@ -1124,14 +1193,14 @@ async function albumPanel() {
   go.onclick = async () => {
     const part = todo.slice(0, N);
     if (IS_ANDROID) {
-      try { busy('正在存入…'); for (const [it, p, i] of part) { saveFile(await captioned(it, p, i), photoName(it, i)); p.album = Date.now(); await DB.put('items', it); await new Promise(r => setTimeout(r, 250)); }
+      try { busy('正在存入…'); for (const [it, p, i, af] of part) { saveFile(await captioned(it, p, i, af), photoName(it, i, af)); p.album = Date.now(); await DB.put('items', it); await new Promise(r => setTimeout(r, 250)); }
         busy(); toast(`已存入 ${part.length} 張`); albumPanel(); updateBar(); } catch (e) { busy(); toast('未能存入：' + e.message, 4000); }
       return;
     }
     if (!navigator.canShare) return toast('這個瀏覽器不支援存入相簿，請用 iPad Safari');
     try {
       busy('正在準備相片…'); const files = [];
-      for (const [it, p, i] of part) files.push(new File([await captioned(it, p, i)], photoName(it, i), { type: 'image/jpeg' }));
+      for (const [it, p, i, af] of part) files.push(new File([await captioned(it, p, i, af)], photoName(it, i, af), { type: 'image/jpeg' }));
       busy();
       if (!navigator.canShare({ files })) return toast('這部機不能經分享選單存相');
       await navigator.share({ files });
@@ -1152,19 +1221,23 @@ async function exportBackup(onlyNew) {
     const items = S.items.filter(i => (i.mod || i.created || 0) > since).sort(byOrder);
     if (!items.length) return toast('沒有新的記錄需要備份');
     busy('正在打包…'); const zip = new JSZip(); const out = [];
-    let n = 0, tot = items.reduce((s, i) => s + i.photos.length, 0);
+    let n = 0, tot = items.reduce((s, i) => s + i.photos.length + ((i.fix && i.fix.photos) || []).length, 0);
     for (const it of items) {
       const photos = [];
       for (const [i, p] of it.photos.entries()) {
         busy(`正在打包相片 ${++n}／${tot}`);
         const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' });
         zip.file(`相片/${photoName(it, i)}`, await captioned(it, p, i), { compression: 'STORE' });
-        const { orig, out: _o, rep: _r, repK: _rk, repOf: _ro, ...meta } = p; photos.push({ ...meta, orig: o });
+        const { orig, out: _o, ...meta } = p; photos.push({ ...meta, orig: o });
       }
-      const { rcache: _rc, ...rest } = it; out.push({ ...rest, photos });
+      let fix = it.fix;
+      if (fix && fix.photos && fix.photos.length) { const fp = [];
+        for (const [i, p] of fix.photos.entries()) { busy(`正在打包相片 ${++n}／${tot}`); const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' }); zip.file(`相片/${photoName(it, i, true)}`, await captioned(it, p, i, true), { compression: 'STORE' }); const { orig, out: _o, ...meta } = p; fp.push({ ...meta, orig: o }); }
+        fix = { ...fix, photos: fp }; }
+      out.push({ ...it, photos, fix });
     }
     const drawings = S.drawings.filter(d => d.src !== 'bundle' || true).map(d => ({ id: d.id, src: d.src, views: d.src === 'user' ? d.views : undefined }));
-    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, inspector: S.settings.inspector, onlyNew: !!onlyNew, project: S.project, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
+    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, inspector: S.settings.inspector, onlyNew: !!onlyNew, project: S.project, rounds: S.rounds, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
     busy('正在壓縮…');
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
     busy();
@@ -1180,10 +1253,12 @@ async function importBackup(file) {
     else data = JSON.parse(await file.text());
     if (data.app !== 'handover-inspect') throw new Error('不是本程式的備份檔');
     if (data.project && !S.project.name) S.project = { ...S.project, ...data.project };
+    const rmap = {}; for (const r of data.rounds || []) rmap[r.id] = mergeRound(r.id, r.name, r.date);
     let add = 0, upd = 0, skip = 0, i = 0;
     for (const it of data.items || []) {
       busy(`正在匯入記錄 ${++i}／${data.items.length}`);
       if (!it.dev) it.dev = data.dev || 'X';
+      it.round = it.round ? (rmap[it.round] || mergeRound(it.round)) : 'r1';
       if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
       const ex = S.items.find(x => x.id === it.id);
       if (ex && (ex.mod || ex.created || 0) >= (it.mod || it.created || 0)) { skip++; continue; }
@@ -1193,12 +1268,14 @@ async function importBackup(file) {
         let orig = typeof p.orig === 'string' && p.orig.startsWith('data:') ? await dataURLToBlob(p.orig) : zip ? await zip.file(p.orig).async('blob') : null;
         if (!orig) continue; orig = new Blob([orig], { type: 'image/jpeg' });
         const out = typeof p.out === 'string' && p.out.startsWith('data:') ? await dataURLToBlob(p.out) : await renderOut(orig, p.shapes);
-        const { rep: _r, repK: _rk, repOf: _ro, ...pm } = p; photos.push({ ...pm, orig, out });
+        photos.push({ ...p, orig, out });
       }
-      const { rcache: _rc, ...itm } = it; const rec = { ...itm, photos }; await DB.put('items', rec);
+      let fix = it.fix;
+      if (fix && fix.photos) { const fp = []; for (const p of fix.photos) { let orig = typeof p.orig === 'string' && zip && zip.file(p.orig) ? await zip.file(p.orig).async('blob') : null; if (!orig) continue; orig = new Blob([orig], { type: 'image/jpeg' }); fp.push({ ...p, orig, out: await renderOut(orig, p.shapes) }); } fix = { ...fix, photos: fp }; }
+      const rec = { ...it, photos, fix }; await DB.put('items', rec);
       if (ex) { Object.assign(ex, rec); upd++; } else { S.items.push(rec); add++; }
     }
-    await saveKV(); busy(); toast(`匯入完成：新增 ${add}、更新 ${upd}、略過 ${skip}`, 4000);
+    await saveKV(); await saveRounds(); busy(); toast(`匯入完成：新增 ${add}、更新 ${upd}、略過 ${skip}`, 4000);
     await showDrawing(S.cur || S.drawings[0]?.id); closePanel();
   } catch (err) { busy(); toast('匯入失敗：' + err.message, 6000); console.error(err); }
 }
@@ -1237,19 +1314,20 @@ function drawText(x, text, X, Y, maxW, size, o = {}) {
 async function drawBlob(x, blob, X, Y, W, H) { const img = await loadImg(blob); x.drawImage(img, X, Y, W, H); if (img.close) img.close(); else URL.revokeObjectURL(img.src); }
 
 async function buildReportPages(items, progress) {
+  items = await freshItems(items);
   const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M;
-  const pct = [4, 14, 26, 26, 19, 11], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
-  const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進'];
+  const pct = [6, 13, 25, 25, 13, 18], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
+  const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進／回復'];
   const pad = 5, imgW = cw[2] - 2 * pad, cropH = imgW * 0.75, top0 = M + 14, bottom = PG.H - M - 14, headH = 20;
   const pages = []; let c, x, y, fails = [];
   const newPage = first => {
     c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k);
     x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H);
-    drawText(x, `${P.name || ''}　竣工驗收記錄　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69', center: false });
+    drawText(x, `${P.name || ''}　竣工驗收記錄　${curRound().name}　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69', center: false });
     y = top0;
     if (first) {
       y += drawText(x, '竣工驗收記錄', M, y, UW, 17, { bold: true }) + 6;
-      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收日期', P.date], ['公司／單位', P.company], ['記錄數量', `${items.length} 項`]]) {
+      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收批次', curRound().name], ['驗收日期', P.date], ['公司／單位', P.company], ['記錄數量', `${items.length} 項`]]) {
         drawText(x, a, M, y, 80, 9, { color: '#5f6b69' }); drawText(x, b || '', M + 80, y, 400, 9, { bold: true }); y += 13;
       }
       y += 6;
@@ -1265,7 +1343,7 @@ async function buildReportPages(items, progress) {
     progress && progress(++n, items.length);
     const d = S.drawings.find(q => q.id === it.drawingId); if (!d) continue;
     let ov = null, cr = null;
-    const rd = await reportDrawings(d, it); ov = rd.ov; cr = rd.cr; const reps = await Promise.all(it.photos.map(ph => reportPhoto(it, ph).catch(() => null)));
+    const rd = await reportImages(d, it); ov = rd.ov; cr = rd.cr; const reps = rd.reps;
     if (rd.ovErr) fails.push(`${itemLabel(it)} 總圖：${rd.ovErr.message}`);
     if (rd.crErr) fails.push(`${itemLabel(it)} 圖紙截取：${rd.crErr.message}`);
     const ovH = ov ? Math.min(imgW * ov.h / ov.w, 60) : 14, ovW = ov ? ovH * ov.w / ov.h : imgW;
@@ -1273,12 +1351,22 @@ async function buildReportPages(items, progress) {
     let phH = cropH; const avail = bottom - top0 - headH - 2 * pad;
     const need = () => Math.max(ovH + 4 + cropH, ovH + 4 + Math.max(1, np) * (phH + 4) - 4);
     if (need() > avail) phH = Math.max(40, (avail - ovH - 4 - (np - 1) * 4) / np);
-    const rowH = need() + 2 * pad;
+    const rps = (it.fix && it.fix.photos) || [], rW = cw[5] - 2 * pad; let rH = rW * 0.75;
+    if (rps.length && rps.length * (rH + 14) > avail - 30) rH = Math.max(30, (avail - 30) / rps.length - 14);
+    const subH = it.sub ? 14 : 0, replyH = (rps.length ? rps.length * (rH + 14) + 30 : 0) + subH;
+    const rowH = Math.max(need(), replyH) + 2 * pad;
     if (y + rowH > bottom) newPage(false);
     const y0 = y; grid(y0, rowH);
-    drawText(x, itemLabel(it), cx[0], y0 + rowH / 2 - 16, cw[0], 7.5, { bold: true, color: '#d42a1e', center: true });
-    drawText(x, it.by || '', cx[0], y0 + rowH / 2 - 4, cw[0], 6, { color: '#5f6b69', center: true });
-    drawText(x, fmtTime(it.created).slice(5, 10), cx[0], y0 + rowH / 2 + 5, cw[0], 6, { color: '#5f6b69', center: true });
+    { let ly = y0 + rowH / 2 - 18; ly += drawText(x, itemLabel(it), cx[0] + 2, ly, cw[0] - 4, 7.5, { bold: true, color: '#d42a1e', center: true }) + 2;
+      if (it.by) ly += drawText(x, it.by, cx[0] + 2, ly, cw[0] - 4, 6, { color: '#5f6b69', center: true }) + 1;
+      drawText(x, fmtTime(it.created).slice(5, 10), cx[0] + 2, ly, cw[0] - 4, 6, { color: '#5f6b69', center: true }); }
+    if (rps.length) { let ry = y0 + pad + subH; const rx = cx[5] + pad;
+      for (const [i, ph] of rps.entries()) {
+        let w = Math.min(rW, rH / 0.75), h = w * 0.75; const r = ph.w / ph.h; let dw = w, dh = h; if (r > w / h) dh = w / r; else dw = h * r;
+        try { await drawBlob(x, await shrink(ph.out, 1000), rx + (rW - dw) / 2, ry + (h - dh) / 2, dw, dh); } catch (e) { fails.push(`${itemLabel(it)} 回復照片${i + 1}：${e.message}`); }
+        ry += h + 2; ry += drawText(x, `回復 ${i + 1}　${fmtTime(ph.t).slice(0, 10)}`, rx, ry, rW, 6.5, { color: '#2f7d4f', center: true }) + 4;
+      }
+      if (it.fix.reply) drawText(x, '回覆：' + it.fix.reply, rx, ry, rW, 7.5, { color: '#2f7d4f' }); }
     const L = it.loc || {}; const v = viewById(d, L.viewId);
     let ty = y0 + pad + drawText(x, it.locText || '—', cx[1] + pad, y0 + pad, cw[1] - 2 * pad, 8.5, { bold: true }) + 6;
     for (const [a, b] of [['座', L.tower], ['層', L.floor], ['單位', L.flat ? 'FLAT ' + L.flat : ''], ['房間／區域', L.room || L.area], ['軸線', L.grid], ['圖紙', [d.no, v ? v.title : d.name].filter(Boolean).join(' ')]])
@@ -1312,25 +1400,24 @@ async function buildReportPages(items, progress) {
       } catch (e) { fails.push(`位置總圖 ${vt}：${e.message}`); }
     }
   }
-  function newPageRaw() { c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k); x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); drawText(x, `${P.name || ''}　竣工驗收記錄　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69' }); pages.push(c); }
+  function newPageRaw() { c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k); x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); drawText(x, `${P.name || ''}　竣工驗收記錄　${curRound().name}　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69' }); pages.push(c); }
   const blobs = [];
   for (const [i, pc] of pages.entries()) {
     const px = pc.getContext('2d'); drawText(px, `第 ${i + 1} 頁，共 ${pages.length} 頁`, M, PG.H - M + 2, UW, 7.5, { color: '#5f6b69', center: true });
     blobs.push(await canvasBlob(pc, 'image/jpeg', 0.88)); pc.width = pc.height = 0;
   }
-  await saveReportCache();
   return { pages: blobs, fails };
 }
 
 let PV = null;
-async function previewReport(onlyDev) {
-  const items = S.items.filter(i => inScope(i, onlyDev)).sort(byOrder);
-  if (!items.length) return toast('還沒有任何記錄');
+async function previewReport(onlyDev, kind = 'inspect') {
+  const items = reportItems(kind, onlyDev);
+  if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '目前批次還沒有記錄');
   try {
     busy('正在生成預覽…'); ovCache.clear();
-    const r = await buildReportPages(items, (a, b) => busy(`正在生成預覽… ${a}／${b}`));
+    const pr = (a, b) => busy(`正在生成預覽… ${a}／${b}`); const r = kind === 'inspect' ? await buildReportPages(items, pr) : await buildFixPages(items, pr, kind);
     ovCache.clear(); busy();
-    PV = { ...r, onlyDev, urls: r.pages.map(b => URL.createObjectURL(b)) };
+    PV = { ...r, onlyDev, kind, urls: r.pages.map(b => URL.createObjectURL(b)) };
     const el = $('#preview'); if (!el) { busy(); return toast('程式未完全更新，請關閉並重新開啟程式', 6000); }
     el.querySelector('.pvpages').innerHTML = PV.urls.map((u, i) => `<img src="${u}" alt="第 ${i + 1} 頁">`).join('');
     el.querySelector('.pvinfo').textContent = `共 ${PV.pages.length} 頁　${items.length} 項記錄${PV.fails.length ? `　·　${PV.fails.length} 處圖片有問題` : ''}`;
@@ -1338,22 +1425,358 @@ async function previewReport(onlyDev) {
   } catch (e) { busy(); toast('預覽失敗：' + e.message, 6000); console.error(e); }
 }
 function closePreview() { $('#preview').hidden = true; if (PV) PV.urls.forEach(u => URL.revokeObjectURL(u)); $('#preview .pvpages').innerHTML = ''; const f = PV && PV.fails; PV = null; if (f && f.length) reportFails(f); }
-async function exportPdf(pages) {
+async function exportPdf(pages, kind = 'inspect') {
   if (!window.jspdf) return toast('PDF 元件未載入，請連網後重新開啟');
   busy('正在生成 PDF…');
   try {
     const doc = new jspdf.jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4', compress: true });
     for (const [i, b] of pages.entries()) { if (i) doc.addPage('a4', 'landscape'); doc.addImage(new Uint8Array(await b.arrayBuffer()), 'JPEG', 0, 0, PG.W, PG.H, undefined, 'FAST'); }
     const blob = doc.output('blob'); busy();
-    await deliver(blob, `竣工驗收記錄_${safeName(S.project.name) || '項目'}_${S.project.date || today()}.pdf`);
+    await deliver(blob, `${reportTitle(kind)}_${safeName(curRound().name)}_${safeName(S.project.name) || '項目'}_${kind === 'inspect' ? (S.project.date || today()) : today()}.pdf`);
   } catch (e) { busy(); toast('PDF 生成失敗：' + e.message, 6000); }
 }
 $('#preview')?.addEventListener('click', async e => {
   const a = e.target.closest('[data-pv]'); if (!a) return;
   if (a.dataset.pv === 'close') closePreview();
-  if (a.dataset.pv === 'pdf' && PV) exportPdf(PV.pages);
-  if (a.dataset.pv === 'docx' && PV) { const d = PV.onlyDev; closePreview(); exportDocx(d); }
+  if (a.dataset.pv === 'pdf' && PV) exportPdf(PV.pages, PV.kind);
+  if (a.dataset.pv === 'docx' && PV) { const d = PV.onlyDev, kd = PV.kind; closePreview(); if (kd === 'inspect') exportDocx(d); else exportFixDocx(reportItems(kd, d), kd); }
 });
+
+/* ================= v0.6: 驗收分次 (rounds) ================= */
+const R1 = { id: 'r1', name: '第1次驗收', date: '' };
+function curRound() { return S.rounds.find(r => r.id === S.settings.round) || S.rounds[0] || R1; }
+const roundOf = it => it.round || 'r1';
+const inRound = it => roundOf(it) === curRound().id;
+const roundItems = () => S.items.filter(inRound);
+const roundName = id => (S.rounds.find(r => r.id === id) || {}).name || '';
+async function saveRounds() { await DB.kset('rounds', S.rounds); }
+function shortRound(r) { const m = (r.name || '').match(/第\s*(\d+)\s*次/); return m ? `第${m[1]}次` : (r.name || '').slice(0, 6); }
+function roundPanel() {
+  const rows = S.rounds.map(r => {
+    const n = S.items.filter(i => roundOf(i) === r.id).length, on = r.id === curRound().id;
+    return `<button class="li ${on ? 'cur' : ''}" data-r="${r.id}" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(r.name)}${on ? '　（目前）' : ''}</b><span>${esc(r.date || '')}　${n} 項記錄</span></span><span class="chip">${on ? '使用中' : '切換'}</span></button>`;
+  }).join('');
+  const nx = S.rounds.length + 1;
+  openPanel('round', '驗收批次', `
+    <div class="note">每一次驗收的記錄分開存放。圖上紅點、記錄清單、編號和報告都只包括目前這一次；以前各次的記錄保留不刪，隨時可以切換回去查看或導出。</div>
+    <div class="list">${rows}</div>
+    <div class="sec">開始新一次驗收</div>
+    <div class="grid2"><label class="f">名稱<input id="rnName" value="第${nx}次驗收"></label><label class="f">日期<input id="rnDate" type="date" value="${today()}"></label></div>
+    <button class="btn p" data-a="new">開始新一次驗收</button>
+    <div class="sec">修改目前批次名稱</div>
+    <div class="grid2"><label class="f">名稱<input id="rcName" value="${esc(curRound().name)}"></label><label class="f">日期<input id="rcDate" type="date" value="${esc(curRound().date || '')}"></label></div>
+    <button class="btn" data-a="ren">儲存名稱</button>`);
+  panel.querySelector('.pb').onclick = async e => {
+    const b = e.target.closest('[data-r]');
+    if (b) { S.settings.round = b.dataset.r; await saveKV(); closePanel(); renderOverlay(); updateBar(); return toast(`已切換到「${curRound().name}」`); }
+    const a = e.target.dataset.a; if (!a) return;
+    if (a === 'new') {
+      const name = $('#rnName').value.trim() || `第${nx}次驗收`;
+      if (S.rounds.some(r => r.name === name)) return toast('已有同名的批次');
+      const r = { id: uid(), name, date: $('#rnDate').value }; S.rounds.push(r); S.settings.round = r.id;
+      await saveRounds(); await saveKV(); closePanel(); renderOverlay(); updateBar(); toast(`已開始「${name}」，編號由 1 開始`, 3500);
+    }
+    if (a === 'ren') { const r = curRound(); r.name = $('#rcName').value.trim() || r.name; r.date = $('#rcDate').value; if (!S.rounds.includes(r)) S.rounds.push(r); await saveRounds(); updateBar(); toast('已儲存'); roundPanel(); }
+  };
+}
+function mergeRound(id, name, date) { // returns the local round id for an incoming round
+  id = id || 'r1';
+  if (S.rounds.some(r => r.id === id)) return id;
+  const same = name && S.rounds.find(r => r.name === name); if (same) return same.id;
+  S.rounds.push({ id, name: name || (id === 'r1' ? R1.name : '匯入批次'), date: date || '' }); return id;
+}
+
+/* ================= v0.6: 執修 (repair follow-up) ================= */
+const FIX_ST = { open: '未回復', done: '已完成', na: '不跟進' };
+const fixOf = it => it.fix || (it.fix = { status: 'open', reply: '', photos: [] });
+const fixStatus = it => (it.fix && it.fix.status) || 'open';
+function fixCounts() { const L = roundItems(); return { all: L.length, open: L.filter(i => fixStatus(i) === 'open').length, done: L.filter(i => fixStatus(i) === 'done').length }; }
+async function persistFix(it) { it.mod = Date.now(); await DB.put('items', it); updateBar(); }
+function fixPanel(it) {
+  freeURLs(); S.fixItem = it; const F = fixOf(it); const d = S.drawings.find(x => x.id === it.drawingId); const v = d ? viewById(d, it.loc.viewId) : null;
+  const before = it.photos.map(ph => `<div class="ph1"><img src="${burl(ph.out)}" alt=""></div>`).join('') || '<div class="note">沒有完成前照片</div>';
+  const after = F.photos.map((ph, i) => `<div class="ph1"><img src="${burl(ph.out)}" data-a="ed" data-i="${i}" alt="完成後 ${i + 1}"><button class="del" data-a="delph" data-i="${i}" aria-label="刪除照片">✕</button><span class="ed">點擊修改標記</span></div>`).join('');
+  openPanel('fix', esc(v ? v.title : (d ? d.name : '')), `
+    <div class="idx">${esc(it.locText || '')}</div>
+    ${it.note ? `<div class="note"><b>問題：</b>${esc(it.note)}</div>` : ''}
+    <div class="f-l">完成前</div><div class="photos">${before}</div>
+    <div class="f-l">完成後</div>${after ? `<div class="photos">${after}</div>` : ''}
+    <div class="row"><button class="btn p" data-a="ghost">拍完成照（對位拍攝）</button></div>
+    <div class="row"><label class="btn" for="fixCam">系統相機</label><label class="btn" for="fixLib">從相簿加入</label></div>
+    <div class="f-l">狀態</div>
+    <div class="chips pick">${Object.entries(FIX_ST).map(([k, t]) => `<button class="chip ${F.status === k ? 'on' : ''}" data-st="${k}">${t}</button>`).join('')}</div>
+    <label class="f">回覆（可留空）<textarea id="fxReply" rows="2" placeholder="例如：已更換門鉸">${esc(F.reply || '')}</textarea></label>
+    ${F.done && F.status === 'done' ? `<div class="note">完成日期：${fmtTime(F.done).slice(0, 10)}${F.by ? '　' + esc(F.by) : ''}</div>` : ''}
+    <div class="row"><button class="btn dk" data-a="close2">完成</button></div>`, { badge: `<span class="no" style="background:${F.status === 'done' ? 'var(--ok)' : F.status === 'na' ? '#8a9391' : 'var(--red)'}">${itemLabel(it)}</span>` });
+  const q = s => panel.querySelector(s);
+  q('#fxReply').oninput = e => { F.reply = e.target.value; clearTimeout(persistT); persistT = setTimeout(() => persistFix(it), 400); };
+  panel.querySelector('.pb').onclick = async e => {
+    const st = e.target.closest('[data-st]');
+    if (st) { F.status = st.dataset.st; if (F.status === 'done' && !F.done) { F.done = Date.now(); F.by = S.settings.inspector || ''; } if (F.status !== 'done') F.done = null; await persistFix(it); renderOverlay(); return fixPanel(it); }
+    const a = e.target.dataset.a; if (!a) return;
+    if (a === 'close2') closePanel();
+    if (a === 'ghost') ghostCam(it);
+    if (a === 'ed') { const i = +e.target.dataset.i; const ph = F.photos[i]; const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistFix(it); fixPanel(it); } }
+    if (a === 'delph') { if (e.target.dataset.armed) { F.photos.splice(+e.target.dataset.i, 1); await persistFix(it); fixPanel(it); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
+  };
+}
+async function addFixPhoto(file) {
+  const it = S.fixItem || S.editing; if (!file || !it) return;
+  S.replyShot = true; let r; try { r = await openEditor(file, null); } finally { S.replyShot = false; } if (!r) return;
+  const F = fixOf(it); F.photos.push(r);
+  if (F.status !== 'done' && F.status !== 'na') { F.status = 'done'; F.done = Date.now(); F.by = S.settings.inspector || ''; }
+  if (it._new) await persistItem(true); else await persistFix(it);
+  renderOverlay(); if (S.panel === 'fix') fixPanel(it); else if (S.panel === 'item' && S.editing === it) itemPanel();
+  if (S.panel !== 'fix') S.fixItem = null; toast(`${itemLabel(it)} 已加入回復照片`, 2500);
+}
+/* alignment camera: live camera with the before-photo laid over it, so the after-photo is taken from the same spot */
+async function ghostCam(it) {
+  const before = it.photos[0];
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('這部機不支援對位拍攝，請按「系統相機」', 4000); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false }); }
+  catch (e) { toast('未能開啟相機（' + (e.name === 'NotAllowedError' ? '未獲相機權限' : e.message) + '），請按「系統相機」', 5000); return; }
+  const g = document.createElement('div'); g.id = 'ghost';
+  g.innerHTML = `<video playsinline autoplay muted></video>${before ? `<img alt="" src="${burl(before.out)}">` : ''}
+    <div class="gtop"><span>${esc(itemLabel(it))}　${esc(it.locText || '')}</span><button data-g="cancel">取消</button></div>
+    <div class="gbot">${before ? '<label class="gsl">完成前照片<input type="range" min="0" max="85" value="40" data-g="op"></label>' : '<span></span>'}
+    <button class="gshut" data-g="shot" aria-label="拍攝"></button>${before ? '<button data-g="peek">按住看完成前</button>' : '<span></span>'}</div>`;
+  document.body.appendChild(g);
+  const vid = g.querySelector('video'), ghost = g.querySelector('img'); vid.srcObject = stream;
+  try { await vid.play(); } catch (e) { }
+  if (ghost) ghost.style.opacity = 0.4;
+  const stop = () => { stream.getTracks().forEach(t => t.stop()); g.remove(); };
+  g.addEventListener('input', e => { if (e.target.dataset.g === 'op' && ghost) ghost.style.opacity = e.target.value / 100; });
+  const peek = g.querySelector('[data-g="peek"]');
+  if (peek) { peek.onpointerdown = () => ghost.style.opacity = 1; peek.onpointerup = peek.onpointerleave = () => ghost.style.opacity = g.querySelector('[data-g="op"]').value / 100; }
+  g.addEventListener('click', async e => {
+    const a = e.target.dataset.g;
+    if (a === 'cancel') stop();
+    if (a === 'shot') {
+      if (!vid.videoWidth) return toast('相機未就緒');
+      const c = document.createElement('canvas'); c.width = vid.videoWidth; c.height = vid.videoHeight; c.getContext('2d').drawImage(vid, 0, 0);
+      const b = await canvasBlob(c, 'image/jpeg', 0.9); stop(); addFixPhoto(b);
+    }
+  });
+}
+
+/* ================= v0.6: coordinates carried inside each saved photo ================= */
+// ASCII-only JSON so it survives EXIF (ASCII) and QR byte mode on every platform
+const asciiJSON = o => JSON.stringify(o).replace(/[\u007f-￿]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+function photoMeta(it, ph, i, after, full) {
+  const d = S.drawings.find(x => x.id === it.drawingId) || {}; const L = it.loc || {};
+  const m = { a: 'HI1', i: it.id, dv: devOf(it), n: it.no, c: it.code || '', r: roundOf(it), rn: roundName(roundOf(it)), g: it.drawingId, dn: d.no || '', v: L.viewId || '', x: it.x, y: it.y,
+    tw: L.tower || '', f: L.floor || '', fl: L.flat || '', rm: L.room || '', ar: L.area || '', gr: L.grid || '', lt: it.locText || '', b: it.by || '', t: it.created, p: ph.id, pi: i, pt: ph.t, w: ph.w, h: ph.h, k: after ? 'a' : 'b' };
+  if (full) Object.assign(m, { note: it.note || '', st: fixStatus(it), rp: (it.fix && it.fix.reply) || '', sh: ph.shapes || [] });
+  return m;
+}
+function exifWithDesc(bytes, desc) {
+  if (bytes[0] !== 0xFF || bytes[1] !== 0xD8) return bytes;
+  const enc = new TextEncoder().encode(desc.slice(0, 60000) + '\0'), n = enc.length;
+  const tiff = new Uint8Array(8 + 2 + 12 + 4 + n), dv = new DataView(tiff.buffer);
+  tiff.set([0x49, 0x49, 0x2A, 0x00]); dv.setUint32(4, 8, true); dv.setUint16(8, 1, true);
+  dv.setUint16(10, 0x010E, true); dv.setUint16(12, 2, true); dv.setUint32(14, n, true); dv.setUint32(18, 26, true); dv.setUint32(22, 0, true); tiff.set(enc, 26);
+  const seg = new Uint8Array(4 + 6 + tiff.length); seg.set([0xFF, 0xE1, (seg.length - 2) >> 8, (seg.length - 2) & 255, 0x45, 0x78, 0x69, 0x66, 0, 0]); seg.set(tiff, 10);
+  const out = new Uint8Array(bytes.length + seg.length); out.set(bytes.subarray(0, 2)); out.set(seg, 2); out.set(bytes.subarray(2), 2 + seg.length); return out;
+}
+function readExifDesc(b) {
+  if (b[0] !== 0xFF || b[1] !== 0xD8) return null;
+  let i = 2;
+  while (i + 4 < b.length && b[i] === 0xFF) {
+    const mk = b[i + 1], len = (b[i + 2] << 8) | b[i + 3];
+    if (mk === 0xDA) break;
+    if (mk === 0xE1 && b[i + 4] === 0x45 && b[i + 5] === 0x78 && b[i + 6] === 0x69 && b[i + 7] === 0x66) {
+      const t = i + 10, le = b[t] === 0x49, dv = new DataView(b.buffer, b.byteOffset + t, len - 8);
+      const u16 = o => dv.getUint16(o, le), u32 = o => dv.getUint32(o, le);
+      try { const ifd = u32(4), cnt = u16(ifd);
+        for (let k = 0; k < cnt; k++) { const e = ifd + 2 + k * 12; if (u16(e) === 0x010E) { const n = u32(e + 4), off = n > 4 ? u32(e + 8) : e + 8; return new TextDecoder().decode(new Uint8Array(b.buffer, b.byteOffset + t + off, n)).replace(/\0+$/, ''); } }
+      } catch (e) { }
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+function qrFor(text) { if (!window.qrcode) return null; try { const q = qrcode(0, 'L'); q.addData(text); q.make(); return q; } catch (e) { return null; } }
+
+/* restore records from saved photos (album, ZIP 相片 folder, WhatsApp copies) */
+async function readPhotoMeta(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const desc = readExifDesc(bytes);
+  if (desc) { try { const o = JSON.parse(desc); if (o.a === 'HI1') return o; } catch (e) { } }
+  if (!window.jsQR) return null;
+  const img = await loadImg(file); const W = img.naturalWidth, H = img.naturalHeight;
+  const tries = [[0.62, 1], [0.5, 1], [0, 1]];
+  for (const [fy, _] of tries) {
+    const y0 = Math.floor(H * fy), h = H - y0; const s = Math.min(1, 2600 / W);
+    const c = document.createElement('canvas'); c.width = Math.round(W * s); c.height = Math.round(h * s);
+    const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, y0, W, h, 0, 0, c.width, c.height);
+    const r = jsQR(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'attemptBoth' });
+    c.width = c.height = 0;
+    if (r && r.data) { try { const o = JSON.parse(r.data); if (o.a === 'HI1') { URL.revokeObjectURL(img.src); return o; } } catch (e) { } }
+  }
+  URL.revokeObjectURL(img.src); return null;
+}
+async function stripCaption(file, m) {
+  const img = await loadImg(file); const W = img.naturalWidth; const Hb = Math.min(img.naturalHeight, Math.round(m.h * W / m.w));
+  const c = document.createElement('canvas'); c.width = W; c.height = Hb; c.getContext('2d').drawImage(img, 0, 0, W, Hb, 0, 0, W, Hb);
+  URL.revokeObjectURL(img.src); const b = await canvasBlob(c, 'image/jpeg', 0.9); c.width = c.height = 0; return { blob: b, w: W, h: Hb };
+}
+async function restoreFromPhotos(files) {
+  let add = 0, ph = 0, skip = 0, bad = []; const touched = new Set(); let n = 0;
+  for (const f of files) {
+    busy(`正在讀取相片 ${++n}／${files.length}`);
+    let m = null; try { m = await readPhotoMeta(f); } catch (e) { }
+    if (!m) { bad.push(f.name || `相片${n}`); continue; }
+    const d = S.drawings.find(x => x.id === m.g) || S.drawings.find(x => x.no === m.dn);
+    if (!d) { bad.push((f.name || '') + '（圖紙不存在）'); continue; }
+    let it = S.items.find(x => x.id === m.i);
+    if (!it) {
+      const L = resolveLoc(d, m.x, m.y);
+      Object.assign(L, { viewId: m.v || L.viewId, tower: m.tw, floor: m.f, flat: m.fl, room: m.rm, area: m.ar, grid: m.gr || L.grid });
+      it = { id: m.i, dev: m.dv, by: m.b, no: m.n, drawingId: d.id, x: m.x, y: m.y, loc: L, locText: m.lt || fmtLoc(L), locEdited: !!m.lt, photos: [], note: m.note || '', created: m.t || Date.now(), mod: Date.now(), round: mergeRound(m.r, m.rn), restored: true };
+      if (m.c) it.code = m.c;
+      if (m.st && m.st !== 'open') it.fix = { status: m.st, reply: m.rp || '', photos: [] };
+      S.items.push(it); add++;
+    }
+    const list = m.k === 'a' ? fixOf(it).photos : it.photos;
+    if (list.some(p => p.id === m.p)) { skip++; continue; }
+    const body = await stripCaption(f, m);
+    list.push({ id: m.p, orig: body.blob, out: body.blob, shapes: [], w: body.w, h: body.h, t: m.pt || Date.now(), album: Date.now(), pi: m.pi });
+    list.sort((a, b) => (a.pi ?? 0) - (b.pi ?? 0)); ph++; touched.add(it);
+  }
+  for (const it of touched) { it.mod = Date.now(); await DB.put('items', it); }
+  await saveRounds(); busy();
+  openPanel('restore', '從相片還原', `<div class="note">還原了 ${add} 項記錄、${ph} 張相片${skip ? `；${skip} 張已存在，略過` : ''}。記錄放回原來的圖紙位置及驗收批次。</div>${bad.length ? `<div class="note">以下 ${bad.length} 張相片讀不到位置資料（可能不是本程式存的相，或相片被裁剪／壓縮過）：<br>${bad.map(esc).join('<br>')}</div>` : ''}`);
+  renderOverlay(); updateBar();
+}
+
+/* ================= v0.6: 執修報告 (before / after side by side) ================= */
+const fixStatusText = it => { const F = it.fix || {}; const s = fixStatus(it); return s === 'done' ? `已完成${F.done ? '\n' + fmtTime(F.done).slice(0, 10) : ''}` : FIX_ST[s]; };
+function reportItems(kind, onlyDev) {
+  let L = roundItems().filter(i => inScope(i, onlyDev));
+  if (kind === 'fixdone') L = L.filter(i => fixStatus(i) === 'done');
+  return L.sort(byOrder);
+}
+const reportTitle = kind => kind === 'inspect' ? '竣工驗收記錄' : '執修回復報告';
+async function buildFixPages(items, progress, kind) {
+  items = await freshItems(items);
+  const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M, title = reportTitle(kind), rn = curRound().name;
+  const pct = [5, 13, 18, 23, 23, 11, 7], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
+  const heads = ['編號', '位置', '圖紙位置', '完成前', '完成後', '問題／回覆', '狀態'];
+  const pad = 4, dW = cw[2] - 2 * pad, pW = cw[3] - 2 * pad, top0 = M + 14, bottom = PG.H - M - 14, headH = 20;
+  const pages = []; let c, x, y; const fails = [];
+  const head = () => { drawText(x, `${P.name || ''}　${title}　${rn}`, M, M - 14, UW, 7.5, { color: '#5f6b69' }); };
+  const newPage = first => {
+    c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k);
+    x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); head(); y = top0;
+    if (first) {
+      y += drawText(x, title, M, y, UW, 17, { bold: true }) + 6;
+      const done = items.filter(i => fixStatus(i) === 'done').length;
+      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收批次', rn], ['報告日期', today()], ['公司／單位', P.company], ['項目數量', `${items.length} 項（已完成 ${done} 項）`]]) {
+        drawText(x, a, M, y, 80, 9, { color: '#5f6b69' }); drawText(x, b || '', M + 80, y, 500, 9, { bold: true }); y += 13;
+      }
+      y += 6;
+    }
+    x.fillStyle = '#1d2629'; x.fillRect(M, y, UW, headH);
+    heads.forEach((h, i) => drawText(x, h, cx[i], y + 5, cw[i], 8.5, { bold: true, color: '#fff', center: true }));
+    y += headH; pages.push(c);
+  };
+  const grid = (y0, h) => { x.strokeStyle = '#8a9391'; x.lineWidth = 0.6; x.strokeRect(M, y0, UW, h); cx.slice(1).forEach(X => { x.beginPath(); x.moveTo(X, y0); x.lineTo(X, y0 + h); x.stroke(); }); };
+  newPage(true);
+  let n = 0;
+  for (const it of items) {
+    progress && progress(++n, items.length);
+    const d = S.drawings.find(q => q.id === it.drawingId); if (!d) continue;
+    let ov = null, cr = null;
+    try { ov = await overviewImage(d, it); } catch (e) { fails.push(`${itemLabel(it)} 總圖：${e.message}`); }
+    try { cr = await cropImage(d, it); } catch (e) { fails.push(`${itemLabel(it)} 圖紙截取：${e.message}`); }
+    const ovH = ov ? Math.min(dW * ov.h / ov.w, 45) : 12, ovW = ov ? ovH * ov.w / ov.h : dW, crH = dW * 0.75;
+    const bef = it.photos, aft = (it.fix && it.fix.photos) || [], np = Math.max(1, bef.length, aft.length);
+    let phH = pW * 0.75; const avail = bottom - top0 - headH - 2 * pad;
+    if (np * (phH + 4) > avail) phH = (avail - (np - 1) * 4) / np;
+    const rowH = Math.max(ovH + 4 + crH, np * (phH + 4) - 4, 40) + 2 * pad;
+    if (y + rowH > bottom) newPage(false);
+    const y0 = y; grid(y0, rowH);
+    drawText(x, itemLabel(it), cx[0], y0 + rowH / 2 - 10, cw[0], 7.5, { bold: true, color: '#d42a1e', center: true });
+    drawText(x, fmtTime(it.created).slice(5, 10), cx[0], y0 + rowH / 2 + 2, cw[0], 6, { color: '#5f6b69', center: true });
+    const L = it.loc || {}; const v = viewById(d, L.viewId);
+    let ty = y0 + pad + drawText(x, it.locText || '—', cx[1] + pad, y0 + pad, cw[1] - 2 * pad, 8, { bold: true }) + 5;
+    for (const [a, b] of [['軸線', L.grid], ['圖紙', [d.no, v ? v.title : ''].filter(Boolean).join(' ')]]) if (b) ty += drawText(x, `${a}：${b}`, cx[1] + pad, ty, cw[1] - 2 * pad, 6.5, { color: '#3a4544' }) + 1;
+    const ix = cx[2] + pad;
+    if (ov) await drawBlob(x, ov.blob, ix + (dW - ovW) / 2, y0 + pad, ovW, ovH);
+    if (cr) await drawBlob(x, cr.blob, ix, y0 + pad + ovH + 4, dW, crH); else drawText(x, '（圖紙截取無法生成）', ix, y0 + pad + ovH + 20, dW, 7, { color: '#d42a1e', center: true });
+    for (const [col, list, lab] of [[3, bef, '完成前'], [4, aft, '完成後']]) {
+      let py = y0 + pad; const px0 = cx[col] + pad;
+      if (!list.length) drawText(x, `（沒有${lab}照片）`, px0, py + 20, pW, 7.5, { color: '#888', center: true });
+      for (const [i, ph] of list.entries()) {
+        let w = Math.min(pW, phH / 0.75), h = w * 0.75; const r = ph.w / ph.h; let dw = w, dh = h; if (r > w / h) dh = w / r; else dw = h * r;
+        try { await drawBlob(x, await shrink(ph.out, 1400), px0 + (pW - dw) / 2, py + (h - dh) / 2, dw, dh); }
+        catch (e) { try { await drawBlob(x, await shrink(ph.orig, 1400), px0 + (pW - dw) / 2, py + (h - dh) / 2, dw, dh); } catch (e2) { fails.push(`${itemLabel(it)} ${lab}照片${i + 1}：${e.message}`); drawText(x, '（照片無法讀取）', px0, py + h / 2, pW, 7, { color: '#d42a1e', center: true }); } }
+        py += h + 4;
+      }
+    }
+    let qy = y0 + pad; if (it.note) qy += drawText(x, '問題：' + it.note, cx[5] + pad, qy, cw[5] - 2 * pad, 7.5) + 6;
+    if (it.fix && it.fix.reply) drawText(x, '回覆：' + it.fix.reply, cx[5] + pad, qy, cw[5] - 2 * pad, 7.5, { color: '#2f7d4f' });
+    const s = fixStatus(it); drawText(x, fixStatusText(it), cx[6] + 2, y0 + rowH / 2 - 8, cw[6] - 4, 7.5, { bold: true, center: true, color: s === 'done' ? '#2f7d4f' : s === 'na' ? '#5f6b69' : '#d42a1e' });
+    y += rowH;
+  }
+  const blobs = [];
+  for (const [i, pc] of pages.entries()) { const px = pc.getContext('2d'); drawText(px, `第 ${i + 1} 頁，共 ${pages.length} 頁`, M, PG.H - M + 2, UW, 7.5, { color: '#5f6b69', center: true }); blobs.push(await canvasBlob(pc, 'image/jpeg', 0.88)); pc.width = pc.height = 0; }
+  return { pages: blobs, fails };
+}
+async function exportFixDocx(items, kind) {
+  items = await freshItems(items);
+  if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '還沒有任何記錄');
+  if (!window.docx) return toast('報告元件未載入，請連網後重新開啟一次');
+  const D = window.docx, P = S.project, title = reportTitle(kind), rn = curRound().name;
+  try {
+    busy('正在生成報告…'); ovCache.clear(); const fails = [];
+    const FONT = { ascii: 'Arial', hAnsi: 'Arial', eastAsia: 'Microsoft JhengHei', cs: 'Arial' };
+    const T = (text, o = {}) => new D.TextRun({ text: String(text ?? ''), font: FONT, size: o.size || 18, bold: o.bold, color: o.color, break: o.br });
+    const Pg = (runs, o = {}) => new D.Paragraph({ children: Array.isArray(runs) ? runs : [runs], alignment: o.align, spacing: { after: o.after ?? 40 }, keepLines: true });
+    const bd = { style: D.BorderStyle.SINGLE, size: 4, color: '8A9391' }, borders = { top: bd, bottom: bd, left: bd, right: bd };
+    const usable = 15638, pct = [5, 13, 18, 23, 23, 11, 7], colTw = pct.map(p => Math.round(usable * p / 100));
+    const cell = (children, i, o = {}) => new D.TableCell({ children, width: { size: colTw[i], type: D.WidthType.DXA }, borders, verticalAlign: o.v || D.VerticalAlign.TOP, shading: o.shade ? { type: D.ShadingType.CLEAR, color: 'auto', fill: o.shade } : undefined, margins: { top: 60, bottom: 60, left: 70, right: 70 } });
+    const heads = ['編號', '位置', '圖紙位置', '完成前', '完成後', '問題／回覆', '狀態'];
+    const rows = [new D.TableRow({ tableHeader: true, cantSplit: true, children: heads.map((h, i) => cell([Pg(T(h, { bold: true, color: 'FFFFFF', size: 17 }), { align: D.AlignmentType.CENTER, after: 0 })], i, { shade: '1D2629', v: D.VerticalAlign.CENTER })) })];
+    const dPx = Math.floor(colTw[2] / 15) - 10, pPx = Math.floor(colTw[3] / 15) - 10;
+    const imgP = async (blob, w, h) => Pg(new D.ImageRun({ data: await blob.arrayBuffer(), transformation: { width: Math.round(w), height: Math.round(h) } }), { align: D.AlignmentType.CENTER, after: 60 });
+    let n = 0;
+    for (const it of items) {
+      busy(`正在生成報告… ${++n}／${items.length}`);
+      const d = S.drawings.find(q => q.id === it.drawingId); if (!d) continue; if (d.kind === 'pdf') await ensureBase(d, true);
+      const dw = [];
+      try { const o = await overviewImage(d, it); const h = Math.min(dPx * o.h / o.w, 70); dw.push(await imgP(o.blob, h * o.w / o.h, h)); } catch (e) { fails.push(`${itemLabel(it)} 總圖：${e.message}`); }
+      try { const c = await cropImage(d, it); dw.push(await imgP(c.blob, dPx, dPx * 0.75)); } catch (e) { fails.push(`${itemLabel(it)} 圖紙截取：${e.message}`); }
+      const phs = async (list, lab) => { const out = []; for (const [i, ph] of list.entries()) { let w = pPx, h = pPx * 0.75; const r = ph.w / ph.h; if (r > 4 / 3) h = w / r; else w = h * r;
+        try { out.push(await imgP(await shrink(ph.out, 1400), w, h)); } catch (e) { try { out.push(await imgP(await shrink(ph.orig, 1400), w, h)); } catch (e2) { fails.push(`${itemLabel(it)} ${lab}照片${i + 1}：${e.message}`); } } }
+        return out.length ? out : [Pg(T(`（沒有${lab}照片）`, { color: '888888', size: 15 }), { align: D.AlignmentType.CENTER })]; };
+      const s = fixStatus(it), F = it.fix || {};
+      const L = it.loc || {}; const v = viewById(d, L.viewId);
+      const loc = [Pg(T(it.locText || '—', { bold: true, size: 16 }), { after: 80 })]; for (const [a, b] of [['軸線', L.grid], ['圖紙', [d.no, v ? v.title : ''].filter(Boolean).join(' ')]]) if (b) loc.push(Pg([T(a + '：', { color: '5F6B69', size: 14 }), T(b, { size: 14 })], { after: 20 }));
+      const qa = []; if (it.note) qa.push(Pg([T('問題：', { bold: true, size: 15 }), T(it.note, { size: 15 })], { after: 80 })); if (F.reply) qa.push(Pg([T('回覆：', { bold: true, size: 15, color: '2F7D4F' }), T(F.reply, { size: 15, color: '2F7D4F' })]));
+      rows.push(new D.TableRow({ cantSplit: true, children: [
+        cell([Pg(T(itemLabel(it), { bold: true, size: 15, color: 'D42A1E' }), { align: D.AlignmentType.CENTER }), Pg(T(fmtTime(it.created).slice(5, 10), { size: 12, color: '5F6B69' }), { align: D.AlignmentType.CENTER })], 0, { v: D.VerticalAlign.CENTER }),
+        cell(loc, 1), cell(dw.length ? dw : [Pg(T(''))], 2), cell(await phs(it.photos, '完成前'), 3), cell(await phs(F.photos || [], '完成後'), 4),
+        cell(qa.length ? qa : [Pg(T(''))], 5),
+        cell([Pg(T(FIX_ST[s], { bold: true, size: 15, color: s === 'done' ? '2F7D4F' : s === 'na' ? '5F6B69' : 'D42A1E' }), { align: D.AlignmentType.CENTER }), ...(s === 'done' && F.done ? [Pg(T(fmtTime(F.done).slice(0, 10), { size: 12 }), { align: D.AlignmentType.CENTER })] : [])], 6, { v: D.VerticalAlign.CENTER }),
+      ] }));
+    }
+    const nb = { top: { style: D.BorderStyle.NONE }, bottom: { style: D.BorderStyle.NONE }, left: { style: D.BorderStyle.NONE }, right: { style: D.BorderStyle.NONE } };
+    const info = (a, b) => new D.TableRow({ children: [new D.TableCell({ children: [Pg(T(a, { color: '5F6B69' }), { after: 0 })], width: { size: 2000, type: D.WidthType.DXA }, borders: nb }), new D.TableCell({ children: [Pg(T(b || '', { bold: true }), { after: 0 })], width: { size: 6000, type: D.WidthType.DXA }, borders: nb })] });
+    const done = items.filter(i => fixStatus(i) === 'done').length;
+    const doc = new D.Document({ creator: S.settings.inspector || title, title, styles: { default: { document: { run: { font: FONT, size: 18 } } } },
+      sections: [{ properties: { page: { size: { width: 11906, height: 16838, orientation: D.PageOrientation.LANDSCAPE }, margin: { top: 600, bottom: 600, left: 600, right: 600, header: 300, footer: 300 } } },
+        headers: { default: new D.Header({ children: [Pg(T(`${P.name || ''}　${title}　${rn}`, { size: 15, color: '5F6B69' }), { align: D.AlignmentType.RIGHT })] }) },
+        footers: { default: new D.Footer({ children: [new D.Paragraph({ alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ children: ['第 ', D.PageNumber.CURRENT, ' 頁，共 ', D.PageNumber.TOTAL_PAGES, ' 頁'], font: FONT, size: 15, color: '5F6B69' })] })] }) },
+        children: [Pg(T(title, { bold: true, size: 32 }), { after: 120 }),
+          new D.Table({ rows: [info('項目名稱', P.name), info('地盤／地址', P.site), info('驗收批次', rn), info('報告日期', today()), info('公司／單位', P.company), info('項目數量', `${items.length} 項（已完成 ${done} 項）`)], width: { size: 8000, type: D.WidthType.DXA }, columnWidths: [2000, 6000] }),
+          Pg(T(''), { after: 120 }), new D.Table({ rows, width: { size: usable, type: D.WidthType.DXA }, columnWidths: colTw, layout: D.TableLayoutType.FIXED })] }] });
+    const blob = await D.Packer.toBlob(doc); busy(); ovCache.clear();
+    await deliver(blob, `${title}_${safeName(rn)}_${safeName(P.name) || '項目'}_${today()}.docx`);
+    if (fails.length) reportFails(fails);
+  } catch (e) { busy(); console.error(e); toast('報告生成失敗：' + e.message, 8000); }
+}
 
 /* ---------------- bundled drawing package ---------------- */
 async function loadBundle() {
@@ -1390,6 +1813,10 @@ async function boot() {
     S.views = await DB.kget('views') || {};
     S.drawings = (await DB.all('drawings')).filter(d => d.views).sort((a, b) => (a.created || 0) - (b.created || 0));
     S.items = (await DB.all('items')).filter(i => i.loc && 'viewId' in i.loc);
+    S.rounds = await DB.kget('rounds') || [];
+    if (!S.rounds.some(r => r.id === 'r1') && (!S.rounds.length || S.items.some(i => !i.round))) S.rounds.unshift({ ...R1 });
+    if (!S.settings.round || !S.rounds.some(r => r.id === S.settings.round)) S.settings.round = S.rounds[S.rounds.length - 1].id;
+    await saveRounds();
     try { await loadBundle(); } catch (e) { busy(); toast(e.message + '，請連網後重新開啟', 6000); }
     const cur = await DB.kget('cur');
     await showDrawing(S.drawings.find(d => d.id === cur) ? cur : S.drawings[0]?.id || null);
