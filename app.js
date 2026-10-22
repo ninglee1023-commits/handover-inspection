@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -43,7 +43,7 @@ const DB = {
 const S = {
   project: { name: '', site: '', date: today(), inspector: '', company: '' },
   settings: { autoCam: true, showZones: true, crop: 'm', keyPlan: true },
-  floorSel: {}, recentAreas: [],
+  floorSel: {}, recentAreas: [], views: {},
   drawings: [], items: [], cur: null, mode: 'inspect', tool: 'select',
   view: { x: 0, y: 0, k: 1 }, editing: null, draft: null, sel: null, panel: null, listScope: 'cur',
 };
@@ -196,7 +196,10 @@ const floorsToText = f => (f || []).join(', ');
 /* ---------------- view / rendering ---------------- */
 const stage = $('#stage'), board = $('#board'), dwg = $('#dwg'), ov = $('#ov'), hires = $('#hires');
 let raf = 0, hiT = 0;
+let viewSaveT = 0, stageWas = null;
 function applyView() {
+  if (!stageWas) { const r = stageRect(); if (r.width) stageWas = { w: r.width, h: r.height }; }
+  clearTimeout(viewSaveT); viewSaveT = setTimeout(() => { if (S.cur) { S.views[S.cur] = { ...S.view }; DB.kset('views', S.views); } }, 400);
   board.style.transform = `translate(${S.view.x}px,${S.view.y}px) scale(${S.view.k})`;
   if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderOverlay(); });
   clearTimeout(hiT); hiT = setTimeout(renderHires, 220);
@@ -287,16 +290,19 @@ function renderOverlay() {
     if (S.draft.type === 'poly' && S.draft.pts.length) { h += `<polyline points="${S.draft.pts.map(p => p.join(',')).join(' ')}" fill="rgba(242,194,48,.25)" stroke="#b8860b" stroke-width="2" vector-effect="non-scaling-stroke"/>`; S.draft.pts.forEach(q => h += `<circle cx="${q[0]}" cy="${q[1]}" r="${5 * u}" fill="#b8860b"/>`); }
   }
   if (!map) {
-    const items = S.items.filter(i => i.drawingId === d.id);
+    const items = S.items.filter(i => i.drawingId === d.id && onFloor(d, i));
     const all = S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
     for (const it of all) {
       const act = S.editing && S.editing.id === it.id; const r = (act ? 17 : 14) * u;
-      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="#d42a1e" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, !multiFloorViews(d).length) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, !multiFloorViews(d).length) : devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
+      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="#d42a1e" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
     }
   }
   ov.innerHTML = h;
 }
 
+// on a plan shared by several floors, only records of the selected floor are shown (and tappable)
+function onFloor(d, it) { const v = viewById(d, it.loc && it.loc.viewId); return !v || !v.floors || v.floors.length <= 1 || !it.loc.floor || it.loc.floor === floorFor(v); }
+function showFloorOf(it) { const d = S.drawings.find(x => x.id === it.drawingId); const v = d && viewById(d, it.loc && it.loc.viewId); if (v && v.floors && v.floors.length > 1 && it.loc.floor && v.floors.includes(it.loc.floor)) { S.floorSel[v.id] = it.loc.floor; DB.kset('floorSel', S.floorSel); } }
 function multiFloorViews(d) { return d ? (d.views || []).filter(v => v.floors && v.floors.length > 1) : []; }
 function updateBar() {
   const d = curD();
@@ -332,7 +338,8 @@ async function showDrawing(id) {
   const ok = await new Promise(r => { if (dwg.complete && dwg.naturalWidth) r(true); else { dwg.onload = () => r(true); dwg.onerror = () => r(false); } });
   if (!ok && d.kind === 'pdf' && !d._retried) { d._retried = true; URL.revokeObjectURL(c.url); imgCache.delete(d.id); try { await ensureBase(d, false, true); } catch (e) { toast('圖紙準備失敗：' + e.message, 5000); } return showDrawing(id); }
   const fv = (d.views || []).length > 0 && d.views.length <= 1 ? null : null;
-  fit(); DB.kset('cur', id);
+  const sv = S.views[id]; if (sv && sv.k) { S.view = { ...sv }; applyView(); } else fit();
+  DB.kset('cur', id);
 }
 async function drawingImg(d) {
   const c = imgCache.get(d.id); if (c && c.img) return c.img;
@@ -395,7 +402,7 @@ function onTap(cx, cy) {
   const p = toDwg(cx, cy); const u = 1 / S.view.k;
   if (p.x < 0 || p.y < 0 || p.x > d.w || p.y > d.h) return;
   if (S.mode === 'inspect') {
-    const hit = S.items.filter(i => i.drawingId === d.id).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
+    const hit = S.items.filter(i => i.drawingId === d.id && onFloor(d, i)).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
     if (hit) return openItem(hit.i);
     return newItem(p);
   }
@@ -452,7 +459,7 @@ function newItem(p) {
   renderOverlay(); itemPanel(); updateBar(); ensureVisible(p);
   if (S.settings.autoCam) $('#camInput').click();
 }
-function openItem(it) { if (S.editing && S.editing.id !== it.id) finishItem(); S.editing = it; if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { centerOn(it.x, it.y, 1); itemPanel(); }); else { itemPanel(); renderOverlay(); } }
+function openItem(it) { if (S.editing && S.editing.id !== it.id) finishItem(); S.editing = it; showFloorOf(it); if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { centerOn(it.x, it.y, 1); itemPanel(); }); else { itemPanel(); renderOverlay(); } }
 function relocate(it) { if (!it.locEdited) it.locText = fmtLoc(it.loc); }
 function itemPanel() {
   freeURLs();
@@ -515,7 +522,7 @@ async function persistItem(now) {
   const doit = () => DB.put('items', it).catch(err => toast('儲存失敗：' + err.message, 4000));
   if (now) await doit(); else persistT = setTimeout(doit, 400);
 }
-function finishItem() { const it = S.editing; if (!it) return; if (!it._new) DB.put('items', it); S.editing = null; updateBar(); }
+function finishItem() { warmLater(); const it = S.editing; if (!it) return; if (!it._new) DB.put('items', it); S.editing = null; updateBar(); }
 
 async function addPhotoFile(file) {
   if (!file || !S.editing) return;
@@ -542,7 +549,7 @@ function itemsPanel() {
     const b = e.target.closest('.li'); if (!b) return;
     const it = S.items.find(i => i.id === b.dataset.id);
     if (S.mode !== 'inspect') setMode('inspect');
-    S.editing = it;
+    S.editing = it; showFloorOf(it);
     if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { itemPanel(); centerOn(it.x, it.y, 1); });
     else { itemPanel(); centerOn(it.x, it.y, Math.max(S.view.k, 1)); }
   };
@@ -551,7 +558,7 @@ function itemsPanel() {
 function floorPanel() {
   const d = curD(); const mv = multiFloorViews(d);
   openPanel('floor', '選擇樓層', mv.map(v => `<div class="f-l">${esc(v.title)}</div><div class="chips pick">${v.floors.map(f => `<button class="chip ${f === floorFor(v) ? 'on' : ''}" data-v="${v.id}" data-f="${esc(f)}">${esc(f)}</button>`).join('')}</div>`).join('') + '<div class="note">之後在這張平面圖上點選的位置會用所選樓層；每個記錄仍可個別修改。</div>');
-  panel.querySelector('.pb').onclick = e => { const b = e.target.closest('[data-f]'); if (!b) return; S.floorSel[b.dataset.v] = b.dataset.f; DB.kset('floorSel', S.floorSel); updateBar(); floorPanel(); toast(`樓層：${b.dataset.f}`); };
+  panel.querySelector('.pb').onclick = e => { const b = e.target.closest('[data-f]'); if (!b) return; S.floorSel[b.dataset.v] = b.dataset.f; DB.kset('floorSel', S.floorSel); updateBar(); renderOverlay(); floorPanel(); toast(`樓層：${b.dataset.f}`); };
 }
 
 /* ---- drawings ---- */
@@ -692,7 +699,15 @@ $('#btnItems').onclick = () => S.panel === 'items' ? closePanel() : itemsPanel()
 $('#btnExport').onclick = () => S.panel === 'export' ? closePanel() : exportPanel();
 $('#btnFloor').onclick = () => S.panel === 'floor' ? closePanel() : floorPanel();
 $('#zIn').onclick = () => zoomAt(1.6); $('#zOut').onclick = () => zoomAt(1 / 1.6); $('#zFit').onclick = () => fit();
-let rzT; addEventListener('resize', () => { clearTimeout(rzT); rzT = setTimeout(fit, 150); });
+// the iPad resizes the page when the camera or keyboard comes and goes: keep the spot in the middle where it was
+let rzT;
+addEventListener('resize', () => {
+  clearTimeout(rzT); rzT = setTimeout(() => {
+    const was = stageWas, r = stageRect(); stageWas = { w: r.width, h: r.height }; if (!curD() || !was || !S.view.k) return fit();
+    const cx = (was.w / 2 - S.view.x) / S.view.k, cy = (was.h / 2 - S.view.y) / S.view.k;
+    S.view = { k: S.view.k, x: r.width / 2 - cx * S.view.k, y: r.height / 2 - cy * S.view.k }; applyView();
+  }, 150);
+});
 
 /* ---------------- photo markup editor ---------------- */
 const E = { tool: 'arrow', color: '#e5251a' };
@@ -844,21 +859,54 @@ function cropRect(d, it) {
   return { x: clamp(it.x - cw / 2, 0, d.w - cw), y: clamp(it.y - ch / 2, 0, d.h - ch), w: cw, h: ch };
 }
 async function cropImage(d, it) { // 4:3, vector-sharp
-  const R = cropRect(d, it); const outW = 1400; const c = await renderRegion(d, R.x, R.y, R.w, R.h, outW); const x = c.getContext('2d'); const s = outW / R.w;
+  const R = cropRect(d, it); const outW = 1100; const c = await renderRegion(d, R.x, R.y, R.w, R.h, outW); const x = c.getContext('2d'); const s = outW / R.w;
   const v = viewById(d, it.loc.viewId);
   for (const z of (v && v.zones || []).filter(z => (it.loc.zoneIds || []).includes(z.id))) {
     x.beginPath(); z.pts.forEach((p, i) => { const a = (p[0] - R.x) * s, b = (p[1] - R.y) * s; i ? x.lineTo(a, b) : x.moveTo(a, b); }); x.closePath();
     x.fillStyle = 'rgba(242,194,48,.16)'; x.fill(); x.strokeStyle = 'rgba(212,42,30,.55)'; x.lineWidth = 4; x.setLineDash([14, 8]); x.stroke(); x.setLineDash([]);
   }
-  pinOn(x, (it.x - R.x) * s, (it.y - R.y) * s, pinLabel(it, !multiFloorViews(d).length), 44);
+  pinOn(x, (it.x - R.x) * s, (it.y - R.y) * s, pinLabel(it, !multiFloorViews(d).length), 35);
   x.strokeStyle = '#888'; x.lineWidth = 3; x.strokeRect(1.5, 1.5, c.width - 3, c.height - 3);
   return { blob: await canvasBlob(c, 'image/jpeg', 0.88), w: c.width, h: c.height };
 }
 const ovCache = new Map();
+/* report images are kept with the record, so the next export only redoes what changed.
+   They are derived data: left out of backups and rebuilt whenever an input changes. */
+const RC_V = 1, REP_PX = 1200;
+const rcKey = (d, it) => JSON.stringify([RC_V, d.id, d.w, d.h, it.x, it.y, S.settings.crop, it.loc.viewId, it.loc.zoneIds || [], pinLabel(it, !multiFloorViews(d).length)]);
+const rcDirty = new Set();
+async function reportDrawings(d, it) {
+  const k = rcKey(d, it); const c = it.rcache && it.rcache.k === k ? it.rcache : { k };
+  let ovErr = null, crErr = null;
+  if (!(c.ov && c.ov.blob instanceof Blob)) try { c.ov = await overviewImage(d, it); it.rcache = c; rcDirty.add(it); } catch (e) { ovErr = e; }
+  if (!(c.cr && c.cr.blob instanceof Blob)) try { c.cr = await cropImage(d, it); it.rcache = c; rcDirty.add(it); } catch (e) { crErr = e; }
+  return { ov: ovErr ? null : c.ov, cr: crErr ? null : c.cr, ovErr, crErr };
+}
+async function reportPhoto(it, ph) {
+  if (ph.rep instanceof Blob && ph.repK === REP_PX && ph.repOf === ph.out.size) return ph.rep;
+  const b = await shrink(ph.out, REP_PX); ph.rep = b; ph.repK = REP_PX; ph.repOf = ph.out.size; rcDirty.add(it); return b;
+}
+// build the caches quietly while the app is idle, one record at a time, so the first export is quick too
+let warmT = 0, warming = false; const warmFail = new Map();
+function warmLater(ms = 4000) { clearTimeout(warmT); warmT = setTimeout(warmStep, ms); }
+async function warmStep() {
+  if (warming) return; const idle = $('#editor').hidden && $('#busy').hidden && !S.editing && $('#preview')?.hidden !== false;
+  if (!idle || document.hidden) return warmLater(5000);
+  const it = S.items.find(i => { const d = S.drawings.find(x => x.id === i.drawingId); return d && (warmFail.get(i.id) || 0) < 2 && (!i.rcache || i.rcache.k !== rcKey(d, i) || !i.rcache.cr || !i.rcache.ov || i.photos.some(ph => !(ph.rep instanceof Blob) || ph.repK !== REP_PX || ph.repOf !== ph.out?.size)); });
+  if (!it) return;
+  warming = true;
+  try { const d = S.drawings.find(x => x.id === it.drawingId); if (d.kind === 'pdf') await ensureBase(d, true); await reportDrawings(d, it); for (const ph of it.photos) await reportPhoto(it, ph).catch(() => { }); }
+  catch (e) { console.warn(e); }
+  finally { await saveReportCache(); warming = false; }
+  // a record whose images can't be built is retried once, then left to the export to report
+  if (!it.rcache || !it.rcache.cr || !it.rcache.ov || it.photos.some(ph => !(ph.rep instanceof Blob))) warmFail.set(it.id, (warmFail.get(it.id) || 0) + 1);
+  warmLater(800);
+}
+async function saveReportCache() { for (const it of rcDirty) { try { await DB.put('items', it); } catch (e) { console.warn(e); } } rcDirty.clear(); }
 async function overviewImage(d, it) { // whole plan view, small, with the crop box highlighted
   const v = viewById(d, it.loc.viewId); const b = v ? v.bbox : [0, 0, d.w, d.h]; const R = cropRect(d, it);
   const pad = 0.02 * Math.max(b[2] - b[0], b[3] - b[1]); const bx = Math.max(0, b[0] - pad), by = Math.max(0, b[1] - pad), bw = Math.min(d.w, b[2] + pad) - bx, bh = Math.min(d.h, b[3] + pad) - by;
-  const outW = 1400, outH = Math.round(outW * bh / bw), s = outW / bw; const key = d.id + '|' + (v ? v.id : '');
+  const outW = 900, outH = Math.round(outW * bh / bw), s = outW / bw; const key = d.id + '|' + (v ? v.id : '');
   if (!ovCache.has(key)) ovCache.set(key, await renderRegion(d, bx, by, bw, bh, outW));
   const c = document.createElement('canvas'); c.width = outW; c.height = outH; const x = c.getContext('2d');
   x.fillStyle = '#fff'; x.fillRect(0, 0, outW, outH); x.drawImage(ovCache.get(key), 0, 0);
@@ -871,7 +919,7 @@ async function overviewImage(d, it) { // whole plan view, small, with the crop b
 async function keyPlanImage(d, v, items) {
   const b = v ? v.bbox : [0, 0, d.w, d.h]; const bw = b[2] - b[0], bh = b[3] - b[1];
   const outW = 2400; const c = await renderRegion(d, b[0], b[1], bw, bh, outW); const x = c.getContext('2d'); const s = outW / bw;
-  for (const it of items) pinOn(x, (it.x - b[0]) * s, (it.y - b[1]) * s, pinLabel(it, !(v && v.floors && v.floors.length > 1)), Math.max(16, outW / 90));
+  for (const it of items) pinOn(x, (it.x - b[0]) * s, (it.y - b[1]) * s, pinLabel(it, true), Math.max(16, outW / 90));
   return { blob: await canvasBlob(c, 'image/jpeg', 0.88), w: c.width, h: c.height };
 }
 
@@ -901,17 +949,18 @@ async function exportDocx(onlyDev) {
       if (d.kind === 'pdf') await ensureBase(d, true);
       const failText = what => Pg(T(`（${what}無法生成）`, { color: 'D42A1E', size: 15 }), { align: D.AlignmentType.CENTER, after: 60 });
       let ovH = 95; const dwgParas = [];
-      try { const ovw = await overviewImage(d, it); ovH = Math.min(Math.round(imgPx * ovw.h / ovw.w), 95); const ovW = Math.round(ovH * ovw.w / ovw.h);
+      const rd = await reportDrawings(d, it); const reps = await Promise.all(it.photos.map(ph => reportPhoto(it, ph).catch(() => null)));
+      try { const ovw = rd.ov; if (!ovw) throw rd.ovErr; ovH = Math.min(Math.round(imgPx * ovw.h / ovw.w), 95); const ovW = Math.round(ovH * ovw.w / ovw.h);
         dwgParas.push(Pg(new D.ImageRun({ data: await ovw.blob.arrayBuffer(), transformation: { width: ovW, height: ovH } }), { align: D.AlignmentType.CENTER, after: 60 }));
       } catch (e) { fails.push(`${itemLabel(it)} 總圖：${e.message}`); dwgParas.push(failText('總圖')); console.error(e); }
-      try { const cr = await cropImage(d, it);
+      try { const cr = rd.cr; if (!cr) throw rd.crErr;
         dwgParas.push(Pg(new D.ImageRun({ data: await cr.blob.arrayBuffer(), transformation: { width: imgPx, height: Math.round(imgPx * 0.75) } }), { align: D.AlignmentType.CENTER, after: 0 }));
       } catch (e) { fails.push(`${itemLabel(it)} 圖紙截取：${e.message}`); dwgParas.push(failText('圖紙截取')); console.error(e); }
       const phParas = [];
       for (const [i, ph] of it.photos.entries()) {
         let wpx = imgPx, hpx = Math.round(imgPx * 0.75); // 4:3 frame; portrait photos fit inside it
         if (Math.abs(ph.w / ph.h - 4 / 3) > 0.02) { if (ph.w / ph.h > 4 / 3) hpx = Math.round(imgPx * ph.h / ph.w); else { wpx = Math.round(hpx * ph.w / ph.h); } }
-        try { phParas.push(Pg(new D.ImageRun({ data: await (await shrink(ph.out, 1400)).arrayBuffer(), transformation: { width: wpx, height: hpx } }), { after: 60, align: D.AlignmentType.CENTER })); }
+        try { if (!reps[i]) throw new Error('標記版讀取失敗'); phParas.push(Pg(new D.ImageRun({ data: await reps[i].arrayBuffer(), transformation: { width: wpx, height: hpx } }), { after: 60, align: D.AlignmentType.CENTER })); }
         catch (e) {
           try { phParas.push(Pg(new D.ImageRun({ data: await (await shrink(ph.orig, 1400)).arrayBuffer(), transformation: { width: wpx, height: hpx } }), { after: 60, align: D.AlignmentType.CENTER })); fails.push(`${itemLabel(it)} 照片${i + 1}：標記版讀取失敗，已改用原相`); }
           catch (e2) { fails.push(`${itemLabel(it)} 照片${i + 1}：${e.message}`); phParas.push(failText(`照片${i + 1}`)); console.error(e, e2); }
@@ -941,12 +990,12 @@ async function exportDocx(onlyDev) {
     if (S.settings.keyPlan) {
       const avail = { w: Math.floor(usable / 15) - 10, h: Math.floor((11906 - 1300) / 15) - 90 };
       const groups = new Map();
-      for (const it of items) { const key = it.drawingId + '|' + (it.loc.viewId || ''); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(it); }
+      for (const it of items) { const v0 = viewById(S.drawings.find(q => q.id === it.drawingId) || {}, it.loc.viewId); const key = it.drawingId + '|' + (it.loc.viewId || '') + '|' + (v0 && v0.floors && v0.floors.length > 1 ? it.loc.floor || '' : ''); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(it); }
       for (const [key, its] of groups) {
-        const [did, vid] = key.split('|'); const d = S.drawings.find(x => x.id === did); if (!d) continue; const v = viewById(d, vid);
-        busy(`正在生成位置總圖：${v ? v.title : d.name}`);
-        let k; try { k = await keyPlanImage(d, v, its); } catch (e) { fails.push(`位置總圖 ${v ? v.title : d.name}：${e.message}`); continue; } const s = Math.min(avail.w / k.w, avail.h / k.h);
-        children.push(new D.Paragraph({ pageBreakBefore: true, children: [T(`位置總圖：${v ? v.title : d.name}`, { bold: true, size: 24 })], spacing: { after: 60 } }));
+        const [did, vid, fl] = key.split('|'); const d = S.drawings.find(x => x.id === did); if (!d) continue; const v = viewById(d, vid); const vt = (v ? v.title : d.name) + (fl ? `（${fl}）` : '');
+        busy(`正在生成位置總圖：${vt}`);
+        let k; try { k = await keyPlanImage(d, v, its); } catch (e) { fails.push(`位置總圖 ${vt}：${e.message}`); continue; } const s = Math.min(avail.w / k.w, avail.h / k.h);
+        children.push(new D.Paragraph({ pageBreakBefore: true, children: [T(`位置總圖：${vt}`, { bold: true, size: 24 })], spacing: { after: 60 } }));
         children.push(Pg(T(`${d.no || d.name}　記錄：${its.map(i => itemLabel(i) + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, { size: 16, color: '5F6B69' }), { after: 80 }));
         children.push(Pg(new D.ImageRun({ data: await k.blob.arrayBuffer(), transformation: { width: Math.round(k.w * s), height: Math.round(k.h * s) } }), { align: D.AlignmentType.CENTER }));
       }
@@ -961,7 +1010,7 @@ async function exportDocx(onlyDev) {
         children,
       }],
     });
-    const blob = await D.Packer.toBlob(doc);
+    const blob = await D.Packer.toBlob(doc); await saveReportCache();
     busy();
     await deliver(blob, `竣工驗收記錄_${safeName(P.name) || '項目'}_${P.date || today()}.docx`);
     ovCache.clear();
@@ -1071,9 +1120,9 @@ async function exportBackup(onlyNew) {
         busy(`正在打包相片 ${++n}／${tot}`);
         const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' });
         zip.file(`相片/${photoName(it, i)}`, await captioned(it, p, i), { compression: 'STORE' });
-        const { orig, out: _o, ...meta } = p; photos.push({ ...meta, orig: o });
+        const { orig, out: _o, rep: _r, repK: _rk, repOf: _ro, ...meta } = p; photos.push({ ...meta, orig: o });
       }
-      out.push({ ...it, photos });
+      const { rcache: _rc, ...rest } = it; out.push({ ...rest, photos });
     }
     const drawings = S.drawings.filter(d => d.src !== 'bundle' || true).map(d => ({ id: d.id, src: d.src, views: d.src === 'user' ? d.views : undefined }));
     zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, inspector: S.settings.inspector, onlyNew: !!onlyNew, project: S.project, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
@@ -1105,9 +1154,9 @@ async function importBackup(file) {
         let orig = typeof p.orig === 'string' && p.orig.startsWith('data:') ? await dataURLToBlob(p.orig) : zip ? await zip.file(p.orig).async('blob') : null;
         if (!orig) continue; orig = new Blob([orig], { type: 'image/jpeg' });
         const out = typeof p.out === 'string' && p.out.startsWith('data:') ? await dataURLToBlob(p.out) : await renderOut(orig, p.shapes);
-        photos.push({ ...p, orig, out });
+        const { rep: _r, repK: _rk, repOf: _ro, ...pm } = p; photos.push({ ...pm, orig, out });
       }
-      const rec = { ...it, photos }; await DB.put('items', rec);
+      const { rcache: _rc, ...itm } = it; const rec = { ...itm, photos }; await DB.put('items', rec);
       if (ex) { Object.assign(ex, rec); upd++; } else { S.items.push(rec); add++; }
     }
     await saveKV(); busy(); toast(`匯入完成：新增 ${add}、更新 ${upd}、略過 ${skip}`, 4000);
@@ -1177,8 +1226,9 @@ async function buildReportPages(items, progress) {
     progress && progress(++n, items.length);
     const d = S.drawings.find(q => q.id === it.drawingId); if (!d) continue;
     let ov = null, cr = null;
-    try { ov = await overviewImage(d, it); } catch (e) { fails.push(`${itemLabel(it)} 總圖：${e.message}`); }
-    try { cr = await cropImage(d, it); } catch (e) { fails.push(`${itemLabel(it)} 圖紙截取：${e.message}`); }
+    const rd = await reportDrawings(d, it); ov = rd.ov; cr = rd.cr; const reps = await Promise.all(it.photos.map(ph => reportPhoto(it, ph).catch(() => null)));
+    if (rd.ovErr) fails.push(`${itemLabel(it)} 總圖：${rd.ovErr.message}`);
+    if (rd.crErr) fails.push(`${itemLabel(it)} 圖紙截取：${rd.crErr.message}`);
     const ovH = ov ? Math.min(imgW * ov.h / ov.w, 60) : 14, ovW = ov ? ovH * ov.w / ov.h : imgW;
     const np = it.photos.length;
     let phH = cropH; const avail = bottom - top0 - headH - 2 * pad;
@@ -1202,7 +1252,7 @@ async function buildReportPages(items, progress) {
     for (const [i, ph] of it.photos.entries()) {
       let w = phH / 0.75, h = phH; if (w > imgW) { w = imgW; h = imgW * 0.75; }
       const r = ph.w / ph.h; let dw = w, dh = h; if (r > w / h) dh = w / r; else dw = h * r;
-      try { await drawBlob(x, await shrink(ph.out, 1400), px0 + (imgW - dw) / 2, py + (h - dh) / 2, dw, dh); }
+      try { if (!reps[i]) throw new Error('標記版讀取失敗'); await drawBlob(x, reps[i], px0 + (imgW - dw) / 2, py + (h - dh) / 2, dw, dh); }
       catch (e) { try { await drawBlob(x, await shrink(ph.orig, 1400), px0 + (imgW - dw) / 2, py + (h - dh) / 2, dw, dh); fails.push(`${itemLabel(it)} 照片${i + 1}：已改用原相`); } catch (e2) { fails.push(`${itemLabel(it)} 照片${i + 1}：${e.message}`); drawText(x, `（照片${i + 1}無法讀取）`, px0, py + h / 2, imgW, 7, { color: '#d42a1e', center: true }); } }
       py += h + 4;
     }
@@ -1210,16 +1260,16 @@ async function buildReportPages(items, progress) {
     y += rowH;
   }
   if (S.settings.keyPlan) {
-    const groups = new Map(); for (const it of items) { const key = it.drawingId + '|' + (it.loc.viewId || ''); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(it); }
+    const groups = new Map(); for (const it of items) { const v0 = viewById(S.drawings.find(q => q.id === it.drawingId) || {}, it.loc.viewId); const key = it.drawingId + '|' + (it.loc.viewId || '') + '|' + (v0 && v0.floors && v0.floors.length > 1 ? it.loc.floor || '' : ''); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(it); }
     for (const [key, its] of groups) {
-      const [did, vid] = key.split('|'); const d = S.drawings.find(q => q.id === did); if (!d) continue; const v = viewById(d, vid);
+      const [did, vid, fl] = key.split('|'); const d = S.drawings.find(q => q.id === did); if (!d) continue; const v = viewById(d, vid); const vt = (v ? v.title : d.name) + (fl ? `（${fl}）` : '');
       try {
         const kp = await keyPlanImage(d, v, its);
         newPageRaw(); y = top0;
-        y += drawText(x, `位置總圖：${v ? v.title : d.name}`, M, y, UW, 12, { bold: true }) + 2;
+        y += drawText(x, `位置總圖：${vt}`, M, y, UW, 12, { bold: true }) + 2;
         y += drawText(x, `${d.no || ''}　記錄：${its.map(i => itemLabel(i) + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, M, y, UW, 7.5, { color: '#5f6b69', max: 3 }) + 6;
         const s = Math.min(UW / kp.w, (bottom - y) / kp.h); await drawBlob(x, kp.blob, M + (UW - kp.w * s) / 2, y, kp.w * s, kp.h * s);
-      } catch (e) { fails.push(`位置總圖 ${v ? v.title : d.name}：${e.message}`); }
+      } catch (e) { fails.push(`位置總圖 ${vt}：${e.message}`); }
     }
   }
   function newPageRaw() { c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k); x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); drawText(x, `${P.name || ''}　竣工驗收記錄　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69' }); pages.push(c); }
@@ -1228,6 +1278,7 @@ async function buildReportPages(items, progress) {
     const px = pc.getContext('2d'); drawText(px, `第 ${i + 1} 頁，共 ${pages.length} 頁`, M, PG.H - M + 2, UW, 7.5, { color: '#5f6b69', center: true });
     blobs.push(await canvasBlob(pc, 'image/jpeg', 0.88)); pc.width = pc.height = 0;
   }
+  await saveReportCache();
   return { pages: blobs, fails };
 }
 
@@ -1296,6 +1347,7 @@ async function boot() {
     await DB.open();
     for (const k of ['project', 'settings', 'floorSel']) S[k] = { ...S[k], ...(await DB.kget(k) || {}) };
     S.recentAreas = await DB.kget('recentAreas') || [];
+    S.views = await DB.kget('views') || {};
     S.drawings = (await DB.all('drawings')).filter(d => d.views).sort((a, b) => (a.created || 0) - (b.created || 0));
     S.items = (await DB.all('items')).filter(i => i.loc && 'viewId' in i.loc);
     try { await loadBundle(); } catch (e) { busy(); toast(e.message + '，請連網後重新開啟', 6000); }
@@ -1304,6 +1356,7 @@ async function boot() {
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { });
     for (const it of S.items) { if (!it.dev && S.settings.dev) it.dev = S.settings.dev; }
     if (!S.settings.dev) setupPanel(true);
+    warmLater(15000);
   } catch (err) { console.error(err); busy(); toast('啟動失敗：' + err.message, 8000); }
   updateBar();
 }
