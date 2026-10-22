@@ -1,12 +1,12 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.7.0';
+const VERSION = '0.7.1';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
   let tried = false; try { tried = sessionStorage.getItem('hiStale') === VERSION; } catch (e) { }
-  if (!$('#fixCam') && !tried) { try { sessionStorage.setItem('hiStale', VERSION); } catch (e) { } location.replace(location.pathname + '?r=' + Date.now()); throw new Error('stale page, reloading'); }
+  if (!document.querySelector('#stage > #ov') && !tried) { try { sessionStorage.setItem('hiStale', VERSION); } catch (e) { } location.replace(location.pathname + '?r=' + Date.now()); throw new Error('stale page, reloading'); }
   if (/[?&]r=\d+/.test(location.search)) history.replaceState(null, '', location.pathname);
 })();
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -204,11 +204,14 @@ const floorsToText = f => (f || []).join(', ');
 /* ---------------- view / rendering ---------------- */
 const stage = $('#stage'), board = $('#board'), dwg = $('#dwg'), ov = $('#ov'), hires = $('#hires');
 let raf = 0, hiT = 0;
+// the overlay sits outside the zoomed board and maps drawing coordinates through its viewBox, so the
+// browser draws pins and numbers at screen resolution instead of enlarging a bitmap
+function ovFrame() { const r = stageRect(), k = S.view.k || 1; ov.setAttribute('viewBox', `${-S.view.x / k} ${-S.view.y / k} ${r.width / k} ${r.height / k}`); }
 let viewSaveT = 0, stageWas = null;
 function applyView() {
   if (!stageWas) { const r = stageRect(); if (r.width) stageWas = { w: r.width, h: r.height }; }
   clearTimeout(viewSaveT); viewSaveT = setTimeout(() => { if (S.cur) { S.views[S.cur] = { ...S.view }; DB.kset('views', S.views); } }, 400);
-  board.style.transform = `translate(${S.view.x}px,${S.view.y}px) scale(${S.view.k})`;
+  board.style.transform = `translate(${S.view.x}px,${S.view.y}px) scale(${S.view.k})`; ovFrame();
   if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderOverlay(); });
   clearTimeout(hiT); hiT = setTimeout(renderHires, 220);
 }
@@ -263,8 +266,7 @@ async function renderHires() {
 function renderOverlay() {
   const d = curD(); if (!d) { ov.innerHTML = ''; return; }
   const k = S.view.k, u = 1 / k;
-  ov.setAttribute('width', d.w); ov.setAttribute('height', d.h); ov.setAttribute('viewBox', `0 0 ${d.w} ${d.h}`);
-  ov.style.width = d.w + 'px'; ov.style.height = d.h + 'px';
+  ovFrame();
   const map = S.mode === 'map'; const font = '-apple-system,PingFang TC,sans-serif';
   let h = '';
   const edZ = new Set(S.editing && S.editing.loc ? S.editing.loc.zoneIds || [] : []);
@@ -870,6 +872,9 @@ function exportPanel() {
     <button class="btn p" data-a="preview">預覽報告</button>
     <div class="row"><button class="btn dk" data-a="pdf">導出 PDF</button><button class="btn dk" data-a="docx">導出 Word</button></div>
     <div class="note">預覽後可直接導出 PDF 或 Word。PDF 與預覽版面相同；Word 可再加文字修改。</div>
+    <div class="f-l">分批導出 PDF（每組一個檔案，方便派發）</div>
+    <div class="row"><button class="btn" data-a="set:sub">按分判</button><button class="btn" data-a="set:area">按區域</button><button class="btn" data-a="set:both">按區域＋分判</button></div>
+    <div class="note">區域：Podium（B3–2F）、T1、T2、T3、T5，即各管工負責的範圍。按上面選的報告類型及本機範圍導出；未指定分判的記錄自成一個檔案。</div>
     <div class="sec">合併其他 iPad 的記錄</div>
     <button class="btn" data-a="imp">匯入備份檔（ZIP）</button>
     <label class="btn" for="photoRestore">從相片還原記錄</label>
@@ -897,6 +902,7 @@ function exportPanel() {
     const a = e.target.dataset.a; if (!a) return; sv();
     const od = $('#pDevs') ? $('#pDevs').value : '';
     const kind = $('#pKind').value;
+    if (a.startsWith('set:')) return exportPdfSet(a.slice(4), kind, od);
     if (a === 'docx') { if (kind === 'inspect') exportDocx(od); else exportFixDocx(reportItems(kind, od), kind); }
     if (a === 'preview') previewReport(od, kind);
     if (a === 'pdf') { const items = reportItems(kind, od); if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '還沒有任何記錄'); busy('正在生成 PDF…'); ovCache.clear(); try { const pr = (x, y) => busy(`正在生成 PDF… ${x}／${y}`); const r = kind === 'inspect' ? await buildReportPages(items, pr) : await buildFixPages(items, pr, kind); ovCache.clear(); await exportPdf(r.pages, kind); if (r.fails.length) reportFails(r.fails); } catch (err) { busy(); toast('PDF 生成失敗：' + err.message, 6000); } }
@@ -1327,7 +1333,7 @@ async function buildReportPages(items, progress) {
     y = top0;
     if (first) {
       y += drawText(x, '竣工驗收記錄', M, y, UW, 17, { bold: true }) + 6;
-      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收批次', curRound().name], ['驗收日期', P.date], ['公司／單位', P.company], ['記錄數量', `${items.length} 項`]]) {
+      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收批次', curRound().name], ...(repLabel ? [['報告範圍', repLabel]] : []), ['驗收日期', P.date], ['公司／單位', P.company], ['記錄數量', `${items.length} 項`]]) {
         drawText(x, a, M, y, 80, 9, { color: '#5f6b69' }); drawText(x, b || '', M + 80, y, 400, 9, { bold: true }); y += 13;
       }
       y += 6;
@@ -1425,13 +1431,58 @@ async function previewReport(onlyDev, kind = 'inspect') {
   } catch (e) { busy(); toast('預覽失敗：' + e.message, 6000); console.error(e); }
 }
 function closePreview() { $('#preview').hidden = true; if (PV) PV.urls.forEach(u => URL.revokeObjectURL(u)); $('#preview .pvpages').innerHTML = ''; const f = PV && PV.fails; PV = null; if (f && f.length) reportFails(f); }
+async function pdfBlob(pages) {
+  const doc = new jspdf.jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4', compress: true });
+  for (const [i, b] of pages.entries()) { if (i) doc.addPage('a4', 'landscape'); doc.addImage(new Uint8Array(await b.arrayBuffer()), 'JPEG', 0, 0, PG.W, PG.H, undefined, 'FAST'); }
+  return doc.output('blob');
+}
+// 管工 areas: the podium (B3–2F) and each tower above it
+function areaOf(it) {
+  const f = floorOfItem(it); if (f && floorRank(f) <= 2) return 'Podium';
+  return (it.loc && it.loc.tower) || (f ? '其他' : 'Podium');
+}
+const AREA_ORDER = ['Podium', 'T1', 'T2', 'T3', 'T5'];
+let repLabel = ''; // shown on the first page of each file of a batch export
+async function exportPdfSet(by, kind, od) {
+  if (!window.jspdf) return toast('PDF 元件未載入，請連網後重新開啟');
+  const L = roundItems().filter(i => !od || devOf(i) === od).filter(i => kind !== 'fixdone' || fixStatus(i) === 'done').sort(byOrder);
+  if (!L.length) return toast('目前批次還沒有記錄');
+  const subOf = i => i.sub || '未指定分判';
+  const keyOf = by === 'sub' ? subOf : by === 'area' ? areaOf : i => `${areaOf(i)}_${subOf(i)}`;
+  const groups = new Map(); for (const it of L) { const k = keyOf(it); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(it); }
+  const subRank = x => { const i = allSubs().indexOf(x); return i < 0 ? 999 : i; }, areaRank = x => { const i = AREA_ORDER.indexOf(x); return i < 0 ? 99 : i; };
+  const rank = k => by === 'sub' ? [subRank(k)] : by === 'area' ? [areaRank(k)] : [areaRank(k.split('_')[0]), subRank(k.split('_').slice(1).join('_'))];
+  const keys = [...groups.keys()].sort((a, b) => { const A = rank(a), B = rank(b); return A[0] - B[0] || (A[1] || 0) - (B[1] || 0) || a.localeCompare(b); });
+  const files = [], fails = []; let g = 0;
+  try {
+    ovCache.clear();
+    for (const k of keys) {
+      const its = groups.get(k), name = k.replace('_', '　'); g++;
+      const pr = (a, b) => busy(`正在生成 PDF ${g}／${keys.length}：${name}（${a}／${b}）`); pr(0, its.length);
+      repLabel = name;
+      try { const r = kind === 'inspect' ? await buildReportPages(its, pr) : await buildFixPages(its, pr, kind); fails.push(...r.fails.map(f => `${name}：${f}`));
+        files.push(new File([await pdfBlob(r.pages)], `${reportTitle(kind)}_${safeName(curRound().name)}_${safeName(k)}_${its.length}項.pdf`, { type: 'application/pdf' })); }
+      catch (e) { fails.push(`${name}：${e.message}`); }
+      finally { repLabel = ''; }
+    }
+    ovCache.clear(); busy();
+    if (!files.length) return toast('PDF 生成失敗', 5000);
+    if (!IS_ANDROID && navigator.canShare && navigator.share && navigator.canShare({ files })) {
+      try { await navigator.share({ files }); } catch (e) { if (e.name !== 'AbortError') toast('分享失敗：' + e.message, 5000); }
+    } else if (window.JSZip) {
+      busy('正在打包…'); const zip = new JSZip(); for (const f of files) zip.file(f.name, f, { compression: 'STORE' });
+      const blob = await zip.generateAsync({ type: 'blob' }); busy();
+      await deliver(blob, `${reportTitle(kind)}_${safeName(curRound().name)}_按${by === 'sub' ? '分判' : by === 'area' ? '區域' : '區域及分判'}_${today()}.zip`);
+    } else for (const f of files) saveFile(f, f.name);
+    toast(`已生成 ${files.length} 個 PDF`, 3500);
+    if (fails.length) reportFails(fails);
+  } catch (e) { busy(); repLabel = ''; toast('PDF 生成失敗：' + e.message, 6000); }
+}
 async function exportPdf(pages, kind = 'inspect') {
   if (!window.jspdf) return toast('PDF 元件未載入，請連網後重新開啟');
   busy('正在生成 PDF…');
   try {
-    const doc = new jspdf.jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4', compress: true });
-    for (const [i, b] of pages.entries()) { if (i) doc.addPage('a4', 'landscape'); doc.addImage(new Uint8Array(await b.arrayBuffer()), 'JPEG', 0, 0, PG.W, PG.H, undefined, 'FAST'); }
-    const blob = doc.output('blob'); busy();
+    const blob = await pdfBlob(pages); busy();
     await deliver(blob, `${reportTitle(kind)}_${safeName(curRound().name)}_${safeName(S.project.name) || '項目'}_${kind === 'inspect' ? (S.project.date || today()) : today()}.pdf`);
   } catch (e) { busy(); toast('PDF 生成失敗：' + e.message, 6000); }
 }
@@ -1672,7 +1723,7 @@ async function buildFixPages(items, progress, kind) {
     if (first) {
       y += drawText(x, title, M, y, UW, 17, { bold: true }) + 6;
       const done = items.filter(i => fixStatus(i) === 'done').length;
-      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收批次', rn], ['報告日期', today()], ['公司／單位', P.company], ['項目數量', `${items.length} 項（已完成 ${done} 項）`]]) {
+      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收批次', rn], ...(repLabel ? [['報告範圍', repLabel]] : []), ['報告日期', today()], ['公司／單位', P.company], ['項目數量', `${items.length} 項（已完成 ${done} 項）`]]) {
         drawText(x, a, M, y, 80, 9, { color: '#5f6b69' }); drawText(x, b || '', M + 80, y, 500, 9, { bold: true }); y += 13;
       }
       y += 6;
