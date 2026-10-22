@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.5.2';
+const VERSION = '0.5.3';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -498,7 +498,7 @@ function itemPanel() {
     <div class="photos">${photos}</div>
     <div class="row"><label class="btn p" for="camInput">拍照</label><label class="btn" for="libInput">從相簿加入</label></div>
     <div class="grid-note"><label class="f">問題描述（可回辦公室再填）<textarea id="fNote" rows="3" placeholder="例如：門鉸鬆脫">${esc(it.note)}</textarea></label>
-    <label class="f">分判${sel('fSub', SUBS, it.sub || '', '未指定')}</label></div>
+    <label class="f">分判${sel('fSub', allSubs(), it.sub || '', '未指定').replace('</select>', '<option value="+">＋ 新增分判…</option></select>')}</label></div>
     <div class="row nav"><button class="btn" data-a="prev">‹ 上一個</button><button class="btn" data-a="next">下一個 ›</button><button class="btn" data-a="nextEmpty">下一個未填描述</button></div>
     <div class="note navpos">${navPos(it)}</div>
     <details><summary>手動修改位置文字</summary><label class="f"><textarea id="fLoc" rows="2">${esc(it.locText)}</textarea></label>${it.locEdited ? '<button class="btn" data-a="reloc">按上面選項重新生成</button>' : ''}</details>
@@ -513,7 +513,15 @@ function itemPanel() {
   if (ar) ar.onchange = () => { const a = L.area; if (a) { S.recentAreas = [a, ...S.recentAreas.filter(x => x !== a)].slice(0, 30); DB.kset('recentAreas', S.recentAreas); } };
   q('#fLoc').oninput = e => { it.locText = e.target.value; it.locEdited = true; q('.idx').textContent = it.locText; persistItem(); updateBar(); };
   q('#fNote').oninput = e => { it.note = e.target.value; persistItem(); };
-  q('#fSub').onchange = e => { it.sub = e.target.value; persistItem(); };
+  q('#fSub').onchange = async e => {
+    if (e.target.value === '+') {
+      const n = (prompt('新增分判名稱') || '').trim();
+      if (!n) { e.target.value = it.sub || ''; return; }
+      if (!allSubs().includes(n)) { S.settings.customSubs = [...(S.settings.customSubs || []), n]; await saveKV(); toast(`已加入分判：${n}`); }
+      it.sub = n; persistItem(); return itemPanel();
+    }
+    it.sub = e.target.value; persistItem();
+  };
   panel.querySelector('.pb').onclick = async e => {
     const rb = e.target.closest('[data-room]'); if (rb) { L.room = L.room === rb.dataset.room ? '' : rb.dataset.room; upd(true); return; }
     const a = e.target.dataset.a; if (!a) return;
@@ -817,7 +825,7 @@ function exportPanel() {
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
     <div class="grid2"><label class="f">地盤／地址<input id="pSite" value="${esc(P.site)}"></label><label class="f">驗收日期<input id="pDate" type="date" value="${esc(P.date)}"></label></div>
     <label class="f">公司／單位<input id="pCo" value="${esc(P.company)}"></label>
-    <label class="f">分判<select id="pSub"><option value="">全部分判</option>${[...SUBS.filter(x => S.items.some(i => i.sub === x)), ...[...new Set(S.items.map(i => i.sub).filter(x => x && !SUBS.includes(x)))]].map(x => `<option ${S.repSub === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}<option value="-" ${S.repSub === '-' ? 'selected' : ''}>未指定分判</option></select></label>
+    <label class="f">分判<select id="pSub"><option value="">全部分判</option>${allSubs().filter(x => S.items.some(i => i.sub === x)).map(x => `<option ${S.repSub === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}<option value="-" ${S.repSub === '-' ? 'selected' : ''}>未指定分判</option></select></label>
     ${devs.length > 1 ? `<label class="f">報告範圍<select id="pDevs"><option value="">全部（${devs.join('、')}）</option>${devs.map(d => `<option value="${d}">只限 ${d}</option>`).join('')}</select></label>` : ''}
     <label class="f">圖紙截取範圍<select id="pCrop"><option value="s">細（約 7 米闊）</option><option value="m">中（約 11 米闊）</option><option value="l">大（約 17 米闊）</option></select></label>
     <label class="toggle">報告最後附上每張平面圖的位置總圖<input type="checkbox" id="pKey" ${S.settings.keyPlan ? 'checked' : ''}></label>
@@ -1041,7 +1049,9 @@ async function exportDocx(onlyDev) {
 /* ---------------- device identity, captions, album, backup & merge ---------------- */
 const devOf = it => it.dev || S.settings.dev || 'A';
 // after 整理編號 a record carries a unified code (e.g. B1-003) that replaces the per-device number
-const SUBS = ['承達', '遠東', '偉業', '富盈', '美的', '新宇宙', '思語', '廣林', '新寶', '歐吊', '卓裕', '定安（水）', '定安（消防）', '星滿', '通力', '元大', '洪興', '明記', '鈴木', '創基', '其士'];
+const SUBS = ['承達', '遠東', '偉業', '富盈', '美的', '新宇宙', '思語', '廣林', '新寶', '歐吊', '卓裕', '定安（水）', '定安（消防）', '星滿', '通力', '元大', '洪興', '明記', '鈴木', '創基', '其士', '中海', '俊盈'];
+// built-in list + ones added on this device + any that arrived on imported records
+const allSubs = () => [...new Set([...SUBS, ...(S.settings.customSubs || []), ...S.items.map(i => i.sub).filter(Boolean)])];
 // report scope: device and/or subcontractor ('-' = records without one)
 const inScope = (i, od) => (!od || devOf(i) === od) && (!S.repSub || (S.repSub === '-' ? !i.sub : i.sub === S.repSub));
 const itemLabel = it => it.code || `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
