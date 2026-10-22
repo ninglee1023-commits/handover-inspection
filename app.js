@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.5.1';
+const VERSION = '0.5.2';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -43,7 +43,7 @@ const DB = {
 const S = {
   project: { name: '', site: '', date: today(), inspector: '', company: '' },
   settings: { autoCam: true, showZones: true, crop: 'm', keyPlan: true },
-  floorSel: {}, recentAreas: [], views: {},
+  floorSel: {}, recentAreas: [], views: {}, repSub: '',
   drawings: [], items: [], cur: null, mode: 'inspect', tool: 'select',
   view: { x: 0, y: 0, k: 1 }, editing: null, draft: null, sel: null, panel: null, listScope: 'cur',
 };
@@ -459,6 +459,20 @@ function newItem(p) {
   renderOverlay(); itemPanel(); updateBar(); ensureVisible(p);
   if (S.settings.autoCam) $('#camInput').click();
 }
+/* office pass: walk through the records in list order without going back to the list */
+function navPos(it) { const L = S.items.slice().sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項`; }
+function stepItem(it, how) {
+  const L = S.items.slice().sort(byOrder); const i = L.findIndex(x => x.id === it.id); if (i < 0) return;
+  let nx = null;
+  if (how === 'prev') nx = L[i - 1];
+  else if (how === 'next') nx = L[i + 1];
+  else nx = [...L.slice(i + 1), ...L.slice(0, i)].find(x => !(x.note || '').trim());
+  if (!nx) return toast(how === 'prev' ? '已是第一項' : how === 'next' ? '已是最後一項' : '全部記錄都已填描述');
+  panel.querySelectorAll('.nav .btn').forEach(b => b.disabled = true); // the old panel stays up while another drawing loads
+  finishItem(); S.editing = nx; showFloorOf(nx);
+  const go = () => { itemPanel(); centerOn(nx.x, nx.y, Math.max(S.view.k, 1)); const n = $('#fNote'); if (n && !(nx.note || '').trim()) n.focus(); };
+  if (S.cur !== nx.drawingId) showDrawing(nx.drawingId).then(go); else go();
+}
 function openItem(it) { if (S.editing && S.editing.id !== it.id) finishItem(); S.editing = it; showFloorOf(it); if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { centerOn(it.x, it.y, 1); itemPanel(); }); else { itemPanel(); renderOverlay(); } }
 function relocate(it) { if (!it.locEdited) it.locText = fmtLoc(it.loc); }
 function itemPanel() {
@@ -483,7 +497,10 @@ function itemPanel() {
     ${L.grid ? `<div class="chips"><span class="chip">Grid <b>${esc(L.grid)}</b></span></div>` : ''}
     <div class="photos">${photos}</div>
     <div class="row"><label class="btn p" for="camInput">拍照</label><label class="btn" for="libInput">從相簿加入</label></div>
-    <label class="f">問題描述（可回辦公室再填）<textarea id="fNote" rows="3" placeholder="例如：門鉸鬆脫">${esc(it.note)}</textarea></label>
+    <div class="grid-note"><label class="f">問題描述（可回辦公室再填）<textarea id="fNote" rows="3" placeholder="例如：門鉸鬆脫">${esc(it.note)}</textarea></label>
+    <label class="f">分判${sel('fSub', SUBS, it.sub || '', '未指定')}</label></div>
+    <div class="row nav"><button class="btn" data-a="prev">‹ 上一個</button><button class="btn" data-a="next">下一個 ›</button><button class="btn" data-a="nextEmpty">下一個未填描述</button></div>
+    <div class="note navpos">${navPos(it)}</div>
     <details><summary>手動修改位置文字</summary><label class="f"><textarea id="fLoc" rows="2">${esc(it.locText)}</textarea></label>${it.locEdited ? '<button class="btn" data-a="reloc">按上面選項重新生成</button>' : ''}</details>
     <div class="row"><button class="btn warn" data-a="del">刪除此記錄</button><button class="btn dk" data-a="done">完成</button></div>`,
     { badge: `<span class="no">${itemLabel(it)}</span>` });
@@ -496,12 +513,14 @@ function itemPanel() {
   if (ar) ar.onchange = () => { const a = L.area; if (a) { S.recentAreas = [a, ...S.recentAreas.filter(x => x !== a)].slice(0, 30); DB.kset('recentAreas', S.recentAreas); } };
   q('#fLoc').oninput = e => { it.locText = e.target.value; it.locEdited = true; q('.idx').textContent = it.locText; persistItem(); updateBar(); };
   q('#fNote').oninput = e => { it.note = e.target.value; persistItem(); };
+  q('#fSub').onchange = e => { it.sub = e.target.value; persistItem(); };
   panel.querySelector('.pb').onclick = async e => {
     const rb = e.target.closest('[data-room]'); if (rb) { L.room = L.room === rb.dataset.room ? '' : rb.dataset.room; upd(true); return; }
     const a = e.target.dataset.a; if (!a) return;
     if (a === 'cam') $('#camInput').click();
     if (a === 'lib') $('#libInput').click();
     if (a === 'done') closePanel();
+    if (a === 'prev' || a === 'next' || a === 'nextEmpty') stepItem(it, a);
     if (a === 'reloc') { it.locEdited = false; upd(true); }
     if (a === 'ed') { const i = +e.target.dataset.i; const ph = it.photos[i]; const r = await openEditor(ph.orig, ph); if (r) { it.photos[i] = r; await persistItem(true); itemPanel(); } }
     if (a === 'delph') { if (e.target.dataset.armed) { it.photos.splice(+e.target.dataset.i, 1); await persistItem(true); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
@@ -539,7 +558,7 @@ function itemsPanel() {
   const list = (S.listScope === 'cur' && d ? S.items.filter(i => i.drawingId === d.id) : S.items).slice().sort(byOrder);
   const rows = list.map(it => {
     const th = it.photos[0] ? `style="background-image:url('${burl(it.photos[0].out)}')"` : '';
-    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
+    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${it.sub ? esc(it.sub) + '　·　' : ''}${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
   }).join('') || '<div class="note">這張圖紙還沒有記錄。在「驗收」模式點選圖上的位置即可開始。</div>';
   openPanel('items', `驗收記錄（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
@@ -798,6 +817,7 @@ function exportPanel() {
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
     <div class="grid2"><label class="f">地盤／地址<input id="pSite" value="${esc(P.site)}"></label><label class="f">驗收日期<input id="pDate" type="date" value="${esc(P.date)}"></label></div>
     <label class="f">公司／單位<input id="pCo" value="${esc(P.company)}"></label>
+    <label class="f">分判<select id="pSub"><option value="">全部分判</option>${[...SUBS.filter(x => S.items.some(i => i.sub === x)), ...[...new Set(S.items.map(i => i.sub).filter(x => x && !SUBS.includes(x)))]].map(x => `<option ${S.repSub === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}<option value="-" ${S.repSub === '-' ? 'selected' : ''}>未指定分判</option></select></label>
     ${devs.length > 1 ? `<label class="f">報告範圍<select id="pDevs"><option value="">全部（${devs.join('、')}）</option>${devs.map(d => `<option value="${d}">只限 ${d}</option>`).join('')}</select></label>` : ''}
     <label class="f">圖紙截取範圍<select id="pCrop"><option value="s">細（約 7 米闊）</option><option value="m">中（約 11 米闊）</option><option value="l">大（約 17 米闊）</option></select></label>
     <label class="toggle">報告最後附上每張平面圖的位置總圖<input type="checkbox" id="pKey" ${S.settings.keyPlan ? 'checked' : ''}></label>
@@ -817,7 +837,7 @@ function exportPanel() {
     <div class="note" id="stor">記錄存在這部 iPad 的程式資料內。</div>
     <div class="note">版本 ${VERSION}${S.pkgVersion ? '　圖紙包 ' + esc(S.pkgVersion) : ''}</div>`);
   $('#pCrop').value = S.settings.crop;
-  const sv = () => { Object.assign(P, { name: $('#pName').value, site: $('#pSite').value, date: $('#pDate').value, company: $('#pCo').value }); S.settings.keyPlan = $('#pKey').checked; S.settings.crop = $('#pCrop').value; S.settings.autoCam = $('#sCam').checked; S.settings.showZones = $('#sZone').checked; S.settings.autoAlbum = $('#sAlb').checked; saveKV(); updateBar(); renderOverlay(); };
+  const sv = () => { Object.assign(P, { name: $('#pName').value, site: $('#pSite').value, date: $('#pDate').value, company: $('#pCo').value }); S.settings.keyPlan = $('#pKey').checked; S.repSub = $('#pSub').value; S.settings.crop = $('#pCrop').value; S.settings.autoCam = $('#sCam').checked; S.settings.showZones = $('#sZone').checked; S.settings.autoAlbum = $('#sAlb').checked; saveKV(); updateBar(); renderOverlay(); };
   panel.querySelectorAll('input,select').forEach(i => i.onchange = sv);
   (async () => {
     const el = $('#stor'); if (!el) return; let t = el.textContent;
@@ -830,7 +850,7 @@ function exportPanel() {
     const od = $('#pDevs') ? $('#pDevs').value : '';
     if (a === 'docx') exportDocx(od);
     if (a === 'preview') previewReport(od);
-    if (a === 'pdf') { const items = S.items.filter(i => !od || devOf(i) === od).sort(byOrder); if (!items.length) return toast('還沒有任何記錄'); busy('正在生成 PDF…'); ovCache.clear(); try { const r = await buildReportPages(items, (x, y) => busy(`正在生成 PDF… ${x}／${y}`)); ovCache.clear(); await exportPdf(r.pages); if (r.fails.length) reportFails(r.fails); } catch (err) { busy(); toast('PDF 生成失敗：' + err.message, 6000); } }
+    if (a === 'pdf') { const items = S.items.filter(i => inScope(i, od)).sort(byOrder); if (!items.length) return toast('還沒有任何記錄'); busy('正在生成 PDF…'); ovCache.clear(); try { const r = await buildReportPages(items, (x, y) => busy(`正在生成 PDF… ${x}／${y}`)); ovCache.clear(); await exportPdf(r.pages); if (r.fails.length) reportFails(r.fails); } catch (err) { busy(); toast('PDF 生成失敗：' + err.message, 6000); } }
     if (a === 'bk') exportBackup(false);
     if (a === 'bknew') exportBackup(true);
     if (a === 'album') albumPanel();
@@ -929,7 +949,7 @@ async function exportDocx(onlyDev) {
   const D = window.docx; const P = S.project;
   try {
     busy('正在生成報告…');
-    const items = S.items.filter(i => !onlyDev || devOf(i) === onlyDev).sort(byOrder); const fails = []; ovCache.clear(); var curLbl = '';
+    const items = S.items.filter(i => inScope(i, onlyDev)).sort(byOrder); const fails = []; ovCache.clear(); var curLbl = '';
     const FONT = { ascii: 'Arial', hAnsi: 'Arial', eastAsia: 'Microsoft JhengHei', cs: 'Arial' };
     const T = (text, o = {}) => new D.TextRun({ text: String(text ?? ''), font: FONT, size: o.size || 18, bold: o.bold, color: o.color });
     const Pg = (runs, o = {}) => new D.Paragraph({ children: Array.isArray(runs) ? runs : [runs], alignment: o.align, spacing: { after: o.after ?? 40, before: o.before ?? 0 }, keepLines: true, keepNext: o.keepNext });
@@ -975,7 +995,7 @@ async function exportDocx(onlyDev) {
       rows.push(new D.TableRow({
         cantSplit: true, children: [
           cell([Pg(T(itemLabel(it), { bold: true, size: 16, color: 'D42A1E' }), { align: D.AlignmentType.CENTER }), Pg(T(it.by || '', { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER }), Pg(T(fmtTime(it.created).slice(5, 10), { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER })], 0, { v: D.VerticalAlign.CENTER }),
-          cell(locParas, 1), cell(dwgParas, 2), cell(phParas, 3), cell(noteParas.length ? noteParas : [Pg(T(''))], 4), cell([Pg(T(''))], 5),
+          cell(locParas, 1), cell(dwgParas, 2), cell(phParas, 3), cell(noteParas.length ? noteParas : [Pg(T(''))], 4), cell([Pg(T(it.sub || '', { bold: true, size: 18 }), { align: D.AlignmentType.CENTER })], 5),
         ]
       }));
     }
@@ -1021,6 +1041,9 @@ async function exportDocx(onlyDev) {
 /* ---------------- device identity, captions, album, backup & merge ---------------- */
 const devOf = it => it.dev || S.settings.dev || 'A';
 // after 整理編號 a record carries a unified code (e.g. B1-003) that replaces the per-device number
+const SUBS = ['承達', '遠東', '偉業', '富盈', '美的', '新宇宙', '思語', '廣林', '新寶', '歐吊', '卓裕', '定安（水）', '定安（消防）', '星滿', '通力', '元大', '洪興', '明記', '鈴木', '創基', '其士'];
+// report scope: device and/or subcontractor ('-' = records without one)
+const inScope = (i, od) => (!od || devOf(i) === od) && (!S.repSub || (S.repSub === '-' ? !i.sub : i.sub === S.repSub));
 const itemLabel = it => it.code || `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
 const byOrder = (a, b) => (a.ord ?? 1e9) - (b.ord ?? 1e9) || devOf(a).localeCompare(devOf(b)) || a.no - b.no;
 // pins have little room: number only, or floor + number where one plan stands for several floors
@@ -1257,6 +1280,7 @@ async function buildReportPages(items, progress) {
       py += h + 4;
     }
     drawText(x, it.note || '', cx[4] + pad, y0 + pad, cw[4] - 2 * pad, 8.5);
+    if (it.sub) drawText(x, it.sub, cx[5] + pad, y0 + pad, cw[5] - 2 * pad, 8.5, { bold: true, center: true });
     y += rowH;
   }
   if (S.settings.keyPlan) {
@@ -1284,7 +1308,7 @@ async function buildReportPages(items, progress) {
 
 let PV = null;
 async function previewReport(onlyDev) {
-  const items = S.items.filter(i => !onlyDev || devOf(i) === onlyDev).sort(byOrder);
+  const items = S.items.filter(i => inScope(i, onlyDev)).sort(byOrder);
   if (!items.length) return toast('還沒有任何記錄');
   try {
     busy('正在生成預覽…'); ovCache.clear();
