@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.5.3';
+const VERSION = '0.5.4';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -294,7 +294,7 @@ function renderOverlay() {
     const all = S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
     for (const it of all) {
       const act = S.editing && S.editing.id === it.id; const r = (act ? 17 : 14) * u;
-      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="#d42a1e" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
+      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="${it.sub ? '#2f7d4f' : '#d42a1e'}" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
     }
   }
   ov.innerHTML = h;
@@ -460,14 +460,15 @@ function newItem(p) {
   if (S.settings.autoCam) $('#camInput').click();
 }
 /* office pass: walk through the records in list order without going back to the list */
-function navPos(it) { const L = S.items.slice().sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項`; }
+function navPos(it) { const L = S.items.slice().sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length, noSub = L.filter(x => !x.sub).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項　·　未指定分判 ${noSub} 項`; }
+const unfinished = x => !(x.note || '').trim() || !x.sub;
 function stepItem(it, how) {
   const L = S.items.slice().sort(byOrder); const i = L.findIndex(x => x.id === it.id); if (i < 0) return;
   let nx = null;
   if (how === 'prev') nx = L[i - 1];
   else if (how === 'next') nx = L[i + 1];
-  else nx = [...L.slice(i + 1), ...L.slice(0, i)].find(x => !(x.note || '').trim());
-  if (!nx) return toast(how === 'prev' ? '已是第一項' : how === 'next' ? '已是最後一項' : '全部記錄都已填描述');
+  else nx = [...L.slice(i + 1), ...L.slice(0, i)].find(unfinished);
+  if (!nx) return toast(how === 'prev' ? '已是第一項' : how === 'next' ? '已是最後一項' : '全部記錄都已填描述及指定分判');
   panel.querySelectorAll('.nav .btn').forEach(b => b.disabled = true); // the old panel stays up while another drawing loads
   finishItem(); S.editing = nx; showFloorOf(nx);
   const go = () => { itemPanel(); centerOn(nx.x, nx.y, Math.max(S.view.k, 1)); const n = $('#fNote'); if (n && !(nx.note || '').trim()) n.focus(); };
@@ -499,7 +500,7 @@ function itemPanel() {
     <div class="row"><label class="btn p" for="camInput">拍照</label><label class="btn" for="libInput">從相簿加入</label></div>
     <div class="grid-note"><label class="f">問題描述（可回辦公室再填）<textarea id="fNote" rows="3" placeholder="例如：門鉸鬆脫">${esc(it.note)}</textarea></label>
     <label class="f">分判${sel('fSub', allSubs(), it.sub || '', '未指定').replace('</select>', '<option value="+">＋ 新增分判…</option></select>')}</label></div>
-    <div class="row nav"><button class="btn" data-a="prev">‹ 上一個</button><button class="btn" data-a="next">下一個 ›</button><button class="btn" data-a="nextEmpty">下一個未填描述</button></div>
+    <div class="row nav"><button class="btn" data-a="prev">‹ 上一個</button><button class="btn" data-a="next">下一個 ›</button><button class="btn" data-a="nextEmpty">下一個未完成</button></div>
     <div class="note navpos">${navPos(it)}</div>
     <details><summary>手動修改位置文字</summary><label class="f"><textarea id="fLoc" rows="2">${esc(it.locText)}</textarea></label>${it.locEdited ? '<button class="btn" data-a="reloc">按上面選項重新生成</button>' : ''}</details>
     <div class="row"><button class="btn warn" data-a="del">刪除此記錄</button><button class="btn dk" data-a="done">完成</button></div>`,
@@ -518,9 +519,9 @@ function itemPanel() {
       const n = (prompt('新增分判名稱') || '').trim();
       if (!n) { e.target.value = it.sub || ''; return; }
       if (!allSubs().includes(n)) { S.settings.customSubs = [...(S.settings.customSubs || []), n]; await saveKV(); toast(`已加入分判：${n}`); }
-      it.sub = n; persistItem(); return itemPanel();
+      it.sub = n; persistItem(); renderOverlay(); return itemPanel();
     }
-    it.sub = e.target.value; persistItem();
+    it.sub = e.target.value; persistItem(); renderOverlay(); q('.navpos').textContent = navPos(it);
   };
   panel.querySelector('.pb').onclick = async e => {
     const rb = e.target.closest('[data-room]'); if (rb) { L.room = L.room === rb.dataset.room ? '' : rb.dataset.room; upd(true); return; }
@@ -563,14 +564,20 @@ $('#libInput').onchange = e => { const f = e.target.files[0]; e.target.value = '
 function itemsPanel() {
   freeURLs();
   const d = curD();
-  const list = (S.listScope === 'cur' && d ? S.items.filter(i => i.drawingId === d.id) : S.items).slice().sort(byOrder);
+  const scoped = (S.listScope === 'cur' && d ? S.items.filter(i => i.drawingId === d.id) : S.items);
+  const subF = S.listSub || ''; const nNone = scoped.filter(i => !i.sub).length;
+  const list = scoped.filter(i => !subF || (subF === '-' ? !i.sub : i.sub === subF)).slice().sort(byOrder);
+  const subOpts = allSubs().map(x => [x, scoped.filter(i => i.sub === x).length]).filter(([, n]) => n);
   const rows = list.map(it => {
     const th = it.photos[0] ? `style="background-image:url('${burl(it.photos[0].out)}')"` : '';
-    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${it.sub ? esc(it.sub) + '　·　' : ''}${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
-  }).join('') || '<div class="note">這張圖紙還沒有記錄。在「驗收」模式點選圖上的位置即可開始。</div>';
+    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${it.sub ? `<em class="sub">${esc(it.sub)}</em>` : '<em class="sub none">未指定分判</em>'}　${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
+  }).join('') || (scoped.length ? '' : '<div class="note">這張圖紙還沒有記錄。在「驗收」模式點選圖上的位置即可開始。</div>');
   openPanel('items', `驗收記錄（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
-    <div class="list">${rows}</div>`);
+    <label class="f">分判<select id="lSub"><option value="">全部（${scoped.length}）</option><option value="-" ${subF === '-' ? 'selected' : ''}>未指定分判（${nNone}）</option>${subOpts.map(([x, n]) => `<option value="${esc(x)}" ${subF === x ? 'selected' : ''}>${esc(x)}（${n}）</option>`).join('')}</select></label>
+    <div class="note">圖上：<b style="color:#d42a1e">紅點</b>＝未指定分判，<b style="color:#2f7d4f">綠點</b>＝已指定分判。</div>
+    <div class="list">${rows || '<div class="note">沒有符合的記錄。</div>'}</div>`);
+  $('#lSub').onchange = e => { S.listSub = e.target.value; itemsPanel(); };
   panel.querySelector('.pb').onclick = e => {
     const s = e.target.closest('[data-s]'); if (s) { S.listScope = s.dataset.s; return itemsPanel(); }
     const b = e.target.closest('.li'); if (!b) return;
