@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.7.2';
+const VERSION = '0.7.3';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -83,7 +83,20 @@ async function refreshPhotos(it) {
   const byId = new Map(allPhotos(f).map(p => [p.id, p]));
   for (const p of allPhotos(it)) { const q = byId.get(p.id); if (q) { if (q.orig) p.orig = q.orig; if (q.out) p.out = q.out; } }
 }
-async function saveItem(it) { await DB.put('items', it); await refreshPhotos(it); }
+/* per-field edit times, so merging copies from several devices keeps each field's latest edit instead of
+   letting a newer copy of the whole record wipe, say, a 分判 set on another device.
+   fs = signature of each field group as last saved, fm = time a group was last really edited */
+const FG = { note: it => it.note || '', sub: it => it.sub || '', code: it => [it.code, it.ord, it.origLabel],
+  loc: it => [it.drawingId, it.x, it.y, it.loc, it.locText, it.locEdited], round: it => it.round || '',
+  fix: it => it.fix ? [it.fix.status, it.fix.reply || '', it.fix.done || 0, it.fix.by || '', (it.fix.photos || []).map(p => [p.id, p.shapes])] : null };
+const sigOf = (it, g) => { const t = JSON.stringify(FG[g](it)) || ''; let h = 5381; for (let i = 0; i < t.length; i++) h = (h * 33 + t.charCodeAt(i)) | 0; return h.toString(36) + t.length; };
+const sigsOf = it => Object.fromEntries(Object.keys(FG).map(g => [g, sigOf(it, g)]));
+function stampEdits(it) {
+  const now = Date.now(); it.fm = it.fm || {};
+  if (!it.fs) { it.fs = sigsOf(it); return; }
+  for (const g of Object.keys(FG)) { const sg = sigOf(it, g); if (it.fs[g] !== sg) { it.fm[g] = now; it.fs[g] = sg; } }
+}
+async function saveItem(it, merged) { if (merged) it.fs = sigsOf(it); else stampEdits(it); await DB.put('items', it); await refreshPhotos(it); }
 async function canRead(b) { if (!(b instanceof Blob) || !b.size) return false; try { return (await b.slice(0, 64).arrayBuffer()).byteLength > 0; } catch (e) { return false; } }
 // a readable copy of a photo's marked-up image: memory, then storage, then the original
 async function photoOut(it, ph) {
@@ -1304,6 +1317,44 @@ async function exportBackup(onlyNew) {
     S.settings.lastBackup = Date.now(); await saveKV(); updateBar(); if (S.panel === 'export') exportPanel();
   } catch (err) { busy(); toast('備份失敗：' + err.message, 6000); }
 }
+/* merge an incoming copy of a record into the local one, field group by field group:
+   the side edited later wins; an empty value from a copy without edit times never clears a filled one;
+   photos are combined (a lost local photo is replaced by the incoming one) */
+async function mergeRecord(ex, inc, conv) {
+  const tm = r => r.mod || r.created || 0, incNewer = tm(inc) > tm(ex);
+  const empty = (r, g) => g === 'note' ? !(r.note || '').trim() : g === 'sub' ? !r.sub : g === 'code' ? !r.code
+    : g === 'fix' ? !r.fix || ((r.fix.status || 'open') === 'open' && !r.fix.reply && !(r.fix.photos || []).length) : false;
+  const keys = { code: ['code', 'ord', 'origLabel'], loc: ['drawingId', 'x', 'y', 'loc', 'locText', 'locEdited'] };
+  let changed = false; const fm = { ...(ex.fm || {}) };
+  for (const g of Object.keys(FG)) {
+    if (sigOf(ex, g) === sigOf(inc, g)) continue;
+    const fe = ex.fm && ex.fm[g], fi = inc.fm && inc.fm[g];
+    let take;
+    if (empty(inc, g) && !empty(ex, g) && !fi) take = false;
+    else if (empty(ex, g) && !empty(inc, g) && !fe) take = true;
+    else take = (fi || tm(inc)) > (fe || tm(ex));
+    if (!take) continue;
+    if (g === 'fix') { const lp = (ex.fix && ex.fix.photos) || []; ex.fix = { ...inc.fix, photos: lp }; }
+    else for (const k of keys[g] || [g]) ex[k] = inc[k];
+    if (fi) fm[g] = fi; changed = true;
+  }
+  // photos: union by id
+  const mergeList = async (local, incoming) => {
+    for (const p of incoming || []) {
+      const l = local.find(q => q.id === p.id);
+      if (!l) { const c = await conv(p); if (c) { local.push(c); changed = true; } continue; }
+      const lost = !(await canRead(l.out)) && !(await canRead(l.orig));
+      const remark = incNewer && JSON.stringify(l.shapes || []) !== JSON.stringify(p.shapes || []);
+      if (lost || remark) { const c = await conv(p); if (c) { Object.assign(l, c); changed = true; } }
+    }
+    local.sort((a, b) => (a.t || 0) - (b.t || 0));
+  };
+  await mergeList(ex.photos, inc.photos);
+  if (inc.fix && inc.fix.photos && inc.fix.photos.length) { fixOf(ex); await mergeList(ex.fix.photos, inc.fix.photos); }
+  for (const k of ['by', 'dev', 'no', 'created', 'restored']) if (ex[k] == null && inc[k] != null) { ex[k] = inc[k]; changed = true; }
+  if (changed) { ex.fm = fm; ex.mod = Math.max(tm(ex), tm(inc)); }
+  return changed;
+}
 async function importBackup(file) {
   try {
     busy('正在匯入…'); let data, zip = null;
@@ -1319,26 +1370,18 @@ async function importBackup(file) {
       it.round = it.round ? (rmap[it.round] || mergeRound(it.round)) : 'r1';
       if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
       const ex = S.items.find(x => x.id === it.id);
-      if (ex && (ex.mod || ex.created || 0) >= (it.mod || it.created || 0)) {
-        // same or older copy: still use its photos to replace any whose stored file is lost
-        let healed = 0;
-        for (const [k, p] of allPhotos(ex).entries()) { if (await canRead(p.out) || await canRead(p.orig)) continue; const src = allPhotos(it).find(q => q.id === p.id);
-          const ob = src && typeof src.orig === 'string' && zip && zip.file(src.orig) ? new Blob([await zip.file(src.orig).async('blob')], { type: 'image/jpeg' }) : null;
-          if (ob) { p.orig = ob; p.out = await renderOut(ob, p.shapes); healed++; } }
-        if (healed) { await saveItem(ex); upd++; } else skip++; continue;
-      }
-      if (ex && ex.code && !it.code) Object.assign(it, { code: ex.code, ord: ex.ord, origLabel: ex.origLabel });
-      const photos = [];
-      for (const p of it.photos) {
-        let orig = typeof p.orig === 'string' && p.orig.startsWith('data:') ? await dataURLToBlob(p.orig) : zip ? await zip.file(p.orig).async('blob') : null;
-        if (!orig) continue; orig = new Blob([orig], { type: 'image/jpeg' });
+      const conv = async p => { // a photo of the incoming copy, with its image read from the backup
+        let orig = typeof p.orig === 'string' && p.orig.startsWith('data:') ? await dataURLToBlob(p.orig) : zip && typeof p.orig === 'string' && zip.file(p.orig) ? await zip.file(p.orig).async('blob') : null;
+        if (!orig) return null; orig = new Blob([orig], { type: 'image/jpeg' });
         const out = typeof p.out === 'string' && p.out.startsWith('data:') ? await dataURLToBlob(p.out) : await renderOut(orig, p.shapes);
-        photos.push({ ...p, orig, out });
+        const { orig: _o, out: _x, ...meta } = p; return { ...meta, orig, out };
+      };
+      if (!ex) {
+        const photos = (await Promise.all((it.photos || []).map(conv))).filter(Boolean);
+        let fix = it.fix; if (fix && fix.photos) fix = { ...fix, photos: (await Promise.all(fix.photos.map(conv))).filter(Boolean) };
+        const rec = { ...it, photos, fix }; await saveItem(rec, true); S.items.push(rec); add++; continue;
       }
-      let fix = it.fix;
-      if (fix && fix.photos) { const fp = []; for (const p of fix.photos) { let orig = typeof p.orig === 'string' && zip && zip.file(p.orig) ? await zip.file(p.orig).async('blob') : null; if (!orig) continue; orig = new Blob([orig], { type: 'image/jpeg' }); fp.push({ ...p, orig, out: await renderOut(orig, p.shapes) }); } fix = { ...fix, photos: fp }; }
-      const rec = { ...it, photos, fix }; await saveItem(rec);
-      if (ex) { Object.assign(ex, rec); upd++; } else { S.items.push(rec); add++; }
+      if (await mergeRecord(ex, it, conv)) { await saveItem(ex, true); upd++; } else skip++;
     }
     await saveKV(); await saveRounds(); busy(); toast(`匯入完成：新增 ${add}、更新 ${upd}、略過 ${skip}`, 4000);
     await showDrawing(S.cur || S.drawings[0]?.id); closePanel();
@@ -1925,6 +1968,7 @@ async function boot() {
     S.views = await DB.kget('views') || {};
     S.drawings = (await DB.all('drawings')).filter(d => d.views).sort((a, b) => (a.created || 0) - (b.created || 0));
     S.items = (await DB.all('items')).filter(i => i.loc && 'viewId' in i.loc);
+    for (const it of S.items) if (!it.fs) it.fs = sigsOf(it);
     S.rounds = await DB.kget('rounds') || [];
     if (!S.rounds.some(r => r.id === 'r1') && (!S.rounds.length || S.items.some(i => !i.round))) S.rounds.unshift({ ...R1 });
     if (!S.settings.round || !S.rounds.some(r => r.id === S.settings.round)) S.settings.round = S.rounds[S.rounds.length - 1].id;
