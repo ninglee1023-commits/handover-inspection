@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.7.1';
+const VERSION = '0.7.2';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -54,7 +54,7 @@ let toastT;
 function toast(msg, ms = 2200) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, ms); }
 function busy(msg) { $('#busy').hidden = !msg; if (msg) $('#busyMsg').textContent = msg; }
 const blobURLs = [];
-function burl(b) { const u = URL.createObjectURL(b); blobURLs.push(u); return u; }
+function burl(b) { try { const u = URL.createObjectURL(b); blobURLs.push(u); return u; } catch (e) { return 'data:,'; } } // 'data:,' fails to load, so the image's fallback kicks in
 function freeURLs() { while (blobURLs.length) URL.revokeObjectURL(blobURLs.pop()); }
 function loadImgOnce(url) { return new Promise((res, rej) => { const i = new Image(); i.decoding = 'async'; i.onload = () => res(i); i.onerror = () => rej(new Error('decode')); i.src = url; }); }
 /* iPad Safari sometimes loses the file behind a photo blob kept from IndexedDB (often on the 2nd report in a row),
@@ -72,6 +72,25 @@ async function loadImg(src) {
     try { return await loadImgOnce(await blobToDataURL(fresh)); } catch (e) { }
   }
   throw new Error(`圖片無法讀取（${src.type || '未知格式'}，${Math.round((src.size || 0) / 1024)} KB${bytes ? '' : '，檔案已失效'}）`);
+}
+/* iOS Safari moves a photo to a new file whenever its record is written again, and the Blob still held in
+   memory then points at the old, deleted file ("檔案已失效") while storage keeps a good copy. So every write
+   of a record re-reads its photo handles straight away, and anything that has to read a photo can fall
+   back to the stored copy. */
+const allPhotos = it => [...(it.photos || []), ...((it.fix && it.fix.photos) || [])];
+async function refreshPhotos(it) {
+  let f = null; try { f = await DB.get('items', it.id); } catch (e) { return; } if (!f) return;
+  const byId = new Map(allPhotos(f).map(p => [p.id, p]));
+  for (const p of allPhotos(it)) { const q = byId.get(p.id); if (q) { if (q.orig) p.orig = q.orig; if (q.out) p.out = q.out; } }
+}
+async function saveItem(it) { await DB.put('items', it); await refreshPhotos(it); }
+async function canRead(b) { if (!(b instanceof Blob) || !b.size) return false; try { return (await b.slice(0, 64).arrayBuffer()).byteLength > 0; } catch (e) { return false; } }
+// a readable copy of a photo's marked-up image: memory, then storage, then the original
+async function photoOut(it, ph) {
+  if (await canRead(ph.out)) return ph.out;
+  await refreshPhotos(it); if (await canRead(ph.out)) return ph.out;
+  if (await canRead(ph.orig)) return ph.shapes && ph.shapes.length ? renderOut(ph.orig, ph.shapes) : ph.orig;
+  return ph.out;
 }
 /* re-read records from IndexedDB before a report, so every photo comes with a fresh, valid file handle */
 async function freshItems(items) { const out = []; for (const it of items) { let f = null; try { f = await DB.get('items', it.id); } catch (e) { } out.push(f && f.photos ? f : it); } return out; }
@@ -529,6 +548,7 @@ function itemPanel() {
     <div class="row"><button class="btn warn" data-a="del">刪除此記錄</button><button class="btn dk" data-a="done">完成</button></div>`,
     { badge: `<span class="no">${itemLabel(it)}</span>` });
   const q = s => panel.querySelector(s);
+  panel.querySelectorAll('.ph1 img').forEach(img => { img.onerror = async () => { img.onerror = null; const af = img.dataset.a === 'edA'; const ph = (af ? it.fix.photos : it.photos)[+img.dataset.i]; if (!ph) return; const b = await photoOut(it, ph); if (await canRead(b)) img.src = burl(b); }; });
   const upd = (re) => { relocate(it); q('.idx').textContent = it.locText || '未設定位置'; q('#fLoc').value = it.locText; persistItem(); updateBar(); if (re) itemPanel(); };
   q('#fTower').onchange = e => { L.tower = e.target.value; upd(); };
   q('#fFloor').onchange = e => { L.floor = e.target.value; if (v) { S.floorSel[v.id] = L.floor; DB.kset('floorSel', S.floorSel); } upd(); };
@@ -551,14 +571,14 @@ function itemPanel() {
     const rb = e.target.closest('[data-room]'); if (rb) { L.room = L.room === rb.dataset.room ? '' : rb.dataset.room; upd(true); return; }
     if (e.target.closest('[data-a="reply"]')) { S.fixItem = it; return; }
     const a = e.target.dataset.a; if (!a) return;
-    if (a === 'edA') { const i = +e.target.dataset.i; const F = fixOf(it); const ph = F.photos[i]; const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistItem(true); itemPanel(); } }
+    if (a === 'edA') { const i = +e.target.dataset.i; const F = fixOf(it); const ph = F.photos[i]; if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistItem(true); itemPanel(); } }
     if (a === 'delA') { if (e.target.dataset.armed) { const F = fixOf(it); F.photos.splice(+e.target.dataset.i, 1); if (!F.photos.length) { F.status = 'open'; F.done = null; } await persistItem(true); renderOverlay(); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
     if (a === 'cam') $('#camInput').click();
     if (a === 'lib') $('#libInput').click();
     if (a === 'done') closePanel();
     if (a === 'prev' || a === 'next' || a === 'nextEmpty') stepItem(it, a);
     if (a === 'reloc') { it.locEdited = false; upd(true); }
-    if (a === 'ed') { const i = +e.target.dataset.i; const ph = it.photos[i]; const r = await openEditor(ph.orig, ph); if (r) { it.photos[i] = r; await persistItem(true); itemPanel(); } }
+    if (a === 'ed') { const i = +e.target.dataset.i; const ph = it.photos[i]; if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { it.photos[i] = r; await persistItem(true); itemPanel(); } }
     if (a === 'delph') { if (e.target.dataset.armed) { it.photos.splice(+e.target.dataset.i, 1); await persistItem(true); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
     if (a === 'del') {
       if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = '再按一次確認刪除'; return; }
@@ -574,10 +594,10 @@ async function persistItem(now) {
   it.mod = Date.now();
   if (it._new) { delete it._new; S.items.push(it); updateBar(); }
   clearTimeout(persistT);
-  const doit = () => DB.put('items', it).catch(err => toast('儲存失敗：' + err.message, 4000));
+  const doit = () => saveItem(it).catch(err => toast('儲存失敗：' + err.message, 4000));
   if (now) await doit(); else persistT = setTimeout(doit, 400);
 }
-function finishItem() { warmLater(); const it = S.editing; if (!it) return; if (!it._new) DB.put('items', it); S.editing = null; updateBar(); }
+function finishItem() { warmLater(); const it = S.editing; if (!it) return; if (!it._new) saveItem(it); S.editing = null; updateBar(); }
 
 async function addPhotoFile(file) {
   if (!file || !S.editing) return;
@@ -834,7 +854,7 @@ function openEditor(src, prev) {
       if (autoAlb && IS_ANDROID) {
         try { const f = ready && ready.v === pv ? ready.f : new File([await captioned({ ...it0, photos: [...it0.photos, 0] }, { id: phId, out, t: t0, w, h }, it0.photos.length)], photoName(it0, it0.photos.length), { type: 'image/jpeg' });
           saveFile(f, f.name); r.album = Date.now(); } catch (e) { toast('相片未能存入手機，可稍後在「導出 → 存入相簿」補存', 3500); }
-      } else if (albumP) albumP.then(async okA => { if (!okA) return toast('未存入相簿，可稍後在「導出 → 存入相簿」補存', 3500); r.album = Date.now(); if (S.items.includes(it0)) await DB.put('items', it0); updateBar(); });
+      } else if (albumP) albumP.then(async okA => { if (!okA) return toast('未存入相簿，可稍後在「導出 → 存入相簿」補存', 3500); r.album = Date.now(); if (S.items.includes(it0)) await saveItem(it0); updateBar(); });
       else if (autoAlb) toast('相片未能即時存入相簿，可稍後在「導出 → 存入相簿」補存', 3500);
       resolve(r);
     };
@@ -857,7 +877,7 @@ function exportPanel() {
   const last = S.settings.lastBackup ? fmtTime(S.settings.lastBackup) : '從未備份';
   openPanel('export', '導出及備份', `
     <div class="safe ${ub ? 'warn' : 'ok'}"><b>${ub ? `${ub} 項記錄未備份` : '全部記錄已備份'}</b><span>上次備份：${last}　·　未存入相簿：${ua} 張</span></div>
-    <div class="row"><button class="btn ${ub ? 'p' : ''}" data-a="bknew">備份新增記錄</button><button class="btn" data-a="album">存入相簿（${ua}）</button></div>
+    <div class="row"><button class="btn ${ub ? 'p' : ''}" data-a="bknew">備份新增記錄</button><button class="btn" data-a="repair">檢查及修復相片</button><button class="btn" data-a="album">存入相簿（${ua}）</button></div>
     <button class="btn" data-a="bk">完整備份（全部 ${S.items.length} 項）</button>
     <div class="note">備份檔是 ZIP，可用分享選單存到「檔案」、iCloud Drive、Google Drive 或 WhatsApp。ZIP 內的「相片」資料夾在電腦上可直接開啟，每張相底部印有編號、位置、時間及檢查人員。</div>
     <div class="sec">報告（${esc(curRound().name)}，${roundItems().length} 項）</div>
@@ -908,6 +928,7 @@ function exportPanel() {
     if (a === 'pdf') { const items = reportItems(kind, od); if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '還沒有任何記錄'); busy('正在生成 PDF…'); ovCache.clear(); try { const pr = (x, y) => busy(`正在生成 PDF… ${x}／${y}`); const r = kind === 'inspect' ? await buildReportPages(items, pr) : await buildFixPages(items, pr, kind); ovCache.clear(); await exportPdf(r.pages, kind); if (r.fails.length) reportFails(r.fails); } catch (err) { busy(); toast('PDF 生成失敗：' + err.message, 6000); } }
     if (a === 'bk') exportBackup(false);
     if (a === 'bknew') exportBackup(true);
+    if (a === 'repair') repairPhotos();
     if (a === 'album') albumPanel();
     if (a === 'setup') setupPanel();
     if (a === 'imp') $('#jsonInput').click();
@@ -1147,7 +1168,7 @@ async function renumberAll() {
     const k = key(it); const n = (cnt.get(k) || 0) + 1; cnt.set(k, n);
     if (!it.origLabel) it.origLabel = `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
     it.code = `${k}-${String(n).padStart(3, '0')}`; it.ord = i; it.mod = now;
-    await DB.put('items', it);
+    await saveItem(it);
   }
   renderOverlay(); updateBar(); toast(`已整理 ${list.length} 項記錄的編號（${cnt.size} 個樓層）`, 4000);
 }
@@ -1163,7 +1184,7 @@ async function renderOut(orig, shapes) {
 }
 /* photo with a caption strip burnt in: readable on its own in the Photos app, WhatsApp or a folder */
 async function captioned(it, ph, i, after) {
-  const img = await loadImg(ph.out); const w = img.naturalWidth, h = img.naturalHeight;
+  const img = await loadImg(await photoOut(it, ph)); const w = img.naturalWidth, h = img.naturalHeight;
   const fs = Math.max(18, Math.round(w / 48)), pad = Math.round(fs * 0.6), lh = Math.round(fs * 1.35);
   const list = after ? ((it.fix && it.fix.photos) || []) : it.photos, cntN = Math.max(list.length, i + 1);
   const d = S.drawings.find(x => x.id === it.drawingId) || {};
@@ -1199,23 +1220,54 @@ async function albumPanel() {
   go.onclick = async () => {
     const part = todo.slice(0, N);
     if (IS_ANDROID) {
-      try { busy('正在存入…'); for (const [it, p, i, af] of part) { saveFile(await captioned(it, p, i, af), photoName(it, i, af)); p.album = Date.now(); await DB.put('items', it); await new Promise(r => setTimeout(r, 250)); }
-        busy(); toast(`已存入 ${part.length} 張`); albumPanel(); updateBar(); } catch (e) { busy(); toast('未能存入：' + e.message, 4000); }
+      const bad = []; let ok = 0;
+      busy('正在存入…');
+      for (const [it, p, i, af] of part) { try { saveFile(await captioned(it, p, i, af), photoName(it, i, af)); p.album = Date.now(); await saveItem(it); ok++; await new Promise(r => setTimeout(r, 250)); } catch (e) { bad.push(`${itemLabel(it)} ${af ? '回復' : '照片'}${i + 1}：${e.message}`); } }
+      busy(); toast(`已存入 ${ok} 張`); albumPanel(); updateBar(); if (bad.length) badPhotos(bad);
       return;
     }
     if (!navigator.canShare) return toast('這個瀏覽器不支援存入相簿，請用 iPad Safari');
     try {
-      busy('正在準備相片…'); const files = [];
-      for (const [it, p, i, af] of part) files.push(new File([await captioned(it, p, i, af)], photoName(it, i, af), { type: 'image/jpeg' }));
+      busy('正在準備相片…'); const files = [], done = [], bad = [];
+      for (const [it, p, i, af] of part) { try { files.push(new File([await captioned(it, p, i, af)], photoName(it, i, af), { type: 'image/jpeg' })); done.push([it, p]); } catch (e) { bad.push(`${itemLabel(it)} ${af ? '回復' : '照片'}${i + 1}：${e.message}`); } }
       busy();
+      if (!files.length) return badPhotos(bad);
       if (!navigator.canShare({ files })) return toast('這部機不能經分享選單存相');
       await navigator.share({ files });
-      for (const [it, p] of part) { p.album = Date.now(); await DB.put('items', it); }
-      toast(`已存入 ${part.length} 張`); albumPanel(); updateBar();
+      for (const [it, p] of done) { p.album = Date.now(); await saveItem(it); }
+      toast(`已存入 ${done.length} 張`); albumPanel(); updateBar(); if (bad.length) badPhotos(bad);
     } catch (e) { busy(); if (e.name !== 'AbortError') toast('未能存入：' + e.message, 4000); }
   };
 }
 
+function badPhotos(bad) {
+  openPanel('fails', `${bad.length} 張相片未能讀取`, `<div class="note">其餘相片已處理。請到「導出 → 檢查及修復相片」嘗試修復；修復不到的，可用以前的備份檔或相簿內的相片（「從相片還原記錄」）補回。</div><div class="list">${bad.map(f => `<div class="li" style="display:block">${esc(f)}</div>`).join('')}</div><button class="btn p" data-a="fix">檢查及修復相片</button>`);
+  panel.querySelector('[data-a="fix"]').onclick = () => repairPhotos();
+}
+/* check every stored photo; rebuild a lost copy from the other one (marked-up ↔ original) */
+async function repairPhotos() {
+  let n = 0, fixed = 0; const lost = [];
+  try {
+    const recs = await DB.all('items');
+    for (const f of recs) {
+      let changed = false;
+      for (const [k, ph] of allPhotos(f).entries()) {
+        busy(`正在檢查相片 ${++n}`);
+        const o = await canRead(ph.orig), x = await canRead(ph.out);
+        if (o && x) continue;
+        const af = k >= (f.photos || []).length, idx = af ? k - f.photos.length : k, lbl = `${itemLabel(f)} ${af ? '回復' : '照片'}${idx + 1}`;
+        if (o) { try { ph.out = await renderOut(ph.orig, ph.shapes); changed = true; fixed++; continue; } catch (e) { } }
+        if (x) { ph.orig = ph.out; ph.shapes = []; changed = true; fixed++; continue; } // markings are kept, baked into the image
+        lost.push(lbl);
+      }
+      if (changed) { await DB.put('items', f); const it = S.items.find(i => i.id === f.id); if (it) await refreshPhotos(it); }
+    }
+    busy();
+    openPanel('repair', '檢查及修復相片', `<div class="note">檢查了 ${n} 張相片${fixed ? `，修復了 <b>${fixed}</b> 張（用同一張相的另一份副本重建）` : '，沒有需要修復的'}。</div>
+      ${lost.length ? `<div class="note"><b>${lost.length} 張</b>的原相及標記版都已失效，未能在程式內修復。可用以下方法補回：<br>① 以前導出的備份檔（ZIP）：「匯入備份檔」會補回相片<br>② 相簿內本程式存過的相片：「從相片還原記錄」會放回原位</div><div class="list">${lost.map(l => `<div class="li" style="display:block">${esc(l)}</div>`).join('')}</div>` : ''}`);
+    renderOverlay(); updateBar();
+  } catch (e) { busy(); toast('檢查失敗：' + e.message, 6000); }
+}
 /* ZIP backup: data.json + original photos + captioned photos (viewable without the app) */
 function reportFails(fails) {
   openPanel('fails', '報告已生成，但部分圖片有問題', `<div class="note">以下 ${fails.length} 處在報告內以紅字標示。請截圖這個畫面給我，方便查找原因。</div><div class="list">${fails.map(f => `<div class="li" style="display:block">${esc(f)}</div>`).join('')}</div>`);
@@ -1267,7 +1319,14 @@ async function importBackup(file) {
       it.round = it.round ? (rmap[it.round] || mergeRound(it.round)) : 'r1';
       if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
       const ex = S.items.find(x => x.id === it.id);
-      if (ex && (ex.mod || ex.created || 0) >= (it.mod || it.created || 0)) { skip++; continue; }
+      if (ex && (ex.mod || ex.created || 0) >= (it.mod || it.created || 0)) {
+        // same or older copy: still use its photos to replace any whose stored file is lost
+        let healed = 0;
+        for (const [k, p] of allPhotos(ex).entries()) { if (await canRead(p.out) || await canRead(p.orig)) continue; const src = allPhotos(it).find(q => q.id === p.id);
+          const ob = src && typeof src.orig === 'string' && zip && zip.file(src.orig) ? new Blob([await zip.file(src.orig).async('blob')], { type: 'image/jpeg' }) : null;
+          if (ob) { p.orig = ob; p.out = await renderOut(ob, p.shapes); healed++; } }
+        if (healed) { await saveItem(ex); upd++; } else skip++; continue;
+      }
       if (ex && ex.code && !it.code) Object.assign(it, { code: ex.code, ord: ex.ord, origLabel: ex.origLabel });
       const photos = [];
       for (const p of it.photos) {
@@ -1278,7 +1337,7 @@ async function importBackup(file) {
       }
       let fix = it.fix;
       if (fix && fix.photos) { const fp = []; for (const p of fix.photos) { let orig = typeof p.orig === 'string' && zip && zip.file(p.orig) ? await zip.file(p.orig).async('blob') : null; if (!orig) continue; orig = new Blob([orig], { type: 'image/jpeg' }); fp.push({ ...p, orig, out: await renderOut(orig, p.shapes) }); } fix = { ...fix, photos: fp }; }
-      const rec = { ...it, photos, fix }; await DB.put('items', rec);
+      const rec = { ...it, photos, fix }; await saveItem(rec);
       if (ex) { Object.assign(ex, rec); upd++; } else { S.items.push(rec); add++; }
     }
     await saveKV(); await saveRounds(); busy(); toast(`匯入完成：新增 ${add}、更新 ${upd}、略過 ${skip}`, 4000);
@@ -1297,7 +1356,7 @@ function setupPanel(first) {
     const dev = ($('#sDev').value.trim().toUpperCase() || 'A').replace(/[^A-Z0-9]/g, '') || 'A';
     const clash = S.items.some(i => i.dev && i.dev !== dev && i.dev === S.settings.dev) && false;
     S.settings.dev = dev; S.settings.inspector = $('#sBy').value.trim(); if (!S.project.inspector) S.project.inspector = S.settings.inspector;
-    for (const it of S.items) if (!it.dev) { it.dev = dev; await DB.put('items', it); }
+    for (const it of S.items) if (!it.dev) { it.dev = dev; await saveItem(it); }
     await saveKV(); closePanel(); updateBar(); renderOverlay(); toast(`本機代號 ${dev}`);
   };
 }
@@ -1542,7 +1601,7 @@ const FIX_ST = { open: '未回復', done: '已完成', na: '不跟進' };
 const fixOf = it => it.fix || (it.fix = { status: 'open', reply: '', photos: [] });
 const fixStatus = it => (it.fix && it.fix.status) || 'open';
 function fixCounts() { const L = roundItems(); return { all: L.length, open: L.filter(i => fixStatus(i) === 'open').length, done: L.filter(i => fixStatus(i) === 'done').length }; }
-async function persistFix(it) { it.mod = Date.now(); await DB.put('items', it); updateBar(); }
+async function persistFix(it) { it.mod = Date.now(); await saveItem(it); updateBar(); }
 function fixPanel(it) {
   freeURLs(); S.fixItem = it; const F = fixOf(it); const d = S.drawings.find(x => x.id === it.drawingId); const v = d ? viewById(d, it.loc.viewId) : null;
   const before = it.photos.map(ph => `<div class="ph1"><img src="${burl(ph.out)}" alt=""></div>`).join('') || '<div class="note">沒有完成前照片</div>';
@@ -1567,7 +1626,7 @@ function fixPanel(it) {
     const a = e.target.dataset.a; if (!a) return;
     if (a === 'close2') closePanel();
     if (a === 'ghost') ghostCam(it);
-    if (a === 'ed') { const i = +e.target.dataset.i; const ph = F.photos[i]; const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistFix(it); fixPanel(it); } }
+    if (a === 'ed') { const i = +e.target.dataset.i; const ph = F.photos[i]; if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistFix(it); fixPanel(it); } }
     if (a === 'delph') { if (e.target.dataset.armed) { F.photos.splice(+e.target.dataset.i, 1); await persistFix(it); fixPanel(it); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
   };
 }
@@ -1690,12 +1749,14 @@ async function restoreFromPhotos(files) {
       S.items.push(it); add++;
     }
     const list = m.k === 'a' ? fixOf(it).photos : it.photos;
-    if (list.some(p => p.id === m.p)) { skip++; continue; }
+    const exP = list.find(p => p.id === m.p);
+    if (exP && (await canRead(exP.out) || await canRead(exP.orig))) { skip++; continue; }
+    if (exP) list.splice(list.indexOf(exP), 1);
     const body = await stripCaption(f, m);
     list.push({ id: m.p, orig: body.blob, out: body.blob, shapes: [], w: body.w, h: body.h, t: m.pt || Date.now(), album: Date.now(), pi: m.pi });
     list.sort((a, b) => (a.pi ?? 0) - (b.pi ?? 0)); ph++; touched.add(it);
   }
-  for (const it of touched) { it.mod = Date.now(); await DB.put('items', it); }
+  for (const it of touched) { it.mod = Date.now(); await saveItem(it); }
   await saveRounds(); busy();
   openPanel('restore', '從相片還原', `<div class="note">還原了 ${add} 項記錄、${ph} 張相片${skip ? `；${skip} 張已存在，略過` : ''}。記錄放回原來的圖紙位置及驗收批次。</div>${bad.length ? `<div class="note">以下 ${bad.length} 張相片讀不到位置資料（可能不是本程式存的相，或相片被裁剪／壓縮過）：<br>${bad.map(esc).join('<br>')}</div>` : ''}`);
   renderOverlay(); updateBar();
