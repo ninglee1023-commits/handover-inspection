@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.7.4';
+const VERSION = '0.7.5';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -519,8 +519,9 @@ function stepItem(it, how) {
   let nx = null;
   if (how === 'prev') nx = L[i - 1];
   else if (how === 'next') nx = L[i + 1];
+  else if (how === 'nextNoSub') nx = [...L.slice(i + 1), ...L.slice(0, i)].find(x => !subsOf(x).length);
   else nx = [...L.slice(i + 1), ...L.slice(0, i)].find(x => !(x.note || '').trim());
-  if (!nx) return toast(how === 'prev' ? '已是第一項' : how === 'next' ? '已是最後一項' : '全部記錄都已填描述');
+  if (!nx) return toast(how === 'prev' ? '已是第一項' : how === 'next' ? '已是最後一項' : how === 'nextNoSub' ? (subsOf(it).length ? '全部記錄都已指定分判' : '只剩這一項未指定分判') : ((it.note || '').trim() ? '全部記錄都已填描述' : '只剩這一項未填描述'));
   panel.querySelectorAll('.nav .btn').forEach(b => b.disabled = true); // the old panel stays up while another drawing loads
   finishItem(); S.editing = nx; showFloorOf(nx);
   const go = () => { itemPanel(); centerOn(nx.x, nx.y, Math.max(S.view.k, 1)); const n = $('#fNote'); if (n && !(nx.note || '').trim()) n.focus(); };
@@ -557,7 +558,8 @@ function itemPanel() {
     <div class="f-l">分判（可選多個）</div>
     <div class="chips pick subs">${subsOf(it).map(x => `<button class="chip on" data-rmsub="${esc(x)}">${esc(x)}　✕</button>`).join('') || '<span class="chip">未指定</span>'}</div>
     <label class="f"><select id="fSub"><option value="">＋ 加分判…</option>${allSubs().filter(x => !subsOf(it).includes(x)).map(x => `<option>${esc(x)}</option>`).join('')}<option value="+">＋ 新增分判名稱…</option></select></label>
-    <div class="row nav"><button class="btn" data-a="prev">‹ 上一個</button><button class="btn" data-a="next">下一個 ›</button><button class="btn" data-a="nextEmpty">下一個未填描述</button></div>
+    <div class="row nav"><button class="btn" data-a="prev">‹ 上一個</button><button class="btn" data-a="next">下一個 ›</button></div>
+    <div class="row nav"><button class="btn" data-a="nextEmpty">下一個未填描述</button><button class="btn" data-a="nextNoSub">下一個未指定分判</button></div>
     <div class="note navpos">${navPos(it)}</div>
     <details><summary>手動修改位置文字</summary><label class="f"><textarea id="fLoc" rows="2">${esc(it.locText)}</textarea></label>${it.locEdited ? '<button class="btn" data-a="reloc">按上面選項重新生成</button>' : ''}</details>
     <div class="row"><button class="btn warn" data-a="del">刪除此記錄</button><button class="btn dk" data-a="done">完成</button></div>`,
@@ -591,7 +593,7 @@ function itemPanel() {
     if (a === 'cam') $('#camInput').click();
     if (a === 'lib') $('#libInput').click();
     if (a === 'done') closePanel();
-    if (a === 'prev' || a === 'next' || a === 'nextEmpty') stepItem(it, a);
+    if (a === 'prev' || a === 'next' || a === 'nextEmpty' || a === 'nextNoSub') stepItem(it, a);
     if (a === 'reloc') { it.locEdited = false; upd(true); }
     if (a === 'ed') { const i = +e.target.dataset.i; const ph = it.photos[i]; if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { it.photos[i] = r; await persistItem(true); itemPanel(); } }
     if (a === 'delph') { if (e.target.dataset.armed) { it.photos.splice(+e.target.dataset.i, 1); await persistItem(true); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
