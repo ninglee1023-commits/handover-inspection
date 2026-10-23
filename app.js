@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.7.7';
+const VERSION = '0.7.8';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -276,7 +276,7 @@ let viewSaveT = 0, stageWas = null;
 function applyView() {
   if (!stageWas) { const r = stageRect(); if (r.width) stageWas = { w: r.width, h: r.height }; }
   clearTimeout(viewSaveT); viewSaveT = setTimeout(() => { if (S.cur) { S.views[S.cur] = { ...S.view }; DB.kset('views', S.views); } }, 400);
-  board.style.transform = `translate(${S.view.x}px,${S.view.y}px) scale(${S.view.k})`; ovFrame();
+  board.style.transform = `translate(${S.view.x}px,${S.view.y}px) scale(${S.view.k})`; ovFrame(); placeHires();
   if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderOverlay(); });
   clearTimeout(hiT); hiT = setTimeout(renderHires, 220);
 }
@@ -302,8 +302,14 @@ function ensureVisible(p) {
   if (sx < 30 || sy < 70 || sx > A.w - 30 || sy > A.h - 30) centerOn(p.x, p.y);
 }
 
-/* sharp rendering of the visible area once zoomed past the base image resolution */
-let hiTask = null, hiSeq = 0;
+/* sharp rendering of the visible area once zoomed past the base image resolution.
+   The canvas sits outside the scaled board and is sized in screen pixels: iPad Safari rasterises a
+   will-change:transform layer once and then just magnifies that bitmap, which blurred the sharp render. */
+let hiTask = null, hiSeq = 0, hiBox = null;
+function placeHires() {
+  if (!hiBox) return; const k = S.view.k, [x0, y0, x1, y1] = hiBox;
+  Object.assign(hires.style, { left: (S.view.x + x0 * k) + 'px', top: (S.view.y + y0 * k) + 'px', width: ((x1 - x0) * k) + 'px', height: ((y1 - y0) * k) + 'px' });
+}
 async function renderHires() {
   const d = curD(); if (!d || d.kind !== 'pdf' || !d.base) { hires.hidden = true; return; }
   const dpr = Math.min(window.devicePixelRatio || 1, 2); const s = S.view.k * dpr;
@@ -312,7 +318,7 @@ async function renderHires() {
   let x0 = Math.max(0, -S.view.x / S.view.k), y0 = Math.max(0, -S.view.y / S.view.k);
   let x1 = Math.min(d.w, (r.width - S.view.x) / S.view.k), y1 = Math.min(d.h, (r.height - S.view.y) / S.view.k);
   if (x1 <= x0 || y1 <= y0) return;
-  let sc = s; const maxPx = 5e6; if ((x1 - x0) * (y1 - y0) * sc * sc > maxPx) sc = Math.sqrt(maxPx / ((x1 - x0) * (y1 - y0)));
+  let sc = s; const maxPx = 6e6; if ((x1 - x0) * (y1 - y0) * sc * sc > maxPx) sc = Math.sqrt(maxPx / ((x1 - x0) * (y1 - y0)));
   const seq = ++hiSeq;
   try {
     if (hiTask) { hiTask.cancel(); hiTask = null; }
@@ -324,7 +330,7 @@ async function renderHires() {
     await hiTask.promise; hiTask = null;
     if (seq !== hiSeq || S.cur !== d.id) return;
     hires.width = c.width; hires.height = c.height; hires.getContext('2d').drawImage(c, 0, 0); c.width = c.height = 0;
-    Object.assign(hires.style, { left: x0 + 'px', top: y0 + 'px', width: (x1 - x0) + 'px', height: (y1 - y0) + 'px' }); hires.hidden = false;
+    hiBox = [x0, y0, x1, y1]; placeHires(); hires.hidden = false;
   } catch (e) { if (e && e.name !== 'RenderingCancelledException') console.warn(e); }
 }
 

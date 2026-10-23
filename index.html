@@ -68,7 +68,7 @@ label.btn{display:flex;align-items:center;justify-content:center;cursor:pointer}
 #stage{position:fixed;inset:0;touch-action:none;overflow:hidden;background:var(--paper)}
 #board{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
 #board img{display:block;pointer-events:none;-webkit-user-drag:none;background:#fff;box-shadow:0 1px 8px rgba(0,0,0,.18)}
-#hires{position:absolute;pointer-events:none}
+#hires{position:absolute;left:0;top:0;pointer-events:none}
 #ov{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;pointer-events:none}
 #empty{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;color:var(--muted)}
 
@@ -180,7 +180,8 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 </head>
 <body>
 <div id="stage">
-  <div id="board"><img id="dwg" alt=""><canvas id="hires" hidden></canvas></div>
+  <div id="board"><img id="dwg" alt=""></div>
+  <canvas id="hires" hidden></canvas>
   <svg id="ov" xmlns="http://www.w3.org/2000/svg"></svg>
 </div>
 <div id="empty" hidden><div><p style="font-size:17px;color:var(--fg)">正在載入圖紙…</p><p>如長時間沒有反應，請連網後重新開啟</p></div></div>
