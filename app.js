@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.7.8';
+const VERSION = '0.7.9';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -73,7 +73,7 @@ function blobWarning() {
 const S = {
   project: { name: '', site: '', date: today(), inspector: '', company: '' },
   settings: { autoCam: true, showZones: true, crop: 'm', keyPlan: true },
-  floorSel: {}, recentAreas: [], views: {}, repSub: '',
+  floorSel: {}, recentAreas: [], views: {}, rots: {}, repSub: '',
   drawings: [], items: [], rounds: [], fixOnlyOpen: false, fixItem: null, cur: null, mode: 'inspect', tool: 'select',
   view: { x: 0, y: 0, k: 1 }, editing: null, draft: null, sel: null, panel: null, listScope: 'cur',
 };
@@ -269,6 +269,14 @@ const floorsToText = f => (f || []).join(', ');
 /* ---------------- view / rendering ---------------- */
 const stage = $('#stage'), board = $('#board'), dwg = $('#dwg'), ov = $('#ov'), hires = $('#hires');
 let raf = 0, hiT = 0;
+/* each drawing can be turned in quarter turns (clockwise). S.view maps the turned drawing to the screen;
+   pins, zones and records always keep plain drawing coordinates, so reports are unaffected */
+const rotOf = d => (d && S.rots[d.id]) || 0;
+const rotDims = d => rotOf(d) % 2 ? [d.h, d.w] : [d.w, d.h];
+function fwd(d, x, y) { const r = rotOf(d); return r === 1 ? { x: d.h - y, y: x } : r === 2 ? { x: d.w - x, y: d.h - y } : r === 3 ? { x: y, y: d.w - x } : { x, y }; }
+function inv(d, x, y) { const r = rotOf(d); return r === 1 ? { x: y, y: d.h - x } : r === 2 ? { x: d.w - x, y: d.h - y } : r === 3 ? { x: d.w - y, y: x } : { x, y }; }
+// the same turn as fwd(), written as a transform: [dx, dy, degrees]
+function rotT(d) { const r = rotOf(d); return [r === 1 ? d.h : r === 2 ? d.w : 0, r === 2 ? d.h : r === 3 ? d.w : 0, r * 90]; }
 // the overlay sits outside the zoomed board and maps drawing coordinates through its viewBox, so the
 // browser draws pins and numbers at screen resolution instead of enlarging a bitmap
 function ovFrame() { const r = stageRect(), k = S.view.k || 1; ov.setAttribute('viewBox', `${-S.view.x / k} ${-S.view.y / k} ${r.width / k} ${r.height / k}`); }
@@ -276,12 +284,13 @@ let viewSaveT = 0, stageWas = null;
 function applyView() {
   if (!stageWas) { const r = stageRect(); if (r.width) stageWas = { w: r.width, h: r.height }; }
   clearTimeout(viewSaveT); viewSaveT = setTimeout(() => { if (S.cur) { S.views[S.cur] = { ...S.view }; DB.kset('views', S.views); } }, 400);
-  board.style.transform = `translate(${S.view.x}px,${S.view.y}px) scale(${S.view.k})`; ovFrame(); placeHires();
+  const [tx, ty, deg] = rotT(curD() || {});
+  board.style.transform = `translate(${S.view.x}px,${S.view.y}px) scale(${S.view.k})` + (deg ? ` translate(${tx}px,${ty}px) rotate(${deg}deg)` : ''); ovFrame(); placeHires();
   if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderOverlay(); });
   clearTimeout(hiT); hiT = setTimeout(renderHires, 220);
 }
 function stageRect() { return stage.getBoundingClientRect(); }
-function toDwg(cx, cy) { const r = stageRect(); return { x: (cx - r.left - S.view.x) / S.view.k, y: (cy - r.top - S.view.y) / S.view.k }; }
+function toDwg(cx, cy) { const r = stageRect(); return inv(curD() || {}, (cx - r.left - S.view.x) / S.view.k, (cy - r.top - S.view.y) / S.view.k); }
 function visibleArea() {
   const r = stageRect(); const pw = (panelOpen() && !sheetMQ.matches) ? 400 : 0, ph = (panelOpen() && sheetMQ.matches) ? r.height * 0.55 : 0;
   return { w: r.width - pw, h: r.height - ph, top: 60 };
@@ -290,15 +299,15 @@ function fitBox(b) {
   const A = visibleArea(); const W = A.w, H = A.h - A.top; const bw = b[2] - b[0], bh = b[3] - b[1];
   const k = Math.min(W / bw, H / bh) * 0.94; S.view = { k, x: (W - bw * k) / 2 - b[0] * k, y: A.top + (H - bh * k) / 2 - b[1] * k }; applyView();
 }
-function fit() { const d = curD(); if (d) fitBox([0, 0, d.w, d.h]); }
+function fit() { const d = curD(); if (d) fitBox([0, 0, ...rotDims(d)]); }
 function zoomAt(f, cx, cy) {
   const r = stageRect(); cx ??= r.width / 2; cy ??= r.height / 2;
   const k = clamp(S.view.k * f, 0.03, 12); const px = (cx - S.view.x) / S.view.k, py = (cy - S.view.y) / S.view.k;
   S.view = { k, x: cx - px * k, y: cy - py * k }; applyView();
 }
-function centerOn(x, y, k) { const A = visibleArea(); k = k || S.view.k; S.view = { k, x: A.w / 2 - x * k, y: 30 + A.h / 2 - y * k }; applyView(); }
+function centerOn(x, y, k) { ({ x, y } = fwd(curD() || {}, x, y)); const A = visibleArea(); k = k || S.view.k; S.view = { k, x: A.w / 2 - x * k, y: 30 + A.h / 2 - y * k }; applyView(); }
 function ensureVisible(p) {
-  const A = visibleArea(); const sx = S.view.x + p.x * S.view.k, sy = S.view.y + p.y * S.view.k;
+  const A = visibleArea(), q = fwd(curD() || {}, p.x, p.y); const sx = S.view.x + q.x * S.view.k, sy = S.view.y + q.y * S.view.k;
   if (sx < 30 || sy < 70 || sx > A.w - 30 || sy > A.h - 30) centerOn(p.x, p.y);
 }
 
@@ -314,10 +323,11 @@ async function renderHires() {
   const d = curD(); if (!d || d.kind !== 'pdf' || !d.base) { hires.hidden = true; return; }
   const dpr = Math.min(window.devicePixelRatio || 1, 2); const s = S.view.k * dpr;
   if (s <= d.base.scale * 1.15) { hires.hidden = true; return; }
-  const r = stageRect();
-  let x0 = Math.max(0, -S.view.x / S.view.k), y0 = Math.max(0, -S.view.y / S.view.k);
-  let x1 = Math.min(d.w, (r.width - S.view.x) / S.view.k), y1 = Math.min(d.h, (r.height - S.view.y) / S.view.k);
-  if (x1 <= x0 || y1 <= y0) return;
+  const r = stageRect(), [rw, rh] = rotDims(d);
+  const X0 = Math.max(0, -S.view.x / S.view.k), Y0 = Math.max(0, -S.view.y / S.view.k);
+  const X1 = Math.min(rw, (r.width - S.view.x) / S.view.k), Y1 = Math.min(rh, (r.height - S.view.y) / S.view.k);
+  if (X1 <= X0 || Y1 <= Y0) return;
+  const a = inv(d, X0, Y0), b = inv(d, X1, Y1), x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y), x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y), rot = rotOf(d);
   let sc = s; const maxPx = 6e6; if ((x1 - x0) * (y1 - y0) * sc * sc > maxPx) sc = Math.sqrt(maxPx / ((x1 - x0) * (y1 - y0)));
   const seq = ++hiSeq;
   try {
@@ -328,9 +338,11 @@ async function renderHires() {
     const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
     hiTask = page.render({ canvasContext: ctx, viewport: page.getViewport({ scale: sc, offsetX: -x0 * sc, offsetY: -y0 * sc }) });
     await hiTask.promise; hiTask = null;
-    if (seq !== hiSeq || S.cur !== d.id) return;
-    hires.width = c.width; hires.height = c.height; hires.getContext('2d').drawImage(c, 0, 0); c.width = c.height = 0;
-    hiBox = [x0, y0, x1, y1]; placeHires(); hires.hidden = false;
+    if (seq !== hiSeq || S.cur !== d.id || rot !== rotOf(d)) return;
+    // turn the pixels here rather than with CSS, so iPad shows them 1:1
+    hires.width = rot % 2 ? c.height : c.width; hires.height = rot % 2 ? c.width : c.height;
+    const hx = hires.getContext('2d'); hx.translate(rot === 1 || rot === 2 ? hires.width : 0, rot === 2 || rot === 3 ? hires.height : 0); hx.rotate(rot * Math.PI / 2); hx.drawImage(c, 0, 0); c.width = c.height = 0;
+    hiBox = [X0, Y0, X1, Y1]; placeHires(); hires.hidden = false;
   } catch (e) { if (e && e.name !== 'RenderingCancelledException') console.warn(e); }
 }
 
@@ -382,6 +394,9 @@ function renderOverlay() {
       h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="${pf}" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
     }
   }
+  const [tx, ty, deg] = rotT(d);
+  // labels stay upright when the drawing is turned
+  if (deg) h = `<g transform="translate(${tx} ${ty}) rotate(${deg})">${h.replace(/<text x="([^"]+)" y="([^"]+)"/g, `<text x="$1" y="$2" transform="rotate(${-deg} $1 $2)"`)}</g>`;
   ov.innerHTML = h;
 }
 
@@ -841,6 +856,12 @@ $('#fixLib').onchange = e => { const f = e.target.files[0]; e.target.value = '';
 $('#fixCam').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
 $('#photoRestore').onchange = e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) restoreFromPhotos(fs); };
 $('#zIn').onclick = () => zoomAt(1.6); $('#zOut').onclick = () => zoomAt(1 / 1.6); $('#zFit').onclick = () => fit();
+// turn 90° clockwise around the middle of the screen
+$('#zRot').onclick = () => {
+  const d = curD(); if (!d) return; const A = visibleArea(); const c = toDwg(stageRect().left + A.w / 2, stageRect().top + 30 + A.h / 2);
+  S.rots[d.id] = (rotOf(d) + 1) % 4; DB.kset('rots', S.rots); hires.hidden = true; hiBox = null; hiSeq++;
+  centerOn(c.x, c.y); renderOverlay();
+};
 // the iPad resizes the page when the camera or keyboard comes and goes: keep the spot in the middle where it was
 let rzT;
 addEventListener('resize', () => {
@@ -2015,6 +2036,7 @@ async function boot() {
     for (const k of ['project', 'settings', 'floorSel']) S[k] = { ...S[k], ...(await DB.kget(k) || {}) };
     S.recentAreas = await DB.kget('recentAreas') || [];
     S.views = await DB.kget('views') || {};
+    S.rots = await DB.kget('rots') || {};
     S.drawings = (await DB.all('drawings')).filter(d => d.views).sort((a, b) => (a.created || 0) - (b.created || 0));
     S.items = (await DB.all('items')).filter(i => i.loc && 'viewId' in i.loc);
     for (const it of S.items) if (!it.fs) it.fs = sigsOf(it);
