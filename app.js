@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.7.6';
+const VERSION = '0.7.7';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -32,13 +32,43 @@ const DB = {
     });
   },
   st(n, m = 'readonly') { return this.db.transaction(n, m).objectStore(n); },
-  all(n) { return rq(this.st(n).getAll()); },
-  get(n, k) { return rq(this.st(n).get(k)); },
-  put(n, v) { return rq(this.st(n, 'readwrite').put(v)); },
+  /* Safari in Private Browsing (and some low-storage states) refuses Blobs in IndexedDB with
+     "Error preparing Blob/File data to be stored in object store". Then files are stored as raw bytes
+     ({__b, t}) and turned back into Blobs on every read. */
+  noBlobs: false,
+  async write(store, v, k) {
+    if (!this.noBlobs) { try { return await rq(k === undefined ? this.st(store, 'readwrite').put(v) : this.st(store, 'readwrite').put(v, k)); } catch (e) { if (!/blob|file/i.test(String(e && e.message))) throw e; this.noBlobs = true; blobWarning(); } }
+    const enc = await encBlobs(v); return rq(k === undefined ? this.st(store, 'readwrite').put(enc) : this.st(store, 'readwrite').put(enc, k));
+  },
+  async all(n) { return (await rq(this.st(n).getAll())).map(decBlobs); },
+  async get(n, k) { return decBlobs(await rq(this.st(n).get(k))); },
+  put(n, v) { return this.write(n, v); },
   del(n, k) { return rq(this.st(n, 'readwrite').delete(k)); },
-  kget(k) { return rq(this.st('kv').get(k)); },
-  kset(k, v) { return rq(this.st('kv', 'readwrite').put(v, k)); },
+  async kget(k) { return decBlobs(await rq(this.st('kv').get(k))); },
+  kset(k, v) { return this.write('kv', v, k); },
 };
+const plainObj = v => v && typeof v === 'object' && (Object.getPrototypeOf(v) === Object.prototype || Array.isArray(v));
+async function encBlobs(v) {
+  if (v instanceof Blob) return { __b: await v.arrayBuffer(), t: v.type };
+  if (Array.isArray(v)) return Promise.all(v.map(encBlobs));
+  if (plainObj(v)) { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = await encBlobs(x); return o; }
+  return v;
+}
+function decBlobs(v) { // in place: records come straight from storage
+  if (!v || typeof v !== 'object' || !plainObj(v)) return v;
+  if (v.__b instanceof ArrayBuffer) return new Blob([v.__b], { type: v.t || '' });
+  if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) v[i] = decBlobs(v[i]); return v; }
+  for (const k of Object.keys(v)) { const x = v[k]; if (x && typeof x === 'object') v[k] = decBlobs(x); }
+  return v;
+}
+let blobWarned = false;
+function blobWarning() {
+  if (blobWarned) return; blobWarned = true;
+  const show = () => { if (S.panel || !$('#busy').hidden) return setTimeout(show, 1500); openPanel('private', '請勿用「無痕瀏覽」', `<div class="note"><b>這個瀏覽器不讓程式以一般方式保存相片及圖紙</b>，通常是因為 Safari 開了「無痕瀏覽」（例如從 WhatsApp 連結開啟）。程式已改用後備方式保存，可以照常使用，但<b>無痕瀏覽的資料在關閉分頁後會全部消失</b>。</div>
+    <div class="note">請這樣做：<br>① 在 Safari 底部按分頁按鈕，切換到一般（非無痕）分頁<br>② 在一般分頁打開本網址<br>③ 按分享按鈕 →「加入主畫面」，以後從主畫面圖示開啟<br>如果不是無痕瀏覽，請檢查 iPhone 的儲存空間是否已滿。</div>
+    <button class="btn dk" data-a="close2">知道了</button>`, { compact: true }); panel.querySelector('[data-a="close2"]').onclick = () => closePanel(); };
+  setTimeout(show, 600);
+}
 
 const S = {
   project: { name: '', site: '', date: today(), inspector: '', company: '' },
