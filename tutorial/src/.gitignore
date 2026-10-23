@@ -1,0 +1,6 @@
+shots/
+audio/
+build/
+fonts/
+*.jpg
+__pycache__/
