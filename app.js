@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.0';
+const VERSION = '0.8.1';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -149,7 +149,9 @@ const blobToDataURL = b => new Promise(r => { const f = new FileReader(); f.onlo
 const dataURLToBlob = async u => (await fetch(u)).blob();
 function curD() { return S.drawings.find(d => d.id === S.cur) || null; }
 // drawing sets shown one at a time (top-bar switch); drawings imported on the device join the set that was showing
-const SETS = [{ id: 'gbp', name: '建築', mapping: 'gbp/mapping.json', size: '20 MB' }, { id: 'drainage', name: '渠務', mapping: 'gbp/drainage-mapping.json', size: '36 MB' }];
+const SETS = [
+  { id: 'gbp', name: '建築', mapping: 'gbp/mapping.json', size: '20 MB', fileRef: '20260708_BD_GBP 13th Amd Approval Drawing', works: "BUILDER'S WORKS" },
+  { id: 'drainage', name: '渠務', mapping: 'gbp/drainage-mapping.json', size: '36 MB', fileRef: '20260921_7th Drainage Amendment Approval Drawing', works: 'DRAINAGE WORKS' }];
 const curSet = () => SETS.some(x => x.id === S.settings.set) ? S.settings.set : 'gbp';
 const setName = (k = curSet()) => (SETS.find(x => x.id === k) || SETS[0]).name;
 const setOf = d => (d && d.set) || 'gbp';
@@ -1132,91 +1134,94 @@ async function exportDocx(onlyDev) {
     busy('正在生成報告…');
     const items = await freshItems(roundItems().filter(i => inScope(i, onlyDev)).sort(byOrder)); const fails = []; ovCache.clear(); var curLbl = '';
     const FONT = { ascii: 'Arial', hAnsi: 'Arial', eastAsia: 'Microsoft JhengHei', cs: 'Arial' };
-    const T = (text, o = {}) => new D.TextRun({ text: String(text ?? ''), font: FONT, size: o.size || 18, bold: o.bold, color: o.color });
+    const T = (text, o = {}) => new D.TextRun({ text: String(text ?? ''), font: o.font || FONT, size: o.size || 18, bold: o.bold, color: o.color });
     const Pg = (runs, o = {}) => new D.Paragraph({ children: Array.isArray(runs) ? runs : [runs], alignment: o.align, spacing: { after: o.after ?? 40, before: o.before ?? 0 }, keepLines: true, keepNext: o.keepNext });
-    const border = { style: D.BorderStyle.SINGLE, size: 4, color: '8A9391' };
+    const SER = { ascii: 'Times New Roman', hAnsi: 'Times New Roman', eastAsia: 'PMingLiU', cs: 'Times New Roman' };
+    const TS = (text, o = {}) => T(text, { ...o, font: SER });
+    const border = { style: D.BorderStyle.SINGLE, size: 4, color: '333333' };
     const borders = { top: border, bottom: border, left: border, right: border };
     // A4 landscape 16838 x 11906 twips; margins 600 → 15638 usable
-    const usable = 15638; const colPct = [6, 13, 25, 25, 13, 18]; const colTw = colPct.map(p => Math.round(usable * p / 100));
-    const imgPx = Math.floor(colTw[2] / 15) - 12; // drawing crop and photo share one width → same 4:3 size
-    const cell = (children, i, o = {}) => new D.TableCell({ children, width: { size: colTw[i], type: D.WidthType.DXA }, borders, verticalAlign: o.v || D.VerticalAlign.TOP, shading: o.shade ? { type: D.ShadingType.CLEAR, color: 'auto', fill: o.shade } : undefined, margins: { top: 70, bottom: 70, left: 80, right: 80 } });
-    const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進／回復'];
-    const rows = [new D.TableRow({ tableHeader: true, cantSplit: true, children: heads.map((h, i) => cell([Pg(T(h, { bold: true, color: 'FFFFFF', size: 17 }), { align: D.AlignmentType.CENTER, after: 0 })], i, { shade: '1D2629', v: D.VerticalAlign.CENTER })) })];
-    const rPx = Math.floor(colTw[5] / 15) - 12;
-    const replyParas = async it => { const out = [];
-      for (const [i, ph] of ((it.fix && it.fix.photos) || []).entries()) {
-        let w = rPx, h = rPx * 0.75; const r = ph.w / ph.h; if (r > 4 / 3) h = w / r; else w = h * r;
-        try { out.push(Pg(new D.ImageRun({ data: await (await shrink(ph.out, 1000)).arrayBuffer(), transformation: { width: Math.round(w), height: Math.round(h) } }), { align: D.AlignmentType.CENTER, after: 20 })); } catch (e) { fails.push(`${itemLabel(it)} 回復照片${i + 1}：${e.message}`); }
-        out.push(Pg(T(`回復 ${i + 1}　${fmtTime(ph.t).slice(0, 10)}`, { size: 13, color: '2F7D4F' }), { align: D.AlignmentType.CENTER, after: 80 }));
-      }
-      if (it.fix && it.fix.reply) out.push(Pg([T('回覆：', { bold: true, size: 15, color: '2F7D4F' }), T(it.fix.reply, { size: 15, color: '2F7D4F' })]));
-      return out.length ? out : [Pg(T(''))]; };
+    const usable = 15638; const colPct = [7, 5, 19, 23, 23, 23]; const colTw = colPct.map(p => Math.round(usable * p / 100));
+    const imgPx = Math.floor(colTw[3] / 15) - 12, imgH = Math.round(imgPx * 0.75); // location plan and photos share one 4:3 frame
+    const shade = fill => ({ type: D.ShadingType.CLEAR, color: 'auto', fill });
+    const cell = (children, w, o = {}) => new D.TableCell({ children, width: { size: w, type: D.WidthType.DXA }, columnSpan: o.span, borders, verticalAlign: o.v || D.VerticalAlign.TOP, shading: o.shade ? shade(o.shade) : undefined, margins: { top: o.tight ? 10 : 60, bottom: o.tight ? 10 : 60, left: 80, right: 80 } });
+    const fullRow = (children, o = {}) => new D.TableRow({ tableHeader: o.head, cantSplit: true, height: o.h ? { value: o.h, rule: D.HeightRule.EXACT } : undefined, children: [cell(children, usable, { span: 6, shade: REP_GREY.slice(1), tight: true })] });
+    const heads = ['Item No.', 'Floor', 'Defect / Outstanding works', 'Location Plan', 'Photo (Before)', 'Photo (After)'];
+    const rows = [fullRow([Pg(TS(worksOf(), { bold: true, size: 18 }), { after: 0 })], { head: true }),
+      new D.TableRow({ tableHeader: true, cantSplit: true, children: heads.map((h, i) => cell([Pg(TS(h, { bold: true, size: 18 }), { after: 0 })], colTw[i], { tight: true })) })];
+    const pic = async (blob, r) => { const [w, h] = fitIn(r, imgPx, imgH); return Pg(new D.ImageRun({ data: await blob.arrayBuffer(), transformation: { width: Math.round(w), height: Math.round(h) } }), { align: D.AlignmentType.CENTER, after: 40 }); };
+    const failText = what => Pg(T(`（${what}無法生成）`, { color: 'D42A1E', size: 15 }), { align: D.AlignmentType.CENTER, after: 60 });
     let n = 0;
     for (const it of items) {
       busy(`正在生成報告… ${++n}／${items.length}`);
       curLbl = itemLabel(it);
       const d = S.drawings.find(x => x.id === it.drawingId); if (!d) continue;
       if (d.kind === 'pdf') await ensureBase(d, true);
-      const failText = what => Pg(T(`（${what}無法生成）`, { color: 'D42A1E', size: 15 }), { align: D.AlignmentType.CENTER, after: 60 });
-      let ovH = 95; const dwgParas = [];
       const rd = await reportImages(d, it); const reps = rd.reps;
-      try { const ovw = rd.ov; if (!ovw) throw rd.ovErr; ovH = Math.min(Math.round(imgPx * ovw.h / ovw.w), 95); const ovW = Math.round(ovH * ovw.w / ovw.h);
-        dwgParas.push(Pg(new D.ImageRun({ data: await ovw.blob.arrayBuffer(), transformation: { width: ovW, height: ovH } }), { align: D.AlignmentType.CENTER, after: 60 }));
-      } catch (e) { fails.push(`${itemLabel(it)} 總圖：${e.message}`); dwgParas.push(failText('總圖')); console.error(e); }
-      try { const cr = rd.cr; if (!cr) throw rd.crErr;
-        dwgParas.push(Pg(new D.ImageRun({ data: await cr.blob.arrayBuffer(), transformation: { width: imgPx, height: Math.round(imgPx * 0.75) } }), { align: D.AlignmentType.CENTER, after: 0 }));
-      } catch (e) { fails.push(`${itemLabel(it)} 圖紙截取：${e.message}`); dwgParas.push(failText('圖紙截取')); console.error(e); }
+      if (rd.ovErr) fails.push(`${itemLabel(it)} 總圖：${rd.ovErr.message}`);
+      const lpParas = [];
+      try { if (!rd.cr) throw rd.crErr || new Error('圖紙截取失敗'); lpParas.push(await pic(await locPlanImage(rd), 4 / 3)); }
+      catch (e) { fails.push(`${itemLabel(it)} 圖紙截取：${e.message}`); lpParas.push(failText('圖紙截取')); console.error(e); }
       const phParas = [];
       for (const [i, ph] of it.photos.entries()) {
-        let wpx = imgPx, hpx = Math.round(imgPx * 0.75); // 4:3 frame; portrait photos fit inside it
-        if (Math.abs(ph.w / ph.h - 4 / 3) > 0.02) { if (ph.w / ph.h > 4 / 3) hpx = Math.round(imgPx * ph.h / ph.w); else { wpx = Math.round(hpx * ph.w / ph.h); } }
-        try { if (!reps[i]) throw new Error('標記版讀取失敗'); phParas.push(Pg(new D.ImageRun({ data: await reps[i].arrayBuffer(), transformation: { width: wpx, height: hpx } }), { after: 60, align: D.AlignmentType.CENTER })); }
+        try { if (!reps[i]) throw new Error('標記版讀取失敗'); phParas.push(await pic(reps[i], ph.w / ph.h)); }
         catch (e) {
-          try { phParas.push(Pg(new D.ImageRun({ data: await (await shrink(ph.orig, 1400)).arrayBuffer(), transformation: { width: wpx, height: hpx } }), { after: 60, align: D.AlignmentType.CENTER })); fails.push(`${itemLabel(it)} 照片${i + 1}：標記版讀取失敗，已改用原相`); }
+          try { phParas.push(await pic(await shrink(ph.orig, 1400), ph.w / ph.h)); fails.push(`${itemLabel(it)} 照片${i + 1}：標記版讀取失敗，已改用原相`); }
           catch (e2) { fails.push(`${itemLabel(it)} 照片${i + 1}：${e.message}`); phParas.push(failText(`照片${i + 1}`)); console.error(e, e2); }
         }
       }
-      if (it.photos.length) phParas.unshift(Pg(T(''), { after: Math.round(ovH * 15) + 60 })); // push first photo down so it lines up with the crop
-      if (!it.photos.length) phParas.push(Pg(T('（無照片）', { color: '888888' })));
-      const L = it.loc || {}; const v = viewById(d, L.viewId);
-      const locParas = [Pg(T(it.locText || '—', { bold: true, size: 18 }), { after: 100 })];
-      [['座', L.tower], ['層', L.floor], ['單位', L.flat ? 'FLAT ' + L.flat : ''], ['房間／區域', L.room || L.area], ['軸線', L.grid], ['圖紙', [d.no, v ? v.title : d.name].filter(Boolean).join(' ')]].forEach(([k, val]) => { if (val) locParas.push(Pg([T(k + '：', { color: '5F6B69', size: 15 }), T(val, { size: 15 })], { after: 20 })); });
-      const noteParas = (it.note || '').split('\n').map(l => Pg(T(l, { size: 18 })));
+      if (!it.photos.length) phParas.push(Pg(T('（無照片）', { color: '888888' }), { align: D.AlignmentType.CENTER }));
+      const afParas = [];
+      for (const [i, ph] of ((it.fix && it.fix.photos) || []).entries()) {
+        try { afParas.push(await pic(await shrink(ph.out, 1000), ph.w / ph.h)); } catch (e) { fails.push(`${itemLabel(it)} 回復照片${i + 1}：${e.message}`); }
+        afParas.push(Pg(T(fmtTime(ph.t).slice(0, 10), { size: 13, color: '2F7D4F' }), { align: D.AlignmentType.CENTER, after: 60 }));
+      }
+      if (it.fix && it.fix.reply) afParas.push(Pg([T('Reply: ', { bold: true, size: 15, color: '2F7D4F' }), T(it.fix.reply, { size: 15, color: '2F7D4F' })]));
+      const defParas = [];
+      for (const [a, b] of [['Location', it.locText || '—'], ['Description', it.note || '—'], ['Action by', subText(it) || '—']]) {
+        defParas.push(Pg(TS(a, { bold: true, size: 18 }), { after: 0 }));
+        String(b).split('\n').forEach((l, j, A) => defParas.push(Pg(T(l, { size: 18 }), { after: j === A.length - 1 ? 140 : 0 })));
+      }
+      rows.push(fullRow([Pg(T(''), { after: 0 })], { h: 160 }));
       rows.push(new D.TableRow({
         cantSplit: true, children: [
-          cell([Pg(T(itemLabel(it), { bold: true, size: 16, color: 'D42A1E' }), { align: D.AlignmentType.CENTER }), Pg(T(it.by || '', { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER }), Pg(T(fmtTime(it.created).slice(5, 10), { size: 13, color: '5F6B69' }), { align: D.AlignmentType.CENTER })], 0, { v: D.VerticalAlign.CENTER }),
-          cell(locParas, 1), cell(dwgParas, 2), cell(phParas, 3), cell(noteParas.length ? noteParas : [Pg(T(''))], 4), cell([...subsOf(it).map((x, j, A) => Pg(T(x, { bold: true, size: 18 }), { align: D.AlignmentType.CENTER, after: j === A.length - 1 ? 60 : 0 })), ...(await replyParas(it))], 5),
+          cell([Pg(TS(itemLabel(it), { bold: true, size: 22 }))], colTw[0], { shade: REP_ITEM.slice(1) }),
+          cell([Pg(TS(floorOfItem(it) || '', { size: 18 }))], colTw[1]),
+          cell(defParas, colTw[2]), cell(lpParas, colTw[3]), cell(phParas, colTw[4]), cell(afParas.length ? afParas : [Pg(T(''))], colTw[5]),
         ]
       }));
     }
-    const nb = { top: { style: D.BorderStyle.NONE }, bottom: { style: D.BorderStyle.NONE }, left: { style: D.BorderStyle.NONE }, right: { style: D.BorderStyle.NONE } };
-    const infoRow = (k, v) => new D.TableRow({ children: [new D.TableCell({ children: [Pg(T(k, { color: '5F6B69' }), { after: 0 })], width: { size: 2000, type: D.WidthType.DXA }, borders: nb }), new D.TableCell({ children: [Pg(T(v || '', { bold: true }), { after: 0 })], width: { size: 6000, type: D.WidthType.DXA }, borders: nb })] });
-    const children = [
-      Pg(T('竣工驗收記錄', { bold: true, size: 32 }), { after: 120 }),
-      new D.Table({ rows: [infoRow('項目名稱', P.name), infoRow('地盤／地址', P.site), infoRow('驗收批次', roundLabel()), infoRow('驗收日期', P.date), infoRow('檢查人員', [P.inspector, P.company].filter(Boolean).join('　')), infoRow('記錄數量', `${items.length} 項`)], width: { size: 8000, type: D.WidthType.DXA }, columnWidths: [2000, 6000] }),
-      Pg(T(''), { after: 120 }),
-      new D.Table({ rows, width: { size: usable, type: D.WidthType.DXA }, columnWidths: colTw, layout: D.TableLayoutType.FIXED }),
-    ];
+    // page header: the OP inspection record title block, with the page count
+    const hw = [colTw[0], Math.round(usable * 0.765) - colTw[0], 2100]; hw.push(usable - hw[0] - hw[1] - hw[2]);
+    const hc = (children, i, o = {}) => cell(children, o.span ? hw[i] + hw[i + 1] : hw[i], { ...o, tight: true });
+    const hp = (runs, o = {}) => Pg(runs, { after: 0, ...o });
+    const header = new D.Table({ width: { size: usable, type: D.WidthType.DXA }, columnWidths: hw, layout: D.TableLayoutType.FIXED, rows: [
+      new D.TableRow({ children: [hc([hp(T(''))], 0, { shade: REP_BLUE.slice(1) }), hc([hp(TS('OP Inspection Records (Defects and Outstanding Works)', { bold: true, size: 30 }))], 1, { shade: REP_BLUE.slice(1) }),
+        hc([hp(TS(repTag(), { bold: true, size: 22, color: '1F6FB2' }), { align: D.AlignmentType.RIGHT })], 2, { span: 2, v: D.VerticalAlign.CENTER })] }),
+      new D.TableRow({ children: [hc([hp(TS('Project:', { size: 18 }))], 0), hc([hp(TS(REPORT_PROJECT, { size: 18 }))], 1), hc([hp(TS('Inspection Date :', { size: 18 }), { align: D.AlignmentType.RIGHT })], 2), hc([hp(TS(repDate(), { size: 18 }))], 3)] }),
+      new D.TableRow({ children: [hc([hp(TS('File Ref.:', { size: 18 }))], 0), hc([hp(TS(fileRefOf(), { size: 18 }))], 1), hc([hp(TS('Page :', { size: 18 }), { align: D.AlignmentType.RIGHT })], 2),
+        hc([hp(new D.TextRun({ children: [D.PageNumber.CURRENT, ' of ', D.PageNumber.TOTAL_PAGES], font: SER, size: 18 }))], 3)] }),
+    ] });
+    const children = [new D.Table({ rows, width: { size: usable, type: D.WidthType.DXA }, columnWidths: colTw, layout: D.TableLayoutType.FIXED })];
     if (S.settings.keyPlan) {
-      const avail = { w: Math.floor(usable / 15) - 10, h: Math.floor((11906 - 1300) / 15) - 90 };
+      const avail = { w: Math.floor(usable / 15) - 10, h: Math.floor((11906 - 2400) / 15) - 90 };
       const groups = new Map();
       for (const it of items) { const v0 = viewById(S.drawings.find(q => q.id === it.drawingId) || {}, it.loc.viewId); const key = it.drawingId + '|' + (it.loc.viewId || '') + '|' + (v0 && v0.floors && v0.floors.length > 1 ? it.loc.floor || '' : ''); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(it); }
       for (const [key, its] of groups) {
         const [did, vid, fl] = key.split('|'); const d = S.drawings.find(x => x.id === did); if (!d) continue; const v = viewById(d, vid); const vt = (v ? v.title : d.name) + (fl ? `（${fl}）` : '');
         busy(`正在生成位置總圖：${vt}`);
         let k; try { k = await keyPlanImage(d, v, its); } catch (e) { fails.push(`位置總圖 ${vt}：${e.message}`); continue; } const s = Math.min(avail.w / k.w, avail.h / k.h);
-        children.push(new D.Paragraph({ pageBreakBefore: true, children: [T(`位置總圖：${vt}`, { bold: true, size: 24 })], spacing: { after: 60 } }));
-        children.push(Pg(T(`${d.no || d.name}　記錄：${its.map(i => itemLabel(i) + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, { size: 16, color: '5F6B69' }), { after: 80 }));
+        children.push(new D.Paragraph({ pageBreakBefore: true, children: [TS(`Location Plan: ${vt}`, { bold: true, size: 24 })], spacing: { after: 60 } }));
+        children.push(Pg(T(`${d.no || d.name}　${its.map(i => itemLabel(i) + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, { size: 16, color: '5F6B69' }), { after: 80 }));
         children.push(Pg(new D.ImageRun({ data: await k.blob.arrayBuffer(), transformation: { width: Math.round(k.w * s), height: Math.round(k.h * s) } }), { align: D.AlignmentType.CENTER }));
       }
     }
     const doc = new D.Document({
-      creator: P.inspector || '竣工驗收記錄', title: '竣工驗收記錄',
+      creator: '竣工驗收記錄', title: 'OP Inspection Records',
       styles: { default: { document: { run: { font: FONT, size: 18 } } } },
       sections: [{
-        properties: { page: { size: { width: 11906, height: 16838, orientation: D.PageOrientation.LANDSCAPE }, margin: { top: 600, bottom: 600, left: 600, right: 600, header: 300, footer: 300 } } },
-        headers: { default: new D.Header({ children: [Pg([T(`${P.name || ''}　竣工驗收記錄　${roundLabel()}　${P.date || ''}`, { size: 15, color: '5F6B69' })], { align: D.AlignmentType.RIGHT })] }) },
-        footers: { default: new D.Footer({ children: [new D.Paragraph({ alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ children: ['第 ', D.PageNumber.CURRENT, ' 頁，共 ', D.PageNumber.TOTAL_PAGES, ' 頁'], font: FONT, size: 15, color: '5F6B69' })] })] }) },
+        properties: { page: { size: { width: 11906, height: 16838, orientation: D.PageOrientation.LANDSCAPE }, margin: { top: 1650, bottom: 600, left: 600, right: 600, header: 400, footer: 300 } } },
+        headers: { default: new D.Header({ children: [header] }) },
         children,
       }],
     });
@@ -1505,85 +1510,109 @@ function wrapLines(x, text, maxW) {
   } return out;
 }
 function drawText(x, text, X, Y, maxW, size, o = {}) {
-  x.font = `${o.bold ? '700 ' : ''}${size}px ${RFONT}`; x.fillStyle = o.color || '#1b2224'; x.textBaseline = 'top';
+  x.font = `${o.bold ? '700 ' : ''}${size}px ${o.font || RFONT}`; x.fillStyle = o.color || '#1b2224'; x.textBaseline = 'top';
   const lines = wrapLines(x, text, maxW).slice(0, o.max || 99); const lh = size * 1.3;
-  lines.forEach((l, i) => { const w = x.measureText(l).width; x.fillText(l, o.center ? X + (maxW - w) / 2 : X, Y + i * lh); });
+  lines.forEach((l, i) => { const w = x.measureText(l).width; x.fillText(l, o.center ? X + (maxW - w) / 2 : o.right ? X + maxW - w : X, Y + i * lh); });
   return lines.length * lh;
 }
 async function drawBlob(x, blob, X, Y, W, H) { const img = await loadImg(blob); x.drawImage(img, X, Y, W, H); if (img.close) img.close(); else URL.revokeObjectURL(img.src); }
 
+// report header, as on the site's OP inspection record forms
+const REPORT_PROJECT = 'PROPOSED DEVELOPMENT AT BAILEY STREET & WING KWONG STREET TO KWA WAN, KOWLOON';
+const RSERIF = '"Times New Roman",Times,"PingFang TC","Noto Serif TC","PMingLiU",serif';
+const REP_BLUE = '#95b3d7', REP_ITEM = '#dce6f1', REP_GREY = '#eeeeee';
+const fileRefOf = () => (SETS.find(x => x.id === curSet()) || SETS[0]).fileRef;
+const worksOf = () => (SETS.find(x => x.id === curSet()) || SETS[0]).works;
+const repDate = () => curRound().date || S.project.date || '';
+const repTag = () => roundLabel() + (repLabel ? '　' + repLabel : '');
+// the drawing crop with the overview set into its top-right corner: one picture, same size as a photo
+async function locPlanImage(rd) {
+  if (!rd.cr) return null;
+  const crImg = await loadImg(rd.cr.blob); const W = 1100, H = 825;
+  const c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.drawImage(crImg, 0, 0, W, H); if (crImg.close) crImg.close(); else URL.revokeObjectURL(crImg.src);
+  if (rd.ov) {
+    const ov = await loadImg(rd.ov.blob); let w = W * 0.36, h = w * rd.ov.h / rd.ov.w; if (h > H * 0.42) { h = H * 0.42; w = h * rd.ov.w / rd.ov.h; }
+    const X = W - w - 8, Y = 8; x.fillStyle = '#fff'; x.fillRect(X - 5, Y - 5, w + 10, h + 10); x.drawImage(ov, X, Y, w, h);
+    x.strokeStyle = '#555'; x.lineWidth = 3; x.strokeRect(X - 5, Y - 5, w + 10, h + 10); if (ov.close) ov.close(); else URL.revokeObjectURL(ov.src);
+  }
+  x.strokeStyle = '#999'; x.lineWidth = 2; x.strokeRect(1, 1, W - 2, H - 2);
+  return canvasBlob(c, 'image/jpeg', 0.88);
+}
+const fitIn = (r, W, H) => r > W / H ? [W, W / r] : [H * r, H];
+
 async function buildReportPages(items, progress) {
   items = await freshItems(items);
-  const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M;
-  const pct = [6, 13, 25, 25, 13, 18], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
-  const heads = ['編號', '位置', '圖紙位置（總圖／截取）', '現場照片', '問題描述', '跟進／回復'];
-  const pad = 5, imgW = cw[2] - 2 * pad, cropH = imgW * 0.75, top0 = M + 14, bottom = PG.H - M - 14, headH = 20;
+  const k = PG.k, M = PG.M, UW = PG.W - 2 * M;
+  const pct = [7, 5, 19, 23, 23, 23], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
+  const heads = ['Item No.', 'Floor', 'Defect / Outstanding works', 'Location Plan', 'Photo (Before)', 'Photo (After)'];
+  const pad = 5, imgW = cw[3] - 2 * pad, imgH = imgW * 0.75, headTop = M + 60, bottom = PG.H - M;
   const pages = []; let c, x, y, fails = [];
-  const newPage = first => {
-    c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k);
-    x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H);
-    drawText(x, `${P.name || ''}　竣工驗收記錄　${roundLabel()}　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69', center: false });
-    y = top0;
-    if (first) {
-      y += drawText(x, '竣工驗收記錄', M, y, UW, 17, { bold: true }) + 6;
-      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收批次', roundLabel()], ...(repLabel ? [['報告範圍', repLabel]] : []), ['驗收日期', P.date], ['公司／單位', P.company], ['記錄數量', `${items.length} 項`]]) {
-        drawText(x, a, M, y, 80, 9, { color: '#5f6b69' }); drawText(x, b || '', M + 80, y, 400, 9, { bold: true }); y += 13;
-      }
-      y += 6;
-    }
-    x.fillStyle = '#1d2629'; x.fillRect(M, y, UW, headH);
-    heads.forEach((h, i) => drawText(x, h, cx[i], y + 5, cw[i], 8.5, { bold: true, color: '#fff', center: true }));
-    y += headH; pages.push(c);
+  const line = (X0, Y0, X1, Y1) => { x.beginPath(); x.moveTo(X0, Y0); x.lineTo(X1, Y1); x.stroke(); };
+  const box = (X, Y, W, H, fill) => { if (fill) { x.fillStyle = fill; x.fillRect(X, Y, W, H); } x.strokeStyle = '#333'; x.lineWidth = 0.6; x.strokeRect(X, Y, W, H); };
+  const blankPage = () => { c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k); x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); pages.push(c); y = headTop; };
+  const newPage = () => {
+    blankPage();
+    box(M, y, UW, 13, REP_GREY); drawText(x, worksOf(), M + 4, y + 2.5, UW, 8.5, { bold: true, font: RSERIF }); y += 13;
+    box(M, y, UW, 14); cx.slice(1).forEach(X => line(X, y, X, y + 14));
+    heads.forEach((h, i) => drawText(x, h, cx[i] + 4, y + 3, cw[i] - 6, 8.5, { bold: true, font: RSERIF })); y += 14;
   };
-  const grid = (y0, h) => { x.strokeStyle = '#8a9391'; x.lineWidth = 0.6; x.strokeRect(M, y0, UW, h); cx.slice(1).forEach(X => { x.beginPath(); x.moveTo(X, y0); x.lineTo(X, y0 + h); x.stroke(); }); };
-  newPage(true);
+  // header block of every page; drawn last, when the page count is known
+  const header = (pc, i, n) => {
+    x = pc.getContext('2d'); const tw = UW * 0.765, lw = 108, X2 = M + tw, X3 = X2 + lw, Y = M;
+    box(M, Y, cw[0], 22, REP_BLUE); box(M + cw[0], Y, tw - cw[0], 22, REP_BLUE); box(X2, Y, UW - tw, 22);
+    drawText(x, 'OP Inspection Records (Defects and Outstanding Works)', M + cw[0] + 5, Y + 4, tw - cw[0] - 8, 14, { bold: true, font: RSERIF, max: 1 });
+    drawText(x, repTag(), X2 + 4, Y + 6, UW - tw - 8, 10, { bold: true, color: '#1f6fb2', font: RSERIF, max: 1, right: true });
+    const rows = [['Project:', REPORT_PROJECT, 'Inspection Date :', repDate()], ['File Ref.:', fileRefOf(), 'Page :', `${i} of ${n}`]];
+    rows.forEach((r, j) => { const ry = Y + 22 + j * 14;
+      box(M, ry, cw[0], 14); box(M + cw[0], ry, tw - cw[0], 14); box(X2, ry, lw, 14); box(X3, ry, UW - tw - lw, 14);
+      drawText(x, r[0], M + 4, ry + 3, cw[0] - 6, 8.5, { font: RSERIF, max: 1 }); drawText(x, r[1], M + cw[0] + 5, ry + 3, tw - cw[0] - 8, 8.5, { font: RSERIF, max: 1 });
+      drawText(x, r[2], X2 + 4, ry + 3, lw - 8, 8.5, { font: RSERIF, max: 1, right: true }); drawText(x, r[3], X3 + 4, ry + 3, UW - tw - lw - 8, 8.5, { font: RSERIF, max: 1 }); });
+  };
+  newPage();
   let n = 0;
   for (const it of items) {
     progress && progress(++n, items.length);
     const d = S.drawings.find(q => q.id === it.drawingId); if (!d) continue;
-    let ov = null, cr = null;
-    const rd = await reportImages(d, it); ov = rd.ov; cr = rd.cr; const reps = rd.reps;
+    const rd = await reportImages(d, it); const reps = rd.reps;
     if (rd.ovErr) fails.push(`${itemLabel(it)} 總圖：${rd.ovErr.message}`);
     if (rd.crErr) fails.push(`${itemLabel(it)} 圖紙截取：${rd.crErr.message}`);
-    const ovH = ov ? Math.min(imgW * ov.h / ov.w, 60) : 14, ovW = ov ? ovH * ov.w / ov.h : imgW;
-    const np = it.photos.length;
-    let phH = cropH; const avail = bottom - top0 - headH - 2 * pad;
-    const need = () => Math.max(ovH + 4 + cropH, ovH + 4 + Math.max(1, np) * (phH + 4) - 4);
-    if (need() > avail) phH = Math.max(40, (avail - ovH - 4 - (np - 1) * 4) / np);
-    const rps = (it.fix && it.fix.photos) || [], rW = cw[5] - 2 * pad; let rH = rW * 0.75;
-    if (rps.length && rps.length * (rH + 14) > avail - 30) rH = Math.max(30, (avail - 30) / rps.length - 14);
-    const subH = subsOf(it).length ? 4 + 11 * subsOf(it).length : 0, replyH = (rps.length ? rps.length * (rH + 14) + 30 : 0) + subH;
-    const rowH = Math.max(need(), replyH) + 2 * pad;
-    if (y + rowH > bottom) newPage(false);
-    const y0 = y; grid(y0, rowH);
-    { let ly = y0 + rowH / 2 - 18; ly += drawText(x, itemLabel(it), cx[0] + 2, ly, cw[0] - 4, 7.5, { bold: true, color: '#d42a1e', center: true }) + 2;
-      if (it.by) ly += drawText(x, it.by, cx[0] + 2, ly, cw[0] - 4, 6, { color: '#5f6b69', center: true }) + 1;
-      drawText(x, fmtTime(it.created).slice(5, 10), cx[0] + 2, ly, cw[0] - 4, 6, { color: '#5f6b69', center: true }); }
-    if (rps.length) { let ry = y0 + pad + subH; const rx = cx[5] + pad;
-      for (const [i, ph] of rps.entries()) {
-        let w = Math.min(rW, rH / 0.75), h = w * 0.75; const r = ph.w / ph.h; let dw = w, dh = h; if (r > w / h) dh = w / r; else dw = h * r;
-        try { await drawBlob(x, await shrink(ph.out, 1000), rx + (rW - dw) / 2, ry + (h - dh) / 2, dw, dh); } catch (e) { fails.push(`${itemLabel(it)} 回復照片${i + 1}：${e.message}`); }
-        ry += h + 2; ry += drawText(x, `回復 ${i + 1}　${fmtTime(ph.t).slice(0, 10)}`, rx, ry, rW, 6.5, { color: '#2f7d4f', center: true }) + 4;
-      }
-      if (it.fix.reply) drawText(x, '回覆：' + it.fix.reply, rx, ry, rW, 7.5, { color: '#2f7d4f' }); }
-    const L = it.loc || {}; const v = viewById(d, L.viewId);
-    let ty = y0 + pad + drawText(x, it.locText || '—', cx[1] + pad, y0 + pad, cw[1] - 2 * pad, 8.5, { bold: true }) + 6;
-    for (const [a, b] of [['座', L.tower], ['層', L.floor], ['單位', L.flat ? 'FLAT ' + L.flat : ''], ['房間／區域', L.room || L.area], ['軸線', L.grid], ['圖紙', [d.no, v ? v.title : d.name].filter(Boolean).join(' ')]])
-      if (b) ty += drawText(x, `${a}：${b}`, cx[1] + pad, ty, cw[1] - 2 * pad, 7, { color: '#3a4544' }) + 1;
-    const ix = cx[2] + pad;
-    if (ov) { await drawBlob(x, ov.blob, ix + (imgW - ovW) / 2, y0 + pad, ovW, ovH); } else drawText(x, '（總圖無法生成）', ix, y0 + pad, imgW, 7, { color: '#d42a1e', center: true });
-    if (cr) await drawBlob(x, cr.blob, ix, y0 + pad + ovH + 4, imgW, cropH); else drawText(x, '（圖紙截取無法生成）', ix, y0 + pad + ovH + 30, imgW, 7, { color: '#d42a1e', center: true });
-    let py = y0 + pad + ovH + 4; const px0 = cx[3] + pad;
-    if (!np) drawText(x, '（無照片）', px0, py + 20, imgW, 8, { color: '#888', center: true });
-    for (const [i, ph] of it.photos.entries()) {
-      let w = phH / 0.75, h = phH; if (w > imgW) { w = imgW; h = imgW * 0.75; }
-      const r = ph.w / ph.h; let dw = w, dh = h; if (r > w / h) dh = w / r; else dw = h * r;
-      try { if (!reps[i]) throw new Error('標記版讀取失敗'); await drawBlob(x, reps[i], px0 + (imgW - dw) / 2, py + (h - dh) / 2, dw, dh); }
-      catch (e) { try { await drawBlob(x, await shrink(ph.orig, 1400), px0 + (imgW - dw) / 2, py + (h - dh) / 2, dw, dh); fails.push(`${itemLabel(it)} 照片${i + 1}：已改用原相`); } catch (e2) { fails.push(`${itemLabel(it)} 照片${i + 1}：${e.message}`); drawText(x, `（照片${i + 1}無法讀取）`, px0, py + h / 2, imgW, 7, { color: '#d42a1e', center: true }); } }
-      py += h + 4;
+    let lp = null; try { lp = await locPlanImage(rd); } catch (e) { fails.push(`${itemLabel(it)} 圖紙位置：${e.message}`); }
+    const rps = (it.fix && it.fix.photos) || [], np = Math.max(1, it.photos.length, rps.length);
+    const reply = it.fix && it.fix.reply ? 'Reply: ' + it.fix.reply : '';
+    // text column height, measured with the same fonts
+    const L = it.loc || {}; const tW = cw[2] - 2 * pad;
+    const parts = [['Location', it.locText || '—'], ['Description', it.note || '—'], ['Action by', subText(it) || '—']];
+    x.font = `8.5px ${RFONT}`; const textH = parts.reduce((h, [, v]) => h + 11 + wrapLines(x, v, tW).length * 8.5 * 1.3 + 6, 0);
+    let ph = imgH; const avail = bottom - headTop - 27 - 8 - 2 * pad;
+    const stackH = h => np * (h + 4) - 4 + (rps.length ? 10 * rps.length : 0) + (reply ? 40 : 0);
+    if (stackH(ph) > avail) ph = Math.max(40, (avail - (rps.length ? 10 * rps.length : 0) - (reply ? 40 : 0) - 4 * (np - 1)) / np);
+    const rowH = Math.max(imgH, stackH(ph), textH) + 2 * pad;
+    if (y + 8 + rowH > bottom) newPage();
+    box(M, y, UW, 8, REP_GREY); y += 8;
+    const y0 = y; box(cx[0], y0, cw[0], rowH, REP_ITEM); box(M, y0, UW, rowH); cx.slice(1).forEach(X => line(X, y0, X, y0 + rowH));
+    drawText(x, itemLabel(it), cx[0] + 4, y0 + pad, cw[0] - 6, 10, { bold: true, font: RSERIF });
+    drawText(x, floorOfItem(it) || '', cx[1] + 3, y0 + pad + 1, cw[1] - 5, 8.5, { font: RSERIF });
+    let ty = y0 + pad;
+    for (const [a, b] of parts) { ty += drawText(x, a, cx[2] + pad, ty, tW, 8.5, { bold: true, font: RSERIF }) + 1; ty += drawText(x, b, cx[2] + pad, ty, tW, 8.5) + 6; }
+    const ix = cx[3] + pad;
+    if (lp) await drawBlob(x, lp, ix, y0 + pad, imgW, imgH); else drawText(x, '（圖紙截取無法生成）', ix, y0 + pad + 40, imgW, 7, { color: '#d42a1e', center: true });
+    const pw = ph / 0.75 > imgW ? imgW : ph / 0.75, phH = pw * 0.75;
+    let py = y0 + pad; const px0 = cx[4] + pad;
+    if (!it.photos.length) drawText(x, '（無照片）', px0, py + 20, imgW, 8, { color: '#888', center: true });
+    for (const [i, p] of it.photos.entries()) {
+      const [dw, dh] = fitIn(p.w / p.h, pw, phH), X = px0 + (imgW - dw) / 2, Y = py + (phH - dh) / 2;
+      try { if (!reps[i]) throw new Error('標記版讀取失敗'); await drawBlob(x, reps[i], X, Y, dw, dh); }
+      catch (e) { try { await drawBlob(x, await shrink(p.orig, 1400), X, Y, dw, dh); fails.push(`${itemLabel(it)} 照片${i + 1}：已改用原相`); } catch (e2) { fails.push(`${itemLabel(it)} 照片${i + 1}：${e.message}`); drawText(x, `（照片${i + 1}無法讀取）`, px0, py + phH / 2, imgW, 7, { color: '#d42a1e', center: true }); } }
+      py += phH + 4;
     }
-    drawText(x, it.note || '', cx[4] + pad, y0 + pad, cw[4] - 2 * pad, 8.5);
-    subsOf(it).forEach((sb, j) => drawText(x, sb, cx[5] + pad, y0 + pad + j * 11, cw[5] - 2 * pad, 8.5, { bold: true, center: true }));
+    let ry = y0 + pad; const rx = cx[5] + pad;
+    for (const [i, p] of rps.entries()) {
+      const [dw, dh] = fitIn(p.w / p.h, pw, phH);
+      try { await drawBlob(x, await shrink(p.out, 1000), rx + (imgW - dw) / 2, ry + (phH - dh) / 2, dw, dh); } catch (e) { fails.push(`${itemLabel(it)} 回復照片${i + 1}：${e.message}`); }
+      ry += phH + 1; ry += drawText(x, fmtTime(p.t).slice(0, 10), rx, ry, imgW, 6.5, { color: '#2f7d4f', center: true }) + 3;
+    }
+    if (reply) drawText(x, reply, rx, ry, imgW, 7.5, { color: '#2f7d4f', max: 4 });
     y += rowH;
   }
   if (S.settings.keyPlan) {
@@ -1592,19 +1621,15 @@ async function buildReportPages(items, progress) {
       const [did, vid, fl] = key.split('|'); const d = S.drawings.find(q => q.id === did); if (!d) continue; const v = viewById(d, vid); const vt = (v ? v.title : d.name) + (fl ? `（${fl}）` : '');
       try {
         const kp = await keyPlanImage(d, v, its);
-        newPageRaw(); y = top0;
-        y += drawText(x, `位置總圖：${vt}`, M, y, UW, 12, { bold: true }) + 2;
-        y += drawText(x, `${d.no || ''}　記錄：${its.map(i => itemLabel(i) + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, M, y, UW, 7.5, { color: '#5f6b69', max: 3 }) + 6;
+        blankPage();
+        y += drawText(x, `Location Plan: ${vt}`, M, y, UW, 12, { bold: true, font: RSERIF }) + 2;
+        y += drawText(x, `${d.no || ''}　${its.map(i => itemLabel(i) + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, M, y, UW, 7.5, { color: '#5f6b69', max: 3 }) + 6;
         const s = Math.min(UW / kp.w, (bottom - y) / kp.h); await drawBlob(x, kp.blob, M + (UW - kp.w * s) / 2, y, kp.w * s, kp.h * s);
       } catch (e) { fails.push(`位置總圖 ${vt}：${e.message}`); }
     }
   }
-  function newPageRaw() { c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k); x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); drawText(x, `${P.name || ''}　竣工驗收記錄　${roundLabel()}　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69' }); pages.push(c); }
   const blobs = [];
-  for (const [i, pc] of pages.entries()) {
-    const px = pc.getContext('2d'); drawText(px, `第 ${i + 1} 頁，共 ${pages.length} 頁`, M, PG.H - M + 2, UW, 7.5, { color: '#5f6b69', center: true });
-    blobs.push(await canvasBlob(pc, 'image/jpeg', 0.88)); pc.width = pc.height = 0;
-  }
+  for (const [i, pc] of pages.entries()) { header(pc, i + 1, pages.length); blobs.push(await canvasBlob(pc, 'image/jpeg', 0.88)); pc.width = pc.height = 0; }
   return { pages: blobs, fails };
 }
 
