@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.1';
+const VERSION = '0.8.2';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1050,13 +1050,13 @@ function pinOn(x, px, py, n, r) {
   x.beginPath(); x.arc(px, py, r, 0, Math.PI * 2); x.fillStyle = '#d42a1e'; x.fill(); x.lineWidth = Math.max(3, r / 6); x.strokeStyle = '#fff'; x.stroke();
   x.fillStyle = '#fff'; x.font = `bold ${Math.round(r * (String(n).length > 3 ? 0.62 : String(n).length > 2 ? 0.8 : 1))}px Menlo, monospace`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(String(n), px, py + 1);
 }
-function cropRect(d, it) {
-  let cw = CROP_W[S.settings.crop] || 320, ch = cw * 0.75;
-  if (cw > d.w) { cw = d.w; ch = cw * 0.75; } if (ch > d.h) { ch = d.h; cw = ch / 0.75; }
+function cropRect(d, it, asp = 4 / 3) { // same drawing area as the 4:3 setting, in the shape asked for
+  const c0 = CROP_W[S.settings.crop] || 320; let cw = Math.sqrt(c0 * c0 * 0.75 * asp), ch = cw / asp;
+  if (cw > d.w) { cw = d.w; ch = cw / asp; } if (ch > d.h) { ch = d.h; cw = ch * asp; }
   return { x: clamp(it.x - cw / 2, 0, d.w - cw), y: clamp(it.y - ch / 2, 0, d.h - ch), w: cw, h: ch };
 }
-async function cropImage(d, it) { // 4:3, vector-sharp
-  const R = cropRect(d, it); const outW = 1100; const c = await renderRegion(d, R.x, R.y, R.w, R.h, outW); const x = c.getContext('2d'); const s = outW / R.w;
+async function cropImage(d, it, asp = 4 / 3, outW = 1100) { // vector-sharp
+  const R = cropRect(d, it, asp); const c = await renderRegion(d, R.x, R.y, R.w, R.h, outW); const x = c.getContext('2d'); const s = outW / R.w;
   const v = viewById(d, it.loc.viewId);
   for (const z of (v && v.zones || []).filter(z => (it.loc.zoneIds || []).includes(z.id))) {
     x.beginPath(); z.pts.forEach((p, i) => { const a = (p[0] - R.x) * s, b = (p[1] - R.y) * s; i ? x.lineTo(a, b) : x.moveTo(a, b); }); x.closePath();
@@ -1070,7 +1070,7 @@ const ovCache = new Map();
 /* report images (overview, crop, report-size photos) are cached per record in the kv store under
    'rc:<item id>', apart from the record itself: saving a record never touches them, they are read
    fresh from storage for every report, never go into backups, and are rebuilt when an input changes */
-const RC_V = 2, REP_PX = 1200;
+const RC_V = 3, REP_PX = 1200;
 const rcKey = (d, it) => JSON.stringify([RC_V, d.id, d.w, d.h, it.x, it.y, S.settings.crop, it.loc.viewId, it.loc.zoneIds || [], pinLabel(it, !multiFloorViews(d).length)]);
 const repKey = ph => `${REP_PX}|${ph.out && ph.out.size}`;
 const rcSig = (d, it) => rcKey(d, it) + it.photos.map(ph => ph.id + repKey(ph)).join(',');
@@ -1079,8 +1079,9 @@ async function reportImages(d, it) {
   const k = rcKey(d, it); let c = null; try { c = await DB.kget('rc:' + it.id); } catch (e) { }
   if (!c || c.k !== k) c = { k, reps: (c && c.reps) || {} };
   let dirty = false, ovErr = null, crErr = null;
-  if (!(c.ov && c.ov.blob)) try { c.ov = await overviewImage(d, it); dirty = true; } catch (e) { ovErr = e; }
-  if (!(c.cr && c.cr.blob)) try { c.cr = await cropImage(d, it); dirty = true; } catch (e) { crErr = e; }
+  const lc = lpLayout(d, it).cr, asp = lc.w / lc.h;
+  if (!(c.ov && c.ov.blob)) try { c.ov = await overviewImage(d, it, asp); dirty = true; } catch (e) { ovErr = e; }
+  if (!(c.cr && c.cr.blob)) try { c.cr = await cropImage(d, it, asp, Math.round(lc.w)); dirty = true; } catch (e) { crErr = e; }
   const reps = await Promise.all(it.photos.map(async ph => {
     const r = c.reps[ph.id]; if (r && r.k === repKey(ph) && r.blob) return r.blob;
     try { const blob = await shrink(ph.out, REP_PX); c.reps[ph.id] = { k: repKey(ph), blob }; dirty = true; return blob; } catch (e) { return null; }
@@ -1106,9 +1107,23 @@ async function warmStep() {
   const d = S.drawings.find(x => x.id === it.drawingId); if (rcDone.get(it.id) !== rcSig(d, it)) warmFail.set(it.id, (warmFail.get(it.id) || 0) + 1);
   warmLater(800);
 }
-async function overviewImage(d, it) { // whole plan view, small, with the crop box highlighted
-  const v = viewById(d, it.loc.viewId); const b = v ? v.bbox : [0, 0, d.w, d.h]; const R = cropRect(d, it);
-  const pad = 0.02 * Math.max(b[2] - b[0], b[3] - b[1]); const bx = Math.max(0, b[0] - pad), by = Math.max(0, b[1] - pad), bw = Math.min(d.w, b[2] + pad) - bx, bh = Math.min(d.h, b[3] + pad) - by;
+function overviewBox(d, it) {
+  const v = viewById(d, it.loc.viewId); const b = v ? v.bbox : [0, 0, d.w, d.h];
+  const pad = 0.02 * Math.max(b[2] - b[0], b[3] - b[1]); const bx = Math.max(0, b[0] - pad), by = Math.max(0, b[1] - pad);
+  return { v, bx, by, bw: Math.min(d.w, b[2] + pad) - bx, bh: Math.min(d.h, b[3] + pad) - by };
+}
+// report Location Plan: one 4:3 frame holding the overview (top-right strip for wide plans, right-hand column for tall ones)
+// and the crop in the rest of the frame; the two never overlap
+const LP = { W: 1100, H: 825, g: 12 };
+function lpLayout(d, it) {
+  const { bw, bh } = overviewBox(d, it), a = bw / bh, { W, H, g } = LP;
+  if (a >= 1.2) { let oh = H * 0.3, ow = oh * a; if (ow > W * 0.62) { ow = W * 0.62; oh = ow / a; }
+    return { ov: { x: W - ow, y: 0, w: ow, h: oh }, cr: { x: 0, y: oh + g, w: W, h: H - oh - g }, tx: { x: 0, y: 0, w: W - ow - g, h: oh } }; }
+  let ow = W * 0.3, oh = ow / a; if (oh > H * 0.7) { oh = H * 0.7; ow = oh * a; }
+  return { ov: { x: W - ow, y: 0, w: ow, h: oh }, cr: { x: 0, y: 0, w: W - ow - g, h: H }, tx: { x: W - ow, y: oh + g, w: ow, h: H - oh - g } };
+}
+async function overviewImage(d, it, asp = 4 / 3) { // whole plan view, small, with the crop box highlighted
+  const { v, bx, by, bw, bh } = overviewBox(d, it); const R = cropRect(d, it, asp);
   const outW = 900, outH = Math.round(outW * bh / bw), s = outW / bw; const key = d.id + '|' + (v ? v.id : '');
   if (!ovCache.has(key)) ovCache.set(key, await renderRegion(d, bx, by, bw, bh, outW));
   const c = document.createElement('canvas'); c.width = outW; c.height = outH; const x = c.getContext('2d');
@@ -1160,7 +1175,7 @@ async function exportDocx(onlyDev) {
       const rd = await reportImages(d, it); const reps = rd.reps;
       if (rd.ovErr) fails.push(`${itemLabel(it)} 總圖：${rd.ovErr.message}`);
       const lpParas = [];
-      try { if (!rd.cr) throw rd.crErr || new Error('圖紙截取失敗'); lpParas.push(await pic(await locPlanImage(rd), 4 / 3)); }
+      try { if (!rd.cr) throw rd.crErr || new Error('圖紙截取失敗'); lpParas.push(await pic(await locPlanImage(rd, d, it), 4 / 3)); }
       catch (e) { fails.push(`${itemLabel(it)} 圖紙截取：${e.message}`); lpParas.push(failText('圖紙截取')); console.error(e); }
       const phParas = [];
       for (const [i, ph] of it.photos.entries()) {
@@ -1526,17 +1541,18 @@ const worksOf = () => (SETS.find(x => x.id === curSet()) || SETS[0]).works;
 const repDate = () => curRound().date || S.project.date || '';
 const repTag = () => roundLabel() + (repLabel ? '　' + repLabel : '');
 // the drawing crop with the overview set into its top-right corner: one picture, same size as a photo
-async function locPlanImage(rd) {
+async function locPlanImage(rd, d, it) {
   if (!rd.cr) return null;
-  const crImg = await loadImg(rd.cr.blob); const W = 1100, H = 825;
-  const c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d');
-  x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.drawImage(crImg, 0, 0, W, H); if (crImg.close) crImg.close(); else URL.revokeObjectURL(crImg.src);
-  if (rd.ov) {
-    const ov = await loadImg(rd.ov.blob); let w = W * 0.36, h = w * rd.ov.h / rd.ov.w; if (h > H * 0.42) { h = H * 0.42; w = h * rd.ov.w / rd.ov.h; }
-    const X = W - w - 8, Y = 8; x.fillStyle = '#fff'; x.fillRect(X - 5, Y - 5, w + 10, h + 10); x.drawImage(ov, X, Y, w, h);
-    x.strokeStyle = '#555'; x.lineWidth = 3; x.strokeRect(X - 5, Y - 5, w + 10, h + 10); if (ov.close) ov.close(); else URL.revokeObjectURL(ov.src);
-  }
-  x.strokeStyle = '#999'; x.lineWidth = 2; x.strokeRect(1, 1, W - 2, H - 2);
+  const { W, H } = LP, Ly = lpLayout(d, it); const c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, W, H);
+  const put = async (blob, b) => { const img = await loadImg(blob); x.drawImage(img, b.x, b.y, b.w, b.h); if (img.close) img.close(); else URL.revokeObjectURL(img.src); };
+  await put(rd.cr.blob, Ly.cr);
+  if (rd.ov) await put(rd.ov.blob, Ly.ov);
+  // the spare corner names the sheet and view
+  const v = viewById(d, it.loc.viewId), t = Ly.tx;
+  if (t.w > 120 && t.h > 60) { x.textBaseline = 'top'; x.fillStyle = '#333'; let ty = t.y + 6;
+    for (const [txt, sz, b] of [[d.no || '', 30, true], [v ? v.title : d.name, 26, false]]) { x.font = `${b ? '700 ' : ''}${sz}px ${RFONT}`;
+      for (const l of wrapLines(x, txt, t.w - 12).slice(0, 3)) { if (ty + sz > t.y + t.h) break; x.fillText(l, t.x + 6, ty); ty += sz * 1.25; } ty += 6; } }
   return canvasBlob(c, 'image/jpeg', 0.88);
 }
 const fitIn = (r, W, H) => r > W / H ? [W, W / r] : [H * r, H];
@@ -1577,7 +1593,7 @@ async function buildReportPages(items, progress) {
     const rd = await reportImages(d, it); const reps = rd.reps;
     if (rd.ovErr) fails.push(`${itemLabel(it)} 總圖：${rd.ovErr.message}`);
     if (rd.crErr) fails.push(`${itemLabel(it)} 圖紙截取：${rd.crErr.message}`);
-    let lp = null; try { lp = await locPlanImage(rd); } catch (e) { fails.push(`${itemLabel(it)} 圖紙位置：${e.message}`); }
+    let lp = null; try { lp = await locPlanImage(rd, d, it); } catch (e) { fails.push(`${itemLabel(it)} 圖紙位置：${e.message}`); }
     const rps = (it.fix && it.fix.photos) || [], np = Math.max(1, it.photos.length, rps.length);
     const reply = it.fix && it.fix.reply ? 'Reply: ' + it.fix.reply : '';
     // text column height, measured with the same fonts
