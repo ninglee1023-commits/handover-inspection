@@ -63,6 +63,9 @@ label.btn{display:flex;align-items:center;justify-content:center;cursor:pointer}
 .seg{display:flex;border:1px solid rgba(255,255,255,.18);border-radius:9px;overflow:hidden}
 .seg button{background:transparent;border:0;padding:8px 12px;color:var(--board-fg);min-height:40px;white-space:nowrap}
 .seg button[aria-pressed="true"]{background:var(--board-fg);color:var(--board);font-weight:600}
+#setSeg{flex:none}
+/* phones: the set switch takes the drawing name's place; the mode switch is only shown when there is a mode to leave */
+@media (max-width:600px){#bar{gap:6px}#bar .tb,#bar .seg button{padding:8px 9px}#bar .brand{display:none}body.inspectOnly #bar .seg[aria-label="模式"]{display:none}}
 
 /* stage */
 #stage{position:fixed;inset:0;touch-action:none;overflow:hidden;background:var(--paper)}
@@ -188,6 +191,10 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 
 <header id="bar">
   <button class="tb" id="btnDrawings" title="圖紙">圖紙</button>
+  <div class="seg" id="setSeg" role="group" aria-label="圖紙套">
+    <button data-set="gbp" aria-pressed="true">建築</button>
+    <button data-set="drainage" aria-pressed="false">渠務</button>
+  </div>
   <div class="brand"><b id="curName">—</b><span id="curSub"></span></div>
   <div class="seg" role="group" aria-label="模式">
     <button id="mInspect" aria-pressed="true">驗收</button>

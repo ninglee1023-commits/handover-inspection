@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.7.9';
+const VERSION = '0.8.0';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -148,6 +148,12 @@ async function shrink(blob, max) { const img = await loadImg(blob); const k = Ma
 const blobToDataURL = b => new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); });
 const dataURLToBlob = async u => (await fetch(u)).blob();
 function curD() { return S.drawings.find(d => d.id === S.cur) || null; }
+// drawing sets shown one at a time (top-bar switch); drawings imported on the device join the set that was showing
+const SETS = [{ id: 'gbp', name: '建築', mapping: 'gbp/mapping.json', size: '20 MB' }, { id: 'drainage', name: '渠務', mapping: 'gbp/drainage-mapping.json', size: '36 MB' }];
+const curSet = () => SETS.some(x => x.id === S.settings.set) ? S.settings.set : 'gbp';
+const setName = (k = curSet()) => (SETS.find(x => x.id === k) || SETS[0]).name;
+const setOf = d => (d && d.set) || 'gbp';
+const setDrawings = () => S.drawings.filter(d => setOf(d) === curSet());
 async function saveKV() { for (const k of ['project', 'settings', 'floorSel', 'recentAreas']) await DB.kset(k, S[k]); }
 const sheetMQ = matchMedia('(max-width:700px), (orientation:portrait) and (max-width:1100px)');
 const panelOpen = () => !$('#panel').hidden;
@@ -410,6 +416,7 @@ function updateBar() {
   $('#curSub').textContent = d ? [d.no, S.project.name].filter(Boolean).join('　') : '';
   $('#cnt').textContent = roundItems().length;
   $('#btnRound').textContent = shortRound(curRound());
+  document.querySelectorAll('#setSeg [data-set]').forEach(b => b.setAttribute('aria-pressed', b.dataset.set === curSet()));
   const ub = unbacked(); $('#btnExport').innerHTML = '導出' + (ub ? `<span class="n" title="未備份">${ub}</span>` : '');
   $('#mInspect').setAttribute('aria-pressed', S.mode === 'inspect'); $('#mMap').setAttribute('aria-pressed', S.mode === 'map');
   const mv = multiFloorViews(d);
@@ -417,6 +424,7 @@ function updateBar() {
   if (mv.length) $('#btnFloor').innerHTML = `樓層 <b>${esc(mv.map(v => floorFor(v)).filter((f, i, a) => a.indexOf(f) === i).join('/'))}</b>`;
   // zones and grids of the bundled plans come with the package; 位置設定 is only offered for drawings imported on the device
   $('#mMap').hidden = !d || d.src === 'bundle';
+  document.body.classList.toggle('inspectOnly', $('#mMap').hidden && S.mode === 'inspect');
   if (S.mode === 'map' && (!d || d.src === 'bundle')) { S.mode = 'inspect'; S.draft = null; renderOverlay(); }
   $('#maptools').hidden = S.mode !== 'map' || !d;
   document.querySelectorAll('#maptools [data-tool]').forEach(b => b.setAttribute('aria-pressed', b.dataset.tool === S.tool));
@@ -425,7 +433,7 @@ function updateBar() {
   $('#empty').hidden = !!d; $('#zoombtns').hidden = !d;
   const hints = { select: '點選區域或軸線可修改；兩指縮放、拖動', rect: '在圖上拖出矩形，框住單位、房間或區域', poly: '逐點點選邊界，完成後按「完成多邊形」', gx: '在每條縱向軸線上點一下（會自動編號）', gy: '在每條橫向軸線上點一下（會自動編號）' };
   const hint = $('#hint');
-  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : S.mode === 'fix' ? (S.fixItem ? `${itemLabel(S.fixItem)}：${S.fixItem.locText || ''}` : (c => `執修（${curRound().name}）：未完成 ${c.open}／共 ${c.all}　點選紅點處理`)(fixCounts())) : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : '點選圖上的問題位置 → 拍照');
+  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : S.mode === 'fix' ? (S.fixItem ? `${itemLabel(S.fixItem)}：${S.fixItem.locText || ''}` : (c => `執修（${roundLabel()}）：未完成 ${c.open}／共 ${c.all}　點選紅點處理`)(fixCounts())) : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : '點選圖上的問題位置 → 拍照');
   hint.hidden = !d;
 }
 
@@ -690,7 +698,7 @@ function itemsPanel() {
     const th = it.photos[0] ? `style="background-image:url('${burl(it.photos[0].out)}')"` : '';
     return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${subsOf(it).length ? `<em class="sub">${esc(subText(it))}</em>` : '<em class="sub none">未指定分判</em>'}　${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${fixStatus(it) === 'done' ? '　·　已回復' : ''}${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
   }).join('') || (scoped.length ? '' : '<div class="note">這張圖紙還沒有記錄。在「驗收」模式點選圖上的位置即可開始。</div>');
-  openPanel('items', `${esc(curRound().name)}（${list.length}）`, `
+  openPanel('items', `${esc(roundLabel())}（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
     <label class="f">分判<select id="lSub"><option value="">全部（${scoped.length}）</option><option value="-" ${subF === '-' ? 'selected' : ''}>未指定分判（${nNone}）</option>${subOpts.map(([x, n]) => `<option value="${esc(x)}" ${subF === x ? 'selected' : ''}>${esc(x)}（${n}）</option>`).join('')}</select></label>
     <div class="note">圖上：<b style="color:#d42a1e">紅點</b>＝未指定分判，<b style="color:#1f6f9c">藍點</b>＝已指定分判。</div>
@@ -717,15 +725,15 @@ function floorPanel() {
 /* ---- drawings ---- */
 function drawingsPanel() {
   freeURLs();
-  const rows = S.drawings.map(d => {
+  const rows = setDrawings().map(d => {
     const n = S.items.filter(i => i.drawingId === d.id).length;
     const th = d.thumb ? `background-image:url('${burl(d.thumb)}');` : '';
     return `<div class="li ${d.id === S.cur ? 'cur' : ''}" style="grid-template-columns:64px 1fr auto"><span class="th" style="${th}background-color:#fff"></span>
       <span class="t" data-open="${d.id}"><b>${esc(d.name)}</b><span>${esc(d.no || '')}${d.base || d.kind !== 'pdf' ? '' : '　·　未準備'}　·　${n} 記錄</span></span>
       <button class="btn" data-edit="${d.id}" style="min-height:38px;padding:6px 10px">設定</button></div>`;
   }).join('') || '<div class="note">還沒有圖紙。</div>';
-  const pending = S.drawings.filter(d => d.kind === 'pdf' && !d.base).length;
-  openPanel('drawings', '圖紙', `
+  const pending = setDrawings().filter(d => d.kind === 'pdf' && !d.base).length;
+  openPanel('drawings', `圖紙 · ${setName()}`, `
     ${pending ? `<button class="btn dk" data-a="prep">預先準備全部圖紙（尚有 ${pending} 張）</button><div class="note">第一次開啟每張 A0 圖紙需要數秒轉換。到地盤前先按一次，現場就可以即開即用（之後離線亦可）。</div>` : ''}
     <div class="list">${rows}</div>
     <button class="btn" data-a="add">另外匯入圖紙（PDF／圖片）</button>`);
@@ -733,7 +741,7 @@ function drawingsPanel() {
     const o = e.target.closest('[data-open]'); if (o) { await showDrawing(o.dataset.open); closePanel(); fit(); return; }
     const ed = e.target.closest('[data-edit]'); if (ed) return drawingForm(S.drawings.find(d => d.id === ed.dataset.edit));
     if (e.target.dataset.a === 'add') $('#dwgInput').click();
-    if (e.target.dataset.a === 'prep') { let i = 0; const list = S.drawings.filter(d => d.kind === 'pdf' && !d.base); for (const d of list) { busy(`正在準備圖紙 ${++i}／${list.length}：${d.name}`); try { await ensureBase(d, true); await makeThumb(d); } catch (err) { console.warn(err); } } busy(); toast('全部圖紙已準備好'); drawingsPanel(); }
+    if (e.target.dataset.a === 'prep') { let i = 0; const list = setDrawings().filter(d => d.kind === 'pdf' && !d.base); for (const d of list) { busy(`正在準備圖紙 ${++i}／${list.length}：${d.name}`); try { await ensureBase(d, true); await makeThumb(d); } catch (err) { console.warn(err); } } busy(); toast('全部圖紙已準備好'); drawingsPanel(); }
   };
 }
 async function makeThumb(d) {
@@ -767,7 +775,7 @@ function drawingForm(d, isNewFile) {
       if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = '再按一次確認刪除'; return; }
       for (const it of S.items.filter(i => i.drawingId === d.id)) await DB.del('items', it.id);
       S.items = S.items.filter(i => i.drawingId !== d.id); S.drawings = S.drawings.filter(x => x.id !== d.id); await DB.del('drawings', d.id);
-      if (S.cur === d.id) await showDrawing(S.drawings[0]?.id || null); drawingsPanel(); updateBar();
+      if (S.cur === d.id) await showDrawing(setDrawings()[0]?.id || null); drawingsPanel(); updateBar();
     }
   };
 }
@@ -791,7 +799,7 @@ async function importDrawingFile(file, meta) {
       const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height);
       made.push({ id: uid(), src: 'user', kind: 'image', blob: await canvasBlob(c, 'image/png'), name: meta.name, no: meta.no, w: c.width, h: c.height, views: mkView(c.width, c.height), created: Date.now() });
     }
-    for (const d of made) { await DB.put('drawings', d); S.drawings.push(d); }
+    for (const d of made) { if (curSet() !== 'gbp') d.set = curSet(); await DB.put('drawings', d); S.drawings.push(d); }
     busy(); await showDrawing(made[0].id); toast(`已匯入 ${made.length} 張圖紙`);
   } catch (err) { busy(); toast('匯入失敗：' + err.message, 5000); console.error(err); }
 }
@@ -852,6 +860,19 @@ $('#btnItems').onclick = () => S.panel === 'items' ? closePanel() : itemsPanel()
 $('#btnExport').onclick = () => S.panel === 'export' ? closePanel() : exportPanel();
 $('#btnFloor').onclick = () => S.panel === 'floor' ? closePanel() : floorPanel();
 $('#btnRound').onclick = () => S.panel === 'round' ? closePanel() : roundPanel();
+$('#setSeg').onclick = e => { const b = e.target.closest('[data-set]'); if (b) switchSet(b.dataset.set); };
+async function switchSet(k) {
+  if (k === curSet()) return;
+  if (S.editing) return toast('請先完成或關閉目前的記錄，再切換圖紙');
+  const prev = curSet(); S.settings.curBy = { ...S.settings.curBy, [prev]: S.cur };
+  S.settings.set = k;
+  try { await loadBundle(k); } catch (e) { busy(); S.settings.set = prev; updateBar(); return toast(e.message + '，請連網後再試', 6000); }
+  ensureSetRounds(); await saveRounds(); await saveKV();
+  closePanel();
+  const want = S.settings.curBy[k], L = setDrawings();
+  await showDrawing(L.some(d => d.id === want) ? want : L[0]?.id || null);
+  renderOverlay(); updateBar(); toast(`已切換到${setName()}圖紙（${roundLabel()}）`);
+}
 $('#fixLib').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
 $('#fixCam').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
 $('#photoRestore').onchange = e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) restoreFromPhotos(fs); };
@@ -957,7 +978,7 @@ function exportPanel() {
     <div class="row"><button class="btn ${ub ? 'p' : ''}" data-a="bknew">備份新增記錄</button><button class="btn" data-a="repair">檢查及修復相片</button><button class="btn" data-a="album">存入相簿（${ua}）</button></div>
     <button class="btn" data-a="bk">完整備份（全部 ${S.items.length} 項）</button>
     <div class="note">備份檔是 ZIP，可用分享選單存到「檔案」、iCloud Drive、Google Drive 或 WhatsApp。ZIP 內的「相片」資料夾在電腦上可直接開啟，每張相底部印有編號、位置、時間及檢查人員。</div>
-    <div class="sec">報告（${esc(curRound().name)}，${roundItems().length} 項）</div>
+    <div class="sec">報告（${esc(roundLabel())}，${roundItems().length} 項）</div>
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
     <div class="grid2"><label class="f">地盤／地址<input id="pSite" value="${esc(P.site)}"></label><label class="f">驗收日期<input id="pDate" type="date" value="${esc(P.date)}"></label></div>
     <label class="f">公司／單位<input id="pCo" value="${esc(P.company)}"></label>
@@ -1172,7 +1193,7 @@ async function exportDocx(onlyDev) {
     const infoRow = (k, v) => new D.TableRow({ children: [new D.TableCell({ children: [Pg(T(k, { color: '5F6B69' }), { after: 0 })], width: { size: 2000, type: D.WidthType.DXA }, borders: nb }), new D.TableCell({ children: [Pg(T(v || '', { bold: true }), { after: 0 })], width: { size: 6000, type: D.WidthType.DXA }, borders: nb })] });
     const children = [
       Pg(T('竣工驗收記錄', { bold: true, size: 32 }), { after: 120 }),
-      new D.Table({ rows: [infoRow('項目名稱', P.name), infoRow('地盤／地址', P.site), infoRow('驗收批次', curRound().name), infoRow('驗收日期', P.date), infoRow('檢查人員', [P.inspector, P.company].filter(Boolean).join('　')), infoRow('記錄數量', `${items.length} 項`)], width: { size: 8000, type: D.WidthType.DXA }, columnWidths: [2000, 6000] }),
+      new D.Table({ rows: [infoRow('項目名稱', P.name), infoRow('地盤／地址', P.site), infoRow('驗收批次', roundLabel()), infoRow('驗收日期', P.date), infoRow('檢查人員', [P.inspector, P.company].filter(Boolean).join('　')), infoRow('記錄數量', `${items.length} 項`)], width: { size: 8000, type: D.WidthType.DXA }, columnWidths: [2000, 6000] }),
       Pg(T(''), { after: 120 }),
       new D.Table({ rows, width: { size: usable, type: D.WidthType.DXA }, columnWidths: colTw, layout: D.TableLayoutType.FIXED }),
     ];
@@ -1194,14 +1215,14 @@ async function exportDocx(onlyDev) {
       styles: { default: { document: { run: { font: FONT, size: 18 } } } },
       sections: [{
         properties: { page: { size: { width: 11906, height: 16838, orientation: D.PageOrientation.LANDSCAPE }, margin: { top: 600, bottom: 600, left: 600, right: 600, header: 300, footer: 300 } } },
-        headers: { default: new D.Header({ children: [Pg([T(`${P.name || ''}　竣工驗收記錄　${curRound().name}　${P.date || ''}`, { size: 15, color: '5F6B69' })], { align: D.AlignmentType.RIGHT })] }) },
+        headers: { default: new D.Header({ children: [Pg([T(`${P.name || ''}　竣工驗收記錄　${roundLabel()}　${P.date || ''}`, { size: 15, color: '5F6B69' })], { align: D.AlignmentType.RIGHT })] }) },
         footers: { default: new D.Footer({ children: [new D.Paragraph({ alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ children: ['第 ', D.PageNumber.CURRENT, ' 頁，共 ', D.PageNumber.TOTAL_PAGES, ' 頁'], font: FONT, size: 15, color: '5F6B69' })] })] }) },
         children,
       }],
     });
     const blob = await D.Packer.toBlob(doc);
     busy();
-    await deliver(blob, `竣工驗收記錄_${safeName(curRound().name)}_${safeName(P.name) || '項目'}_${P.date || today()}.docx`);
+    await deliver(blob, `竣工驗收記錄_${safeName(roundLabel())}_${safeName(P.name) || '項目'}_${P.date || today()}.docx`);
     ovCache.clear();
     if (fails.length) reportFails(fails);
   } catch (err) { busy(); console.error(err); toast('報告生成失敗' + (typeof curLbl !== 'undefined' && curLbl ? `（${curLbl}）` : '') + '：' + err.message, 8000); }
@@ -1432,7 +1453,7 @@ async function importBackup(file) {
     else data = JSON.parse(await file.text());
     if (data.app !== 'handover-inspect') throw new Error('不是本程式的備份檔');
     if (data.project && !S.project.name) S.project = { ...S.project, ...data.project };
-    const rmap = {}; for (const r of data.rounds || []) rmap[r.id] = mergeRound(r.id, r.name, r.date);
+    const rmap = {}; for (const r of data.rounds || []) rmap[r.id] = mergeRound(r.id, r.name, r.date, r.set);
     let add = 0, upd = 0, skip = 0, i = 0;
     for (const it of data.items || []) {
       busy(`正在匯入記錄 ${++i}／${data.items.length}`);
@@ -1501,11 +1522,11 @@ async function buildReportPages(items, progress) {
   const newPage = first => {
     c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k);
     x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H);
-    drawText(x, `${P.name || ''}　竣工驗收記錄　${curRound().name}　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69', center: false });
+    drawText(x, `${P.name || ''}　竣工驗收記錄　${roundLabel()}　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69', center: false });
     y = top0;
     if (first) {
       y += drawText(x, '竣工驗收記錄', M, y, UW, 17, { bold: true }) + 6;
-      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收批次', curRound().name], ...(repLabel ? [['報告範圍', repLabel]] : []), ['驗收日期', P.date], ['公司／單位', P.company], ['記錄數量', `${items.length} 項`]]) {
+      for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收批次', roundLabel()], ...(repLabel ? [['報告範圍', repLabel]] : []), ['驗收日期', P.date], ['公司／單位', P.company], ['記錄數量', `${items.length} 項`]]) {
         drawText(x, a, M, y, 80, 9, { color: '#5f6b69' }); drawText(x, b || '', M + 80, y, 400, 9, { bold: true }); y += 13;
       }
       y += 6;
@@ -1578,7 +1599,7 @@ async function buildReportPages(items, progress) {
       } catch (e) { fails.push(`位置總圖 ${vt}：${e.message}`); }
     }
   }
-  function newPageRaw() { c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k); x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); drawText(x, `${P.name || ''}　竣工驗收記錄　${curRound().name}　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69' }); pages.push(c); }
+  function newPageRaw() { c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k); x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); drawText(x, `${P.name || ''}　竣工驗收記錄　${roundLabel()}　${P.date || ''}`, M, M - 14, UW, 7.5, { color: '#5f6b69' }); pages.push(c); }
   const blobs = [];
   for (const [i, pc] of pages.entries()) {
     const px = pc.getContext('2d'); drawText(px, `第 ${i + 1} 頁，共 ${pages.length} 頁`, M, PG.H - M + 2, UW, 7.5, { color: '#5f6b69', center: true });
@@ -1633,7 +1654,7 @@ async function exportPdfSet(by, kind, od) {
       const pr = (a, b) => busy(`正在生成 PDF ${g}／${keys.length}：${name}（${a}／${b}）`); pr(0, its.length);
       repLabel = name;
       try { const r = kind === 'inspect' ? await buildReportPages(its, pr) : await buildFixPages(its, pr, kind); fails.push(...r.fails.map(f => `${name}：${f}`));
-        files.push(new File([await pdfBlob(r.pages)], `${reportTitle(kind)}_${safeName(curRound().name)}_${safeName(k)}_${its.length}項.pdf`, { type: 'application/pdf' })); }
+        files.push(new File([await pdfBlob(r.pages)], `${reportTitle(kind)}_${safeName(roundLabel())}_${safeName(k)}_${its.length}項.pdf`, { type: 'application/pdf' })); }
       catch (e) { fails.push(`${name}：${e.message}`); }
       finally { repLabel = ''; }
     }
@@ -1644,7 +1665,7 @@ async function exportPdfSet(by, kind, od) {
     } else if (window.JSZip) {
       busy('正在打包…'); const zip = new JSZip(); for (const f of files) zip.file(f.name, f, { compression: 'STORE' });
       const blob = await zip.generateAsync({ type: 'blob' }); busy();
-      await deliver(blob, `${reportTitle(kind)}_${safeName(curRound().name)}_按${by === 'sub' ? '分判' : by === 'area' ? '區域' : '區域及分判'}_${today()}.zip`);
+      await deliver(blob, `${reportTitle(kind)}_${safeName(roundLabel())}_按${by === 'sub' ? '分判' : by === 'area' ? '區域' : '區域及分判'}_${today()}.zip`);
     } else for (const f of files) saveFile(f, f.name);
     toast(`已生成 ${files.length} 個 PDF`, 3500);
     if (fails.length) reportFails(fails);
@@ -1655,7 +1676,7 @@ async function exportPdf(pages, kind = 'inspect') {
   busy('正在生成 PDF…');
   try {
     const blob = await pdfBlob(pages); busy();
-    await deliver(blob, `${reportTitle(kind)}_${safeName(curRound().name)}_${safeName(S.project.name) || '項目'}_${kind === 'inspect' ? (S.project.date || today()) : today()}.pdf`);
+    await deliver(blob, `${reportTitle(kind)}_${safeName(roundLabel())}_${safeName(S.project.name) || '項目'}_${kind === 'inspect' ? (S.project.date || today()) : today()}.pdf`);
   } catch (e) { busy(); toast('PDF 生成失敗：' + e.message, 6000); }
 }
 $('#preview')?.addEventListener('click', async e => {
@@ -1667,7 +1688,21 @@ $('#preview')?.addEventListener('click', async e => {
 
 /* ================= v0.6: 驗收分次 (rounds) ================= */
 const R1 = { id: 'r1', name: '第1次驗收', date: '' };
-function curRound() { return S.rounds.find(r => r.id === S.settings.round) || S.rounds[0] || R1; }
+// each drawing set (建築 / 渠務) keeps its own rounds, so records, numbering and reports never mix
+const setOfRound = r => r.set || 'gbp';
+const setRounds = (k = curSet()) => S.rounds.filter(r => setOfRound(r) === k);
+const firstRound = k => k === 'gbp' ? R1 : { id: 'r1-' + k, name: '第1次驗收', date: '', set: k };
+function curRound() { const L = setRounds(), id = (S.settings.roundBy || {})[curSet()]; return L.find(r => r.id === id) || L[L.length - 1] || firstRound(curSet()); }
+function setCurRound(id) { S.settings.roundBy = { ...S.settings.roundBy, [curSet()]: id }; if (curSet() === 'gbp') S.settings.round = id; }
+function ensureSetRounds() {
+  if (!S.settings.roundBy) S.settings.roundBy = { gbp: S.settings.round };
+  for (const k of SETS.map(x => x.id)) {
+    if (!S.rounds.some(r => setOfRound(r) === k)) S.rounds.push(firstRound(k));
+    const L = S.rounds.filter(r => setOfRound(r) === k);
+    if (!L.some(r => r.id === S.settings.roundBy[k])) S.settings.roundBy[k] = L[L.length - 1].id;
+  }
+}
+const roundLabel = () => (curSet() === 'gbp' ? '' : setName() + ' ') + curRound().name;
 const roundOf = it => it.round || 'r1';
 const inRound = it => roundOf(it) === curRound().id;
 const roundItems = () => S.items.filter(inRound);
@@ -1675,12 +1710,12 @@ const roundName = id => (S.rounds.find(r => r.id === id) || {}).name || '';
 async function saveRounds() { await DB.kset('rounds', S.rounds); }
 function shortRound(r) { const m = (r.name || '').match(/第\s*(\d+)\s*次/); return m ? `第${m[1]}次` : (r.name || '').slice(0, 6); }
 function roundPanel() {
-  const rows = S.rounds.map(r => {
+  const rows = setRounds().map(r => {
     const n = S.items.filter(i => roundOf(i) === r.id).length, on = r.id === curRound().id;
     return `<button class="li ${on ? 'cur' : ''}" data-r="${r.id}" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(r.name)}${on ? '　（目前）' : ''}</b><span>${esc(r.date || '')}　${n} 項記錄</span></span><span class="chip">${on ? '使用中' : '切換'}</span></button>`;
   }).join('');
-  const nx = S.rounds.length + 1;
-  openPanel('round', '驗收批次', `
+  const nx = setRounds().length + 1;
+  openPanel('round', curSet() === 'gbp' ? '驗收批次' : `驗收批次 · ${setName()}`, `
     <div class="note">每一次驗收的記錄分開存放。圖上紅點、記錄清單、編號和報告都只包括目前這一次；以前各次的記錄保留不刪，隨時可以切換回去查看或導出。</div>
     <div class="list">${rows}</div>
     <div class="sec">開始新一次驗收</div>
@@ -1691,22 +1726,22 @@ function roundPanel() {
     <button class="btn" data-a="ren">儲存名稱</button>`);
   panel.querySelector('.pb').onclick = async e => {
     const b = e.target.closest('[data-r]');
-    if (b) { S.settings.round = b.dataset.r; await saveKV(); closePanel(); renderOverlay(); updateBar(); return toast(`已切換到「${curRound().name}」`); }
+    if (b) { setCurRound(b.dataset.r); await saveKV(); closePanel(); renderOverlay(); updateBar(); return toast(`已切換到「${roundLabel()}」`); }
     const a = e.target.dataset.a; if (!a) return;
     if (a === 'new') {
       const name = $('#rnName').value.trim() || `第${nx}次驗收`;
-      if (S.rounds.some(r => r.name === name)) return toast('已有同名的批次');
-      const r = { id: uid(), name, date: $('#rnDate').value }; S.rounds.push(r); S.settings.round = r.id;
+      if (setRounds().some(r => r.name === name)) return toast('已有同名的批次');
+      const r = { id: uid(), name, date: $('#rnDate').value, set: curSet() }; S.rounds.push(r); setCurRound(r.id);
       await saveRounds(); await saveKV(); closePanel(); renderOverlay(); updateBar(); toast(`已開始「${name}」，編號由 1 開始`, 3500);
     }
     if (a === 'ren') { const r = curRound(); r.name = $('#rcName').value.trim() || r.name; r.date = $('#rcDate').value; if (!S.rounds.includes(r)) S.rounds.push(r); await saveRounds(); updateBar(); toast('已儲存'); roundPanel(); }
   };
 }
-function mergeRound(id, name, date) { // returns the local round id for an incoming round
-  id = id || 'r1';
+function mergeRound(id, name, date, set) { // returns the local round id for an incoming round
+  id = id || 'r1'; set = set || SETS.map(x => x.id).find(k => id === 'r1-' + k) || 'gbp';
   if (S.rounds.some(r => r.id === id)) return id;
-  const same = name && S.rounds.find(r => r.name === name); if (same) return same.id;
-  S.rounds.push({ id, name: name || (id === 'r1' ? R1.name : '匯入批次'), date: date || '' }); return id;
+  const same = name && S.rounds.find(r => r.name === name && setOfRound(r) === set); if (same) return same.id;
+  S.rounds.push({ id, name: name || (id === 'r1' || id === 'r1-' + set ? R1.name : '匯入批次'), date: date || '', ...(set === 'gbp' ? {} : { set }) }); return id;
 }
 
 /* ================= v0.6: 執修 (repair follow-up) ================= */
@@ -1856,7 +1891,7 @@ async function restoreFromPhotos(files) {
     if (!it) {
       const L = resolveLoc(d, m.x, m.y);
       Object.assign(L, { viewId: m.v || L.viewId, tower: m.tw, floor: m.f, flat: m.fl, room: m.rm, area: m.ar, grid: m.gr || L.grid });
-      it = { id: m.i, dev: m.dv, by: m.b, no: m.n, drawingId: d.id, x: m.x, y: m.y, loc: L, locText: m.lt || fmtLoc(L), locEdited: !!m.lt, photos: [], note: m.note || '', created: m.t || Date.now(), mod: Date.now(), round: mergeRound(m.r, m.rn), restored: true };
+      it = { id: m.i, dev: m.dv, by: m.b, no: m.n, drawingId: d.id, x: m.x, y: m.y, loc: L, locText: m.lt || fmtLoc(L), locEdited: !!m.lt, photos: [], note: m.note || '', created: m.t || Date.now(), mod: Date.now(), round: mergeRound(m.r, m.rn, null, setOf(d)), restored: true };
       if (m.c) it.code = m.c;
       if (m.st && m.st !== 'open') it.fix = { status: m.st, reply: m.rp || '', photos: [] };
       S.items.push(it); add++;
@@ -1885,7 +1920,7 @@ function reportItems(kind, onlyDev) {
 const reportTitle = kind => kind === 'inspect' ? '竣工驗收記錄' : '執修回復報告';
 async function buildFixPages(items, progress, kind) {
   items = await freshItems(items);
-  const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M, title = reportTitle(kind), rn = curRound().name;
+  const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M, title = reportTitle(kind), rn = roundLabel();
   const pct = [5, 13, 18, 23, 23, 11, 7], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
   const heads = ['編號', '位置', '圖紙位置', '完成前', '完成後', '問題／回覆', '狀態'];
   const pad = 4, dW = cw[2] - 2 * pad, pW = cw[3] - 2 * pad, top0 = M + 14, bottom = PG.H - M - 14, headH = 20;
@@ -1953,7 +1988,7 @@ async function exportFixDocx(items, kind) {
   items = await freshItems(items);
   if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '還沒有任何記錄');
   if (!window.docx) return toast('報告元件未載入，請連網後重新開啟一次');
-  const D = window.docx, P = S.project, title = reportTitle(kind), rn = curRound().name;
+  const D = window.docx, P = S.project, title = reportTitle(kind), rn = roundLabel();
   try {
     busy('正在生成報告…'); ovCache.clear(); const fails = [];
     const FONT = { ascii: 'Arial', hAnsi: 'Arial', eastAsia: 'Microsoft JhengHei', cs: 'Arial' };
@@ -2004,12 +2039,14 @@ async function exportFixDocx(items, kind) {
 }
 
 /* ---------------- bundled drawing package ---------------- */
-async function loadBundle() {
-  let man;
-  try { man = await (await fetch('gbp/mapping.json', { cache: 'no-cache' })).json(); } catch (e) { return; }
-  const have = await DB.kget('pkgVersion'); S.pkgVersion = have;
-  if (have === man.version && S.drawings.some(d => d.src === 'bundle')) return;
-  busy('正在下載圖紙包（約 20 MB，只需一次）…');
+// each set has its own package; a set other than 建築 is first downloaded when it is switched to
+async function loadBundle(k = 'gbp') {
+  const set = SETS.find(x => x.id === k); let man;
+  try { man = await (await fetch(set.mapping, { cache: 'no-cache' })).json(); } catch (e) { if (!S.drawings.some(d => d.src === 'bundle' && setOf(d) === k)) throw new Error(`未能下載${set.name}圖紙`); return; }
+  const vkey = k === 'gbp' ? 'pkgVersion' : 'pkgVersion:' + k;
+  const have = await DB.kget(vkey); if (k === 'gbp') S.pkgVersion = have;
+  if (have === man.version && S.drawings.some(d => d.src === 'bundle' && setOf(d) === k)) return;
+  busy(`正在下載${set.name}圖紙包（約 ${set.size}，只需一次）…`);
   const fileInDb = await DB.get('files', man.fileId);
   if (!fileInDb || fileInDb.sha !== man.sha) {
     const res = await fetch(man.file, { cache: 'no-cache' }); if (!res.ok) throw new Error('圖紙包下載失敗');
@@ -2018,12 +2055,12 @@ async function loadBundle() {
   }
   for (const pd of man.drawings) {
     const ex = S.drawings.find(d => d.id === pd.id);
-    const rec = { ...pd, src: 'bundle', kind: 'pdf', fileId: man.fileId, created: pd.order };
+    const rec = { ...pd, src: 'bundle', kind: 'pdf', fileId: man.fileId, created: (k === 'gbp' ? 0 : 1000) + pd.order, ...(k === 'gbp' ? {} : { set: k }) };
     if (ex && ex.base && ex.w === pd.w && fileInDb && fileInDb.sha === man.sha) { rec.base = ex.base; rec.thumb = ex.thumb; }
     await DB.put('drawings', rec);
     const i = S.drawings.findIndex(d => d.id === rec.id); if (i >= 0) S.drawings[i] = rec; else S.drawings.push(rec);
   }
-  await DB.kset('pkgVersion', man.version); S.pkgVersion = man.version;
+  await DB.kset(vkey, man.version); if (k === 'gbp') S.pkgVersion = man.version;
   S.drawings.sort((a, b) => (a.created || 0) - (b.created || 0));
   if (!S.project.name && man.project) { S.project.name = man.project; await saveKV(); }
   busy();
@@ -2042,11 +2079,13 @@ async function boot() {
     for (const it of S.items) if (!it.fs) it.fs = sigsOf(it);
     S.rounds = await DB.kget('rounds') || [];
     if (!S.rounds.some(r => r.id === 'r1') && (!S.rounds.length || S.items.some(i => !i.round))) S.rounds.unshift({ ...R1 });
-    if (!S.settings.round || !S.rounds.some(r => r.id === S.settings.round)) S.settings.round = S.rounds[S.rounds.length - 1].id;
-    await saveRounds();
+    if (!S.settings.round || !S.rounds.some(r => r.id === S.settings.round)) S.settings.round = setRounds('gbp').slice(-1)[0]?.id || 'r1';
+    ensureSetRounds(); await saveRounds();
     try { await loadBundle(); } catch (e) { busy(); toast(e.message + '，請連網後重新開啟', 6000); }
+    // other sets refresh only once they have been downloaded
+    for (const x of SETS) if (x.id !== 'gbp' && (x.id === curSet() || S.drawings.some(d => setOf(d) === x.id && d.src === 'bundle'))) try { await loadBundle(x.id); } catch (e) { busy(); toast(e.message + '，請連網後重新開啟', 6000); }
     const cur = await DB.kget('cur');
-    await showDrawing(S.drawings.find(d => d.id === cur) ? cur : S.drawings[0]?.id || null);
+    await showDrawing(setDrawings().some(d => d.id === cur) ? cur : setDrawings()[0]?.id || null);
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { });
     for (const it of S.items) { if (!it.dev && S.settings.dev) it.dev = S.settings.dev; }
     if (!S.settings.dev) setupPanel(true);
