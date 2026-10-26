@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.2';
+const VERSION = '0.8.3';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -879,12 +879,13 @@ $('#fixLib').onchange = e => { const f = e.target.files[0]; e.target.value = '';
 $('#fixCam').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
 $('#photoRestore').onchange = e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) restoreFromPhotos(fs); };
 $('#zIn').onclick = () => zoomAt(1.6); $('#zOut').onclick = () => zoomAt(1 / 1.6); $('#zFit').onclick = () => fit();
-// turn 90° clockwise around the middle of the screen
-$('#zRot').onclick = () => {
-  const d = curD(); if (!d) return; const A = visibleArea(); const c = toDwg(stageRect().left + A.w / 2, stageRect().top + 30 + A.h / 2);
-  S.rots[d.id] = (rotOf(d) + 1) % 4; DB.kset('rots', S.rots); hires.hidden = true; hiBox = null; hiSeq++;
-  centerOn(c.x, c.y); renderOverlay();
-};
+// turn 90° (step 1 clockwise, -1 anticlockwise) around the middle of the visible area, keeping the zoom
+function turn(step) {
+  const d = curD(); if (!d) return; const A = visibleArea(), r = stageRect(), k = S.view.k; const c = toDwg(r.left + A.w / 2, r.top + 30 + A.h / 2);
+  S.rots[d.id] = (rotOf(d) + step + 4) % 4; DB.kset('rots', S.rots); hires.hidden = true; hiBox = null; hiSeq++;
+  centerOn(c.x, c.y, k); renderOverlay();
+}
+$('#zRot').onclick = () => turn(1); $('#zRotL').onclick = () => turn(-1);
 // the iPad resizes the page when the camera or keyboard comes and goes: keep the spot in the middle where it was
 let rzT;
 addEventListener('resize', () => {
