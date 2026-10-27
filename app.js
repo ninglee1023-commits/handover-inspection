@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.3';
+const VERSION = '0.8.4';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -980,6 +980,7 @@ function exportPanel() {
     <div class="safe ${ub ? 'warn' : 'ok'}"><b>${ub ? `${ub} 項記錄未備份` : '全部記錄已備份'}</b><span>上次備份：${last}　·　未存入相簿：${ua} 張</span></div>
     <div class="row"><button class="btn ${ub ? 'p' : ''}" data-a="bknew">備份新增記錄</button><button class="btn" data-a="repair">檢查及修復相片</button><button class="btn" data-a="album">存入相簿（${ua}）</button></div>
     <button class="btn" data-a="bk">完整備份（全部 ${S.items.length} 項）</button>
+    <div class="row"><label class="f" style="flex:2 1 0;min-width:0">按驗收批次備份（整次驗收一個檔案）<select id="bkRound">${S.rounds.filter(r => S.items.some(i => roundOf(i) === r.id)).map(r => { const n = S.items.filter(i => roundOf(i) === r.id).length, t = (S.settings.roundBackup || {})[r.id]; return `<option value="${r.id}" ${r.id === curRound().id ? 'selected' : ''}>${esc(setName(setOfRound(r)) + ' ' + r.name)}（${n} 項）${t ? '　已備份 ' + fmtTime(t) : ''}</option>`; }).join('') || '<option value="">還沒有任何記錄</option>'}</select></label><button class="btn" data-a="bkround" style="align-self:flex-end">備份此批次</button></div>
     <div class="note">備份檔是 ZIP，可用分享選單存到「檔案」、iCloud Drive、Google Drive 或 WhatsApp。ZIP 內的「相片」資料夾在電腦上可直接開啟，每張相底部印有編號、位置、時間及檢查人員。</div>
     <div class="sec">報告（${esc(roundLabel())}，${roundItems().length} 項）</div>
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
@@ -1029,6 +1030,7 @@ function exportPanel() {
     if (a === 'pdf') { const items = reportItems(kind, od); if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '還沒有任何記錄'); busy('正在生成 PDF…'); ovCache.clear(); try { const pr = (x, y) => busy(`正在生成 PDF… ${x}／${y}`); const r = kind === 'inspect' ? await buildReportPages(items, pr) : await buildFixPages(items, pr, kind); ovCache.clear(); await exportPdf(r.pages, kind); if (r.fails.length) reportFails(r.fails); } catch (err) { busy(); toast('PDF 生成失敗：' + err.message, 6000); } }
     if (a === 'bk') exportBackup(false);
     if (a === 'bknew') exportBackup(true);
+    if (a === 'bkround') { const id = $('#bkRound').value; if (!id) return toast('還沒有任何記錄'); exportBackup(false, id); }
     if (a === 'repair') repairPhotos();
     if (a === 'album') albumPanel();
     if (a === 'setup') setupPanel();
@@ -1298,7 +1300,9 @@ async function renumberAll() {
   renderOverlay(); updateBar(); toast(`已整理 ${list.length} 項記錄的編號（${cnt.size} 個樓層）`, 4000);
 }
 const fmtTime = t => { const d = new Date(t || Date.now()); const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
-function unbacked() { const t = S.settings.lastBackup || 0; return S.items.filter(i => (i.mod || i.created || 0) > t).length; }
+// a record counts as backed up by a full / new-records backup, or by a backup of its own round
+const backedAt = it => Math.max(S.settings.lastBackup || 0, (S.settings.roundBackup || {})[roundOf(it)] || 0);
+function unbacked() { return S.items.filter(i => (i.mod || i.created || 0) > backedAt(i)).length; }
 function unalbum() { return S.items.reduce((n, i) => n + i.photos.filter(p => !p.album).length + ((i.fix && i.fix.photos) || []).filter(p => !p.album).length, 0); }
 
 async function renderOut(orig, shapes) {
@@ -1397,12 +1401,12 @@ async function repairPhotos() {
 function reportFails(fails) {
   openPanel('fails', '報告已生成，但部分圖片有問題', `<div class="note">以下 ${fails.length} 處在報告內以紅字標示。請截圖這個畫面給我，方便查找原因。</div><div class="list">${fails.map(f => `<div class="li" style="display:block">${esc(f)}</div>`).join('')}</div>`);
 }
-async function exportBackup(onlyNew) {
+async function exportBackup(onlyNew, roundId) {
   if (!window.JSZip) return toast('備份元件未載入，請連網後重新開啟');
   try {
-    const since = onlyNew ? (S.settings.lastBackup || 0) : 0;
-    const items = S.items.filter(i => (i.mod || i.created || 0) > since).sort(byOrder);
-    if (!items.length) return toast('沒有新的記錄需要備份');
+    const rd = roundId && S.rounds.find(r => r.id === roundId);
+    const items = S.items.filter(i => rd ? roundOf(i) === rd.id : !onlyNew || (i.mod || i.created || 0) > backedAt(i)).sort(byOrder);
+    if (!items.length) return toast(rd ? '這個批次沒有記錄' : '沒有新的記錄需要備份');
     busy('正在打包…'); const zip = new JSZip(); const out = [];
     let n = 0, tot = items.reduce((s, i) => s + i.photos.length + ((i.fix && i.fix.photos) || []).length, 0);
     for (const it of items) {
@@ -1420,13 +1424,15 @@ async function exportBackup(onlyNew) {
       out.push({ ...it, photos, fix });
     }
     const drawings = S.drawings.filter(d => d.src !== 'bundle' || true).map(d => ({ id: d.id, src: d.src, views: d.src === 'user' ? d.views : undefined }));
-    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, inspector: S.settings.inspector, onlyNew: !!onlyNew, project: S.project, rounds: S.rounds, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
+    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, inspector: S.settings.inspector, onlyNew: !!onlyNew, round: rd ? rd.id : undefined, project: S.project, rounds: rd ? [rd] : S.rounds, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
     busy('正在壓縮…');
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
     busy();
     const stamp = fmtTime().replace(/[-: ]/g, '').slice(0, 12);
-    await deliver(blob, `驗收備份_${S.settings.dev || 'A'}_${onlyNew ? '新增' : '完整'}_${stamp}.zip`);
-    S.settings.lastBackup = Date.now(); await saveKV(); updateBar(); if (S.panel === 'export') exportPanel();
+    const tag = rd ? `${setName(setOfRound(rd))}_${rd.name}`.replace(/[\\/:*?"<>|\s]+/g, '') : onlyNew ? '新增' : '完整';
+    await deliver(blob, `驗收備份_${S.settings.dev || 'A'}_${tag}_${stamp}.zip`);
+    if (rd) S.settings.roundBackup = { ...S.settings.roundBackup, [rd.id]: Date.now() }; else S.settings.lastBackup = Date.now();
+    await saveKV(); updateBar(); if (S.panel === 'export') exportPanel();
   } catch (err) { busy(); toast('備份失敗：' + err.message, 6000); }
 }
 /* merge an incoming copy of a record into the local one, field group by field group:
