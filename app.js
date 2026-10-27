@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.4';
+const VERSION = '0.8.5';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1485,7 +1485,7 @@ async function importBackup(file) {
     for (const it of data.items || []) {
       busy(`正在匯入記錄 ${++i}／${data.items.length}`);
       if (!it.dev) it.dev = data.dev || 'X';
-      it.round = it.round ? (rmap[it.round] || mergeRound(it.round)) : 'r1';
+      it.round = rmap[it.round] || mergeRound(it.round);
       if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
       const ex = S.items.find(x => x.id === it.id);
       const conv = async p => { // a photo of the incoming copy, with its image read from the backup
@@ -1762,7 +1762,7 @@ function roundPanel() {
     const n = S.items.filter(i => roundOf(i) === r.id).length, on = r.id === curRound().id;
     return `<button class="li ${on ? 'cur' : ''}" data-r="${r.id}" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(r.name)}${on ? '　（目前）' : ''}</b><span>${esc(r.date || '')}　${n} 項記錄</span></span><span class="chip">${on ? '使用中' : '切換'}</span></button>`;
   }).join('');
-  const nx = setRounds().length + 1;
+  const nx = setRounds().length + 1, others = setRounds().filter(r => r.id !== curRound().id);
   openPanel('round', curSet() === 'gbp' ? '驗收批次' : `驗收批次 · ${setName()}`, `
     <div class="note">每一次驗收的記錄分開存放。圖上紅點、記錄清單、編號和報告都只包括目前這一次；以前各次的記錄保留不刪，隨時可以切換回去查看或導出。</div>
     <div class="list">${rows}</div>
@@ -1771,7 +1771,11 @@ function roundPanel() {
     <button class="btn p" data-a="new">開始新一次驗收</button>
     <div class="sec">修改目前批次名稱</div>
     <div class="grid2"><label class="f">名稱<input id="rcName" value="${esc(curRound().name)}"></label><label class="f">日期<input id="rcDate" type="date" value="${esc(curRound().date || '')}"></label></div>
-    <button class="btn" data-a="ren">儲存名稱</button>`);
+    <button class="btn" data-a="ren">儲存名稱</button>
+    ${others.length ? `<div class="sec">合併批次</div>
+    <div class="note">把同事匯入的批次（名稱不同）併入目前的「${esc(curRound().name)}」，之後圖上、記錄清單和報告會一次包括全部記錄。被併入的批次會刪除，記錄、相片及檢查人員不變；之後再匯入這些批次的備份檔，記錄會自動放入目前批次。</div>
+    ${others.map(r => `<label class="toggle">${esc(r.name)}${r.date ? '　' + esc(r.date) : ''}（${S.items.filter(i => roundOf(i) === r.id).length} 項）<input type="checkbox" data-m="${r.id}"></label>`).join('')}
+    <button class="btn" data-a="merge">合併到目前批次</button>` : ''}`);
   panel.querySelector('.pb').onclick = async e => {
     const b = e.target.closest('[data-r]');
     if (b) { setCurRound(b.dataset.r); await saveKV(); closePanel(); renderOverlay(); updateBar(); return toast(`已切換到「${roundLabel()}」`); }
@@ -1782,11 +1786,30 @@ function roundPanel() {
       const r = { id: uid(), name, date: $('#rnDate').value, set: curSet() }; S.rounds.push(r); setCurRound(r.id);
       await saveRounds(); await saveKV(); closePanel(); renderOverlay(); updateBar(); toast(`已開始「${name}」，編號由 1 開始`, 3500);
     }
+    if (a === 'merge') {
+      const ids = [...panel.querySelectorAll('[data-m]:checked')].map(x => x.dataset.m); if (!ids.length) return toast('請先勾選要合併的批次');
+      const n = S.items.filter(i => ids.includes(roundOf(i))).length;
+      if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = `再按一次確認把 ${ids.length} 個批次（${n} 項記錄）併入「${curRound().name}」`; return; }
+      await mergeRounds(ids, curRound().id); return roundPanel();
+    }
     if (a === 'ren') { const r = curRound(); r.name = $('#rcName').value.trim() || r.name; r.date = $('#rcDate').value; if (!S.rounds.includes(r)) S.rounds.push(r); await saveRounds(); updateBar(); toast('已儲存'); roundPanel(); }
   };
 }
+// merge whole rounds into one; the merged ids are remembered so later backups of them land in the target too
+async function mergeRounds(ids, target) {
+  busy('正在合併…'); const now = Date.now(), al = { ...S.settings.roundAlias };
+  for (const it of S.items) if (ids.includes(roundOf(it))) { it.round = target; it.mod = now; await saveItem(it); }
+  for (const id of ids) al[id] = target;
+  for (const k of Object.keys(al)) if (ids.includes(al[k])) al[k] = target;
+  delete al[target]; S.settings.roundAlias = al;
+  S.rounds = S.rounds.filter(r => !ids.includes(r.id));
+  await saveRounds(); await saveKV(); busy(); renderOverlay(); updateBar();
+  const L = roundItems().map(itemLabel), dup = L.length - new Set(L).size;
+  toast(`已合併，「${curRound().name}」共 ${L.length} 項記錄${dup ? `；有 ${dup} 個編號重複，可到「導出 → 整理編號」重新編號` : ''}`, dup ? 6000 : 3500);
+}
 function mergeRound(id, name, date, set) { // returns the local round id for an incoming round
   id = id || 'r1'; set = set || SETS.map(x => x.id).find(k => id === 'r1-' + k) || 'gbp';
+  for (let k = 0, al = S.settings.roundAlias || {}; al[id] && k < 20; k++) id = al[id];
   if (S.rounds.some(r => r.id === id)) return id;
   const same = name && S.rounds.find(r => r.name === name && setOfRound(r) === set); if (same) return same.id;
   S.rounds.push({ id, name: name || (id === 'r1' || id === 'r1-' + set ? R1.name : '匯入批次'), date: date || '', ...(set === 'gbp' ? {} : { set }) }); return id;
