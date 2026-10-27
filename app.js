@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.5';
+const VERSION = '0.8.6';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1762,7 +1762,7 @@ function roundPanel() {
     const n = S.items.filter(i => roundOf(i) === r.id).length, on = r.id === curRound().id;
     return `<button class="li ${on ? 'cur' : ''}" data-r="${r.id}" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(r.name)}${on ? '　（目前）' : ''}</b><span>${esc(r.date || '')}　${n} 項記錄</span></span><span class="chip">${on ? '使用中' : '切換'}</span></button>`;
   }).join('');
-  const nx = setRounds().length + 1, others = setRounds().filter(r => r.id !== curRound().id);
+  const nx = setRounds().length + 1;
   openPanel('round', curSet() === 'gbp' ? '驗收批次' : `驗收批次 · ${setName()}`, `
     <div class="note">每一次驗收的記錄分開存放。圖上紅點、記錄清單、編號和報告都只包括目前這一次；以前各次的記錄保留不刪，隨時可以切換回去查看或導出。</div>
     <div class="list">${rows}</div>
@@ -1772,10 +1772,11 @@ function roundPanel() {
     <div class="sec">修改目前批次名稱</div>
     <div class="grid2"><label class="f">名稱<input id="rcName" value="${esc(curRound().name)}"></label><label class="f">日期<input id="rcDate" type="date" value="${esc(curRound().date || '')}"></label></div>
     <button class="btn" data-a="ren">儲存名稱</button>
-    ${others.length ? `<div class="sec">合併批次</div>
-    <div class="note">把同事匯入的批次（名稱不同）併入目前的「${esc(curRound().name)}」，之後圖上、記錄清單和報告會一次包括全部記錄。被併入的批次會刪除，記錄、相片及檢查人員不變；之後再匯入這些批次的備份檔，記錄會自動放入目前批次。</div>
-    ${others.map(r => `<label class="toggle">${esc(r.name)}${r.date ? '　' + esc(r.date) : ''}（${S.items.filter(i => roundOf(i) === r.id).length} 項）<input type="checkbox" data-m="${r.id}"></label>`).join('')}
-    <button class="btn" data-a="merge">合併到目前批次</button>` : ''}`);
+    ${setRounds().length > 1 ? `<div class="sec">合併批次</div>
+    <div class="note">勾選兩個或以上的批次（例如同事匯入、名稱不同的批次），輸入新名稱後合併成一個批次，之後圖上、記錄清單和報告會一次包括全部記錄。記錄、相片及檢查人員不變；之後再匯入這些批次的備份檔，記錄會自動放入合併後的批次。</div>
+    ${setRounds().map(r => `<label class="toggle">${esc(r.name)}${r.date ? '　' + esc(r.date) : ''}（${S.items.filter(i => roundOf(i) === r.id).length} 項）<input type="checkbox" data-m="${r.id}"></label>`).join('')}
+    <label class="f">合併後名稱<input id="mgName" placeholder="例如：第1次驗收（全部）"></label>
+    <button class="btn" data-a="merge">合併所選批次</button>` : ''}`);
   panel.querySelector('.pb').onclick = async e => {
     const b = e.target.closest('[data-r]');
     if (b) { setCurRound(b.dataset.r); await saveKV(); closePanel(); renderOverlay(); updateBar(); return toast(`已切換到「${roundLabel()}」`); }
@@ -1787,10 +1788,14 @@ function roundPanel() {
       await saveRounds(); await saveKV(); closePanel(); renderOverlay(); updateBar(); toast(`已開始「${name}」，編號由 1 開始`, 3500);
     }
     if (a === 'merge') {
-      const ids = [...panel.querySelectorAll('[data-m]:checked')].map(x => x.dataset.m); if (!ids.length) return toast('請先勾選要合併的批次');
+      const ids = [...panel.querySelectorAll('[data-m]:checked')].map(x => x.dataset.m); if (ids.length < 2) return toast('請勾選最少兩個批次');
+      const name = $('#mgName').value.trim(); if (!name) return toast('請輸入合併後的名稱');
+      if (setRounds().some(r => r.name === name && !ids.includes(r.id))) return toast('已有同名的批次');
       const n = S.items.filter(i => ids.includes(roundOf(i))).length;
-      if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = `再按一次確認把 ${ids.length} 個批次（${n} 項記錄）併入「${curRound().name}」`; return; }
-      await mergeRounds(ids, curRound().id); return roundPanel();
+      if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = `再按一次確認把 ${ids.length} 個批次（${n} 項記錄）合併為「${name}」`; return; }
+      // the current round (if ticked) or the first ticked one keeps its id and takes the new name
+      const keep = setRounds().find(r => r.id === curRound().id && ids.includes(r.id)) || setRounds().find(r => ids.includes(r.id));
+      keep.name = name; setCurRound(keep.id); await mergeRounds(ids.filter(id => id !== keep.id), keep.id); return roundPanel();
     }
     if (a === 'ren') { const r = curRound(); r.name = $('#rcName').value.trim() || r.name; r.date = $('#rcDate').value; if (!S.rounds.includes(r)) S.rounds.push(r); await saveRounds(); updateBar(); toast('已儲存'); roundPanel(); }
   };
