@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.8';
+const VERSION = '0.8.7';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -574,7 +574,7 @@ function newItem(p) {
   const d = curD(); const loc = resolveLoc(d, p.x, p.y);
   S.editing = { id: uid(), round: curRound().id, dev: S.settings.dev || 'A', by: S.settings.inspector || '', drawingId: d.id, no: nextNo(), x: Math.round(p.x), y: Math.round(p.y), loc, locText: fmtLoc(loc), locEdited: false, photos: [], note: '', created: Date.now(), _new: true };
   renderOverlay(); itemPanel(); updateBar(); ensureVisible(p);
-  if (S.settings.autoCam) takePhoto();
+  if (S.settings.autoCam) $('#camInput').click();
 }
 /* office pass: walk through the records in list order without going back to the list */
 function navPos(it) { const L = roundItems().sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length, noSub = L.filter(x => !subsOf(x).length).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項　·　未指定分判 ${noSub} 項`; }
@@ -615,8 +615,7 @@ function itemPanel() {
       : `<label class="f">區域名稱（如 Lift Lobby、平台花園）<input id="fArea" list="areaList" value="${esc(L.area)}"><datalist id="areaList">${S.recentAreas.map(a => `<option value="${esc(a)}">`).join('')}</datalist></label>`}
     ${L.grid ? `<div class="chips"><span class="chip">Grid <b>${esc(L.grid)}</b></span></div>` : ''}
     <div class="photos">${photos}</div>
-    <div class="row"><button class="btn p" data-a="cam">拍照</button><label class="btn g" for="fixCam" data-a="reply">回復</label></div>
-    <div class="row"><label class="btn" for="camInput">系統相機</label><label class="btn" for="libInput">從相簿加入</label></div>
+    <div class="row"><label class="btn p" for="camInput">拍照</label><label class="btn" for="libInput">從相簿加入</label><label class="btn g" for="fixCam" data-a="reply">回復</label></div>
     ${after ? `<div class="f-l">回復照片（完成後）</div><div class="photos">${after}</div>
     <label class="f">回覆文字（可留空）<input id="fxReply" value="${esc((it.fix && it.fix.reply) || '')}" placeholder="例如：已更換門鉸"></label>` : ''}
     <label class="f">問題描述（可回辦公室再填）<textarea id="fNote" rows="3" placeholder="例如：門鉸鬆脫">${esc(it.note)}</textarea></label>
@@ -655,7 +654,7 @@ function itemPanel() {
     const a = e.target.dataset.a; if (!a) return;
     if (a === 'edA') { const i = +e.target.dataset.i; const F = fixOf(it); const ph = F.photos[i]; if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistItem(true); itemPanel(); } }
     if (a === 'delA') { if (e.target.dataset.armed) { const F = fixOf(it); F.photos.splice(+e.target.dataset.i, 1); if (!F.photos.length) { F.status = 'open'; F.done = null; } await persistItem(true); renderOverlay(); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
-    if (a === 'cam') takePhoto();
+    if (a === 'cam') $('#camInput').click();
     if (a === 'lib') $('#libInput').click();
     if (a === 'done') closePanel();
     if (a === 'prev' || a === 'next' || a === 'nextEmpty' || a === 'nextNoSub') stepItem(it, a);
@@ -1876,85 +1875,35 @@ async function addFixPhoto(file) {
   renderOverlay(); if (S.panel === 'fix') fixPanel(it); else if (S.panel === 'item' && S.editing === it) itemPanel();
   if (S.panel !== 'fix') S.fixItem = null; toast(`${itemLabel(it)} 已加入回復照片`, 2500);
 }
-/* in-app camera: the iPad system camera sheet (<input capture>) has no 0.5× ultra-wide, so pick the lens here.
-   With a before-photo it doubles as the alignment camera: the before-photo is laid over the live view,
-   so the after-photo is taken from the same spot */
-const lensKind = l => /front|前置|user/i.test(l) ? 'front' : /dual|triple|雙|双|三鏡|三镜/i.test(l) ? 'multi' : /ultra ?wide|超廣角|超广角/i.test(l) ? 'uw' : /tele|長焦|长焦|遠攝|远摄/i.test(l) ? 'tele' : 'w';
-const LENS_NAME = { uw: '0.5× 超廣角', w: '1× 廣角', tele: '長焦' }, LENS_ORD = { uw: 0, w: 1, tele: 2 };
-async function backLenses() {
-  let L = []; try { L = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput' && d.label); } catch (e) { }
-  // virtual multi-lens devices switch lenses on their own; only offer them when there is nothing else
-  const named = L.map(d => ({ id: d.deviceId, kind: lensKind(d.label) })).filter(d => d.kind !== 'front');
-  const real = named.filter(d => d.kind !== 'multi');
-  return (real.length ? real : named).sort((a, b) => (LENS_ORD[a.kind] ?? 3) - (LENS_ORD[b.kind] ?? 3))
-    .map((d, i, all) => ({ ...d, name: all.filter(x => x.kind === d.kind).length > 1 || !LENS_NAME[d.kind] ? `鏡頭 ${i + 1}` : LENS_NAME[d.kind] }));
-}
-const camOK = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-function liveCam(title, before) {
-  return new Promise(async done => {
-    const gum = id => navigator.mediaDevices.getUserMedia({ video: { ...(id ? { deviceId: { exact: id } } : { facingMode: { ideal: 'environment' } }), width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
-    let stream, lenses = await backLenses();
-    const pref = lenses.find(l => l.kind === S.settings.lens);
-    try { stream = await gum(pref && pref.id); }
-    catch (e) { try { if (!pref) throw e; stream = await gum(null); } catch (e) { toast('未能開啟相機（' + (e.name === 'NotAllowedError' ? '未獲相機權限' : e.message) + '），請按「系統相機」', 5000); return done(null); } }
-    // device labels only show up once the camera is allowed, so the first time round the lens is picked after opening
-    if (!lenses.length) {
-      lenses = await backLenses(); const p = lenses.find(l => l.kind === S.settings.lens);
-      if (p && p.id !== stream.getVideoTracks()[0].getSettings().deviceId) { stream.getTracks().forEach(t => t.stop()); try { stream = await gum(p.id); } catch (e) { try { stream = await gum(null); } catch (e) { return done(null); } } }
-    }
-    const g = document.createElement('div'); g.id = 'ghost';
-    g.innerHTML = `<video playsinline autoplay muted></video>${before ? `<img alt="" src="${burl(before.out)}">` : ''}
-      <div class="gtop"><span>${esc(title)}</span><button data-g="cancel">取消</button></div>
-      <div class="glens"></div>
-      <div class="gbot">${before ? '<label class="gsl">完成前照片<input type="range" min="0" max="85" value="40" data-g="op"></label>' : '<span></span>'}
-      <button class="gshut" data-g="shot" aria-label="拍攝"></button>${before ? '<button data-g="peek">按住看完成前</button>' : '<span></span>'}</div>`;
-    document.body.appendChild(g);
-    const vid = g.querySelector('video'), ghost = g.querySelector('img'), lensBar = g.querySelector('.glens');
-    const showLens = () => {
-      const tr = stream.getVideoTracks()[0], cur = tr.getSettings().deviceId;
-      const z = tr.getCapabilities ? (tr.getCapabilities().zoom || null) : null, zv = tr.getSettings().zoom;
-      lensBar.innerHTML = (lenses.length > 1 ? lenses.map(l => `<button data-lens="${esc(l.id)}" class="${l.id === cur ? 'on' : ''}">${l.name}</button>`).join('') : '')
-        + (z && z.max > z.min ? `<label class="gsl">變焦 <b>${(zv || z.min).toFixed(1)}×</b><input type="range" data-g="zoom" min="${z.min}" max="${Math.min(z.max, Math.max(z.min, 1) * 10)}" step="0.1" value="${zv || z.min}"></label>` : '');
-    };
-    const attach = async () => { vid.srcObject = stream; try { await vid.play(); } catch (e) { } showLens(); };
-    await attach();
-    if (ghost) ghost.style.opacity = 0.4;
-    const stop = blob => { stream.getTracks().forEach(t => t.stop()); g.remove(); done(blob); };
-    g.addEventListener('input', e => {
-      if (e.target.dataset.g === 'op' && ghost) ghost.style.opacity = e.target.value / 100;
-      if (e.target.dataset.g === 'zoom') { const v = +e.target.value; e.target.previousElementSibling.textContent = v.toFixed(1) + '×'; stream.getVideoTracks()[0].applyConstraints({ advanced: [{ zoom: v }] }).catch(() => { }); }
-    });
-    const peek = g.querySelector('[data-g="peek"]');
-    if (peek) { peek.onpointerdown = () => ghost.style.opacity = 1; peek.onpointerup = peek.onpointerleave = () => ghost.style.opacity = g.querySelector('[data-g="op"]').value / 100; }
-    let switching = false;
-    g.addEventListener('click', async e => {
-      const lb = e.target.closest('[data-lens]');
-      if (lb && !switching && !lb.classList.contains('on')) {
-        const l = lenses.find(x => x.id === lb.dataset.lens); switching = true;
-        // iOS cannot run two cameras at once: release the current one first
-        stream.getTracks().forEach(t => t.stop());
-        try { stream = await gum(l.id); S.settings.lens = l.kind; saveKV(); } catch (err) { toast('未能切換鏡頭：' + err.message, 3000); try { stream = await gum(null); } catch (err) { switching = false; return stop(null); } }
-        await attach(); switching = false; return;
-      }
-      const a = e.target.dataset.g;
-      if (a === 'cancel') stop(null);
-      if (a === 'shot') {
-        if (!vid.videoWidth || switching) return toast('相機未就緒');
-        const c = document.createElement('canvas'); c.width = vid.videoWidth; c.height = vid.videoHeight; c.getContext('2d').drawImage(vid, 0, 0);
-        const b = await canvasBlob(c, 'image/jpeg', 0.9); c.width = c.height = 0; stop(b);
-      }
-    });
-  });
-}
+/* alignment camera: live camera with the before-photo laid over it, so the after-photo is taken from the same spot */
 async function ghostCam(it) {
-  if (!camOK()) { toast('這部機不支援對位拍攝，請按「系統相機」', 4000); return; }
-  const b = await liveCam(`${itemLabel(it)}　${it.locText || ''}`, it.photos[0]); if (b) addFixPhoto(b);
-}
-// falls back to the system camera sheet when the browser has no live camera (still inside the tap, so iOS lets it open)
-async function takePhoto() {
-  const it = S.editing; if (!it) return;
-  if (!camOK()) return $('#camInput').click();
-  const b = await liveCam(`${itemLabel(it)}　${it.locText || ''}`); if (b && S.editing === it) addPhotoFile(b);
+  const before = it.photos[0];
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('這部機不支援對位拍攝，請按「系統相機」', 4000); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false }); }
+  catch (e) { toast('未能開啟相機（' + (e.name === 'NotAllowedError' ? '未獲相機權限' : e.message) + '），請按「系統相機」', 5000); return; }
+  const g = document.createElement('div'); g.id = 'ghost';
+  g.innerHTML = `<video playsinline autoplay muted></video>${before ? `<img alt="" src="${burl(before.out)}">` : ''}
+    <div class="gtop"><span>${esc(itemLabel(it))}　${esc(it.locText || '')}</span><button data-g="cancel">取消</button></div>
+    <div class="gbot">${before ? '<label class="gsl">完成前照片<input type="range" min="0" max="85" value="40" data-g="op"></label>' : '<span></span>'}
+    <button class="gshut" data-g="shot" aria-label="拍攝"></button>${before ? '<button data-g="peek">按住看完成前</button>' : '<span></span>'}</div>`;
+  document.body.appendChild(g);
+  const vid = g.querySelector('video'), ghost = g.querySelector('img'); vid.srcObject = stream;
+  try { await vid.play(); } catch (e) { }
+  if (ghost) ghost.style.opacity = 0.4;
+  const stop = () => { stream.getTracks().forEach(t => t.stop()); g.remove(); };
+  g.addEventListener('input', e => { if (e.target.dataset.g === 'op' && ghost) ghost.style.opacity = e.target.value / 100; });
+  const peek = g.querySelector('[data-g="peek"]');
+  if (peek) { peek.onpointerdown = () => ghost.style.opacity = 1; peek.onpointerup = peek.onpointerleave = () => ghost.style.opacity = g.querySelector('[data-g="op"]').value / 100; }
+  g.addEventListener('click', async e => {
+    const a = e.target.dataset.g;
+    if (a === 'cancel') stop();
+    if (a === 'shot') {
+      if (!vid.videoWidth) return toast('相機未就緒');
+      const c = document.createElement('canvas'); c.width = vid.videoWidth; c.height = vid.videoHeight; c.getContext('2d').drawImage(vid, 0, 0);
+      const b = await canvasBlob(c, 'image/jpeg', 0.9); stop(); addFixPhoto(b);
+    }
+  });
 }
 
 /* ================= v0.6: coordinates carried inside each saved photo ================= */
