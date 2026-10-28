@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.9';
+const VERSION = '0.9.0';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -119,6 +119,8 @@ async function refreshPhotos(it) {
 const FG = { note: it => it.note || '', sub: it => subText(it), code: it => [it.code, it.ord, it.origLabel],
   loc: it => [it.drawingId, it.x, it.y, it.loc, it.locText, it.locEdited], round: it => it.round || '',
   fix: it => it.fix ? [it.fix.status, it.fix.reply || '', it.fix.done || 0, it.fix.by || '', (it.fix.photos || []).map(p => [p.id, p.shapes])] : null };
+// the record fields each group stands for (a group not listed is the field of the same name)
+const FG_KEYS = { sub: ['sub', 'subs'], code: ['code', 'ord', 'origLabel'], loc: ['drawingId', 'x', 'y', 'loc', 'locText', 'locEdited'] };
 const sigOf = (it, g) => { const t = JSON.stringify(FG[g](it)) || ''; let h = 5381; for (let i = 0; i < t.length; i++) h = (h * 33 + t.charCodeAt(i)) | 0; return h.toString(36) + t.length; };
 const sigsOf = it => Object.fromEntries(Object.keys(FG).map(g => [g, sigOf(it, g)]));
 function stampEdits(it) {
@@ -981,6 +983,8 @@ function exportPanel() {
     <div class="row"><button class="btn ${ub ? 'p' : ''}" data-a="bknew">備份新增記錄</button><button class="btn" data-a="repair">檢查及修復相片</button><button class="btn" data-a="album">存入相簿（${ua}）</button></div>
     <button class="btn" data-a="bk">完整備份（全部 ${S.items.length} 項）</button>
     <div class="row"><label class="f" style="flex:2 1 0;min-width:0">按驗收批次備份（整次驗收一個檔案）<select id="bkRound">${S.rounds.filter(r => S.items.some(i => roundOf(i) === r.id)).map(r => { const n = S.items.filter(i => roundOf(i) === r.id).length, t = (S.settings.roundBackup || {})[r.id]; return `<option value="${r.id}" ${r.id === curRound().id ? 'selected' : ''}>${esc(setName(setOfRound(r)) + ' ' + r.name)}（${n} 項）${t ? '　已備份 ' + fmtTime(t) : ''}</option>`; }).join('') || '<option value="">還沒有任何記錄</option>'}</select></label><button class="btn" data-a="bkround" style="align-self:flex-end">備份此批次</button></div>
+    <button class="btn" data-a="bkreply">導出此批次的回復包（只含已回復項目）</button>
+    <div class="note">分判用：匯入你發出的批次備份，在「執修」模式拍完成照後，導出回復包發回。回復包只有回復內容及完成照，不含完成前照片，檔案細很多；匯入後按記錄自動對回原本的項目。</div>
     <div class="note">備份檔是 ZIP，可用分享選單存到「檔案」、iCloud Drive、Google Drive 或 WhatsApp。ZIP 內的「相片」資料夾在電腦上可直接開啟，每張相底部印有編號、位置、時間及檢查人員。</div>
     <div class="sec">報告（${esc(roundLabel())}，${roundItems().length} 項）</div>
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
@@ -1031,6 +1035,7 @@ function exportPanel() {
     if (a === 'bk') exportBackup(false);
     if (a === 'bknew') exportBackup(true);
     if (a === 'bkround') { const id = $('#bkRound').value; if (!id) return toast('還沒有任何記錄'); exportBackup(false, id); }
+    if (a === 'bkreply') { const id = $('#bkRound').value; if (!id) return toast('還沒有任何記錄'); exportBackup(false, id, true); }
     if (a === 'repair') repairPhotos();
     if (a === 'album') albumPanel();
     if (a === 'setup') setupPanel();
@@ -1407,17 +1412,19 @@ async function repairPhotos() {
 function reportFails(fails) {
   openPanel('fails', '報告已生成，但部分圖片有問題', `<div class="note">以下 ${fails.length} 處在報告內以紅字標示。請截圖這個畫面給我，方便查找原因。</div><div class="list">${fails.map(f => `<div class="li" style="display:block">${esc(f)}</div>`).join('')}</div>`);
 }
-async function exportBackup(onlyNew, roundId) {
+/* reply = 回復包: only the records of the round that carry a reply, without their before-photos,
+   so a subcontractor's answer is small enough to send back over WhatsApp */
+async function exportBackup(onlyNew, roundId, reply) {
   if (!window.JSZip) return toast('備份元件未載入，請連網後重新開啟');
   try {
     const rd = roundId && S.rounds.find(r => r.id === roundId);
-    const items = S.items.filter(i => rd ? roundOf(i) === rd.id : !onlyNew || (i.mod || i.created || 0) > backedAt(i)).sort(byOrder);
-    if (!items.length) return toast(rd ? '這個批次沒有記錄' : '沒有新的記錄需要備份');
+    const items = S.items.filter(i => rd ? roundOf(i) === rd.id : !onlyNew || (i.mod || i.created || 0) > backedAt(i)).filter(i => !reply || hasReply(i)).sort(byOrder);
+    if (!items.length) return toast(reply ? '這個批次還沒有任何回復' : rd ? '這個批次沒有記錄' : '沒有新的記錄需要備份');
     busy('正在打包…'); const zip = new JSZip(); const out = [];
-    let n = 0, tot = items.reduce((s, i) => s + i.photos.length + ((i.fix && i.fix.photos) || []).length, 0);
+    let n = 0, tot = items.reduce((s, i) => s + (reply ? 0 : i.photos.length) + ((i.fix && i.fix.photos) || []).length, 0);
     for (const it of items) {
       const photos = [];
-      for (const [i, p] of it.photos.entries()) {
+      if (!reply) for (const [i, p] of it.photos.entries()) {
         busy(`正在打包相片 ${++n}／${tot}`);
         const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' });
         zip.file(`相片/${photoName(it, i)}`, await captioned(it, p, i), { compression: 'STORE' });
@@ -1425,31 +1432,33 @@ async function exportBackup(onlyNew, roundId) {
       }
       let fix = it.fix;
       if (fix && fix.photos && fix.photos.length) { const fp = [];
-        for (const [i, p] of fix.photos.entries()) { busy(`正在打包相片 ${++n}／${tot}`); const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' }); zip.file(`相片/${photoName(it, i, true)}`, await captioned(it, p, i, true), { compression: 'STORE' }); const { orig, out: _o, ...meta } = p; fp.push({ ...meta, orig: o }); }
+        for (const [i, p] of fix.photos.entries()) { busy(`正在打包相片 ${++n}／${tot}`); const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' }); if (!reply) zip.file(`相片/${photoName(it, i, true)}`, await captioned(it, p, i, true), { compression: 'STORE' }); const { orig, out: _o, ...meta } = p; fp.push({ ...meta, orig: o }); }
         fix = { ...fix, photos: fp }; }
       out.push({ ...it, photos, fix });
     }
     const drawings = S.drawings.filter(d => d.src !== 'bundle' || true).map(d => ({ id: d.id, src: d.src, views: d.src === 'user' ? d.views : undefined }));
-    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, devId: S.settings.devId, inspector: S.settings.inspector, onlyNew: !!onlyNew, round: rd ? rd.id : undefined, project: S.project, rounds: rd ? [rd] : S.rounds, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
+    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, devId: S.settings.devId, inspector: S.settings.inspector, onlyNew: !!onlyNew, reply: !!reply, round: rd ? rd.id : undefined, project: S.project, rounds: rd ? [rd] : S.rounds, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
     busy('正在壓縮…');
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
     busy();
     const stamp = fmtTime().replace(/[-: ]/g, '').slice(0, 12);
     const tag = rd ? `${setName(setOfRound(rd))}_${rd.name}`.replace(/[\\/:*?"<>|\s]+/g, '') : onlyNew ? '新增' : '完整';
-    await deliver(blob, `驗收備份_${S.settings.dev || 'A'}_${tag}_${stamp}.zip`);
+    await deliver(blob, `${reply ? '回復包' : '驗收備份'}_${S.settings.dev || 'A'}_${tag}_${stamp}.zip`);
+    if (reply) return toast(`回復包已導出：${items.length} 項回復`, 3500);
     if (rd) S.settings.roundBackup = { ...S.settings.roundBackup, [rd.id]: Date.now() }; else S.settings.lastBackup = Date.now();
     await saveKV(); updateBar(); if (S.panel === 'export') exportPanel();
   } catch (err) { busy(); toast('備份失敗：' + err.message, 6000); }
 }
 /* merge an incoming copy of a record into the local one, field group by field group:
    the side edited later wins; an empty value from a copy without edit times never clears a filled one;
-   photos are combined (a lost local photo is replaced by the incoming one) */
-async function mergeRecord(ex, inc, conv) {
+   photos are combined (a lost local photo is replaced by the incoming one);
+   with ask, a copy that carries a reply (分判回復) has only its reply merged straight away:
+   any other change it would make (描述, 分判, 編號, 位置) is put in ask for the user to confirm */
+async function mergeRecord(ex, inc, conv, ask) {
   const tm = r => r.mod || r.created || 0, incNewer = tm(inc) > tm(ex);
   const empty = (r, g) => g === 'note' ? !(r.note || '').trim() : g === 'sub' ? !subsOf(r).length : g === 'code' ? !r.code
-    : g === 'fix' ? !r.fix || ((r.fix.status || 'open') === 'open' && !r.fix.reply && !(r.fix.photos || []).length) : false;
-  const keys = { sub: ['sub', 'subs'], code: ['code', 'ord', 'origLabel'], loc: ['drawingId', 'x', 'y', 'loc', 'locText', 'locEdited'] };
-  let changed = false; const fm = { ...(ex.fm || {}) };
+    : g === 'fix' ? !hasReply(r) : false;
+  const keys = FG_KEYS; let changed = false; const fm = { ...(ex.fm || {}) };
   for (const g of Object.keys(FG)) {
     if (sigOf(ex, g) === sigOf(inc, g)) continue;
     const fe = ex.fm && ex.fm[g], fi = inc.fm && inc.fm[g];
@@ -1458,6 +1467,7 @@ async function mergeRecord(ex, inc, conv) {
     else if (empty(ex, g) && !empty(inc, g) && !fe) take = true;
     else take = (fi || tm(inc)) > (fe || tm(ex));
     if (!take) continue;
+    if (ask && g !== 'fix' && g !== 'round' && hasReply(inc)) { ask.push({ ex, inc, g }); continue; }
     if (g === 'fix') { const lp = (ex.fix && ex.fix.photos) || []; ex.fix = { ...inc.fix, photos: lp }; }
     else for (const k of keys[g] || [g]) ex[k] = inc[k];
     if (fi) fm[g] = fi; changed = true;
@@ -1487,14 +1497,17 @@ async function importBackup(file) {
     if (data.app !== 'handover-inspect') throw new Error('不是本程式的備份檔');
     if (data.project && !S.project.name) S.project = { ...S.project, ...data.project };
     const from = { devId: data.devId, dev: data.dev, owner: data.inspector || data.dev };
-    const rmap = {}; for (const r of data.rounds || []) rmap[r.id] = importRound(r, from);
-    let add = 0, upd = 0, skip = 0, i = 0;
+    // rounds are only made for records that land in them, so a 回復包 never leaves an empty round behind
+    const rsrc = {}, rmap = {}; for (const r of data.rounds || []) rsrc[r.id] = r;
+    const rnd = id => rmap[id] || (rmap[id] = importRound(rsrc[id] || { id }, from));
+    let add = 0, upd = 0, skip = 0, miss = 0, i = 0; const ask = [];
     for (const it of data.items || []) {
       busy(`正在匯入記錄 ${++i}／${data.items.length}`);
-      if (!it.dev) it.dev = data.dev || 'X';
-      it.round = rmap[it.round || 'r1'] || (rmap[it.round || 'r1'] = importRound({ id: it.round }, from));
-      if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
       const ex = S.items.find(x => x.id === it.id);
+      if (!ex && data.reply) { miss++; continue; } // a reply without the record it answers
+      if (!it.dev) it.dev = data.dev || 'X';
+      it.round = rnd(it.round || 'r1');
+      if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
       const conv = async p => { // a photo of the incoming copy, with its image read from the backup
         let orig = typeof p.orig === 'string' && p.orig.startsWith('data:') ? await dataURLToBlob(p.orig) : zip && typeof p.orig === 'string' && zip.file(p.orig) ? await zip.file(p.orig).async('blob') : null;
         if (!orig) return null; orig = new Blob([orig], { type: 'image/jpeg' });
@@ -1506,11 +1519,39 @@ async function importBackup(file) {
         let fix = it.fix; if (fix && fix.photos) fix = { ...fix, photos: (await Promise.all(fix.photos.map(conv))).filter(Boolean) };
         const rec = { ...it, photos, fix }; await saveItem(rec, true); S.items.push(rec); add++; continue;
       }
-      if (await mergeRecord(ex, it, conv)) { await saveItem(ex, true); upd++; } else skip++;
+      const na = ask.length;
+      if (await mergeRecord(ex, it, conv, ask)) { await saveItem(ex, true); upd++; } else if (ask.length === na) skip++;
     }
-    await saveKV(); await saveRounds(); busy(); toast(`匯入完成：新增 ${add}、更新 ${upd}、略過 ${skip}`, 4000);
+    await saveKV(); await saveRounds(); busy();
+    toast(`匯入完成：${data.reply ? '' : `新增 ${add}、`}更新 ${upd}、略過 ${skip}${miss ? `；${miss} 項回復找不到原記錄` : ''}${ask.length ? `；${ask.length} 項修改待確認` : ''}`, miss ? 6000 : 4000);
     await showDrawing(S.cur || S.drawings[0]?.id); closePanel();
+    if (ask.length) askPanel(ask, data.inspector || data.dev || '對方');
   } catch (err) { busy(); toast('匯入失敗：' + err.message, 6000); console.error(err); }
+}
+/* a reply also changed the record itself: show mine against theirs, untouched (keep mine) by default */
+const AG = { note: '描述', sub: '分判', code: '編號', loc: '位置' };
+const agText = (r, g) => g === 'note' ? r.note || '（空白）' : g === 'sub' ? subText(r) || '（未指定）' : g === 'code' ? itemLabel(r) : r.locText || fmtLoc(r.loc || {}) || '（無位置）';
+function askPanel(ask, who) {
+  const rows = ask.map(({ ex, inc, g }, k) => `<label class="toggle" style="align-items:flex-start;padding:8px 0;border-bottom:1px solid #e3e6e5"><span><b>${esc(itemLabel(ex))}　${AG[g]}</b><br>我的：${esc(agText(ex, g))}<br>${esc(who)}：<b>${esc(agText(inc, g))}</b>${g === 'loc' && (ex.x !== inc.x || ex.y !== inc.y) ? '（圖上的點已移動）' : ''}</span><input type="checkbox" data-k="${k}"></label>`).join('');
+  openPanel('ask', '確認回復以外的修改', `
+    <div class="note">以下 ${ask.length} 項是回復記錄，回復內容及完成照已經匯入。但 <b>${esc(who)}</b> 同時改了記錄本身。勾選要接受的修改；沒有勾選的保留你的版本。</div>
+    <div class="list">${rows}</div>
+    <div class="row"><button class="btn p" data-a="take">接受勾選的修改</button><button class="btn" data-a="all">全部保留我的</button></div>`);
+  const keys = FG_KEYS;
+  panel.querySelector('.pb').onclick = async e => {
+    const a = e.target.dataset.a; if (a !== 'take' && a !== 'all') return;
+    const on = new Set(a === 'take' ? [...panel.querySelectorAll('[data-k]:checked')].map(x => +x.dataset.k) : []);
+    const now = Date.now(), done = new Set();
+    for (const [k, { ex, inc, g }] of ask.entries()) {
+      ex.fm = ex.fm || {};
+      // taking theirs keeps their edit time; keeping mine stamps it now, so the same copy is not asked about again
+      if (on.has(k)) { for (const f of keys[g] || [g]) ex[f] = inc[f]; ex.fm[g] = (inc.fm && inc.fm[g]) || inc.mod || now; }
+      else ex.fm[g] = now;
+      ex.mod = Math.max(ex.mod || 0, ex.fm[g]); done.add(ex);
+    }
+    for (const ex of done) await saveItem(ex, true);
+    closePanel(); renderOverlay(); updateBar(); toast(on.size ? `已接受 ${on.size} 項修改` : '已保留你的版本');
+  };
 }
 $('#jsonInput').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) importBackup(f); };
 
@@ -1850,6 +1891,7 @@ function importRound(r, from) {
 const FIX_ST = { open: '未回復', done: '已完成', na: '不跟進' };
 const fixOf = it => it.fix || (it.fix = { status: 'open', reply: '', photos: [] });
 const fixStatus = it => (it.fix && it.fix.status) || 'open';
+const hasReply = it => !!it.fix && (fixStatus(it) !== 'open' || !!(it.fix.reply || '').trim() || !!(it.fix.photos || []).length);
 function fixCounts() { const L = roundItems(); return { all: L.length, open: L.filter(i => fixStatus(i) === 'open').length, done: L.filter(i => fixStatus(i) === 'done').length }; }
 async function persistFix(it) { it.mod = Date.now(); await saveItem(it); updateBar(); }
 function fixPanel(it) {
