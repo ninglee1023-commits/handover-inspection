@@ -3,14 +3,16 @@ const { setup } = require('./cap');
   const name = process.argv[2] || 'ipad';
   const S = await setup(name); const p = S.p; // node flow.js <ipad|ipadP|iphone|aphone|atab>
   await S.shot('setup');
-  await p.fill('#sDev', 'A'); await p.fill('#sBy', '陳大文'); await S.shot('setup_filled');
+  await p.fill('#sBy', '陳大文'); await S.shot('setup_filled', { hl: '#sBy' });
   await S.tap('#sOk', 'setup_ok', { wait: 1000 });
+  await S.shot('set_switch', { hl: '#setSeg' });
   await S.tap('#btnDrawings', 'drawings_btn');
   await S.tap(p.locator('[data-open]', { hasText: '5th–30th' }).first(), 'drawings', { wait: 6500 });
   await S.shot('plan');
   await S.tap('#btnFloor', 'floor_btn');
   await S.tap(p.locator('[data-f="18F"]'), 'floor_pick', { wait: 600 });
   await p.click('#panel .x'); await p.waitForTimeout(500);
+  await S.shot('rotate', { hl: '#zoombtns' });
   await S.tap('#zIn', 'zoom_in', { wait: 500 }); await S.tap('#zIn', null, { wait: 800 });
   const inner = (fl, fx, fy) => p.evaluate(([fl, fx, fy]) => { const d = curD(); const z = d.views[0].zones.find(z => z.kind === 'flat' && z.name === fl); const xs = z.pts.map(q => q[0]), ys = z.pts.map(q => q[1]); const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys); let best = null;
     for (let i = 1; i < 30; i++) for (let j = 1; j < 30; j++) { const x = x0 + (x1 - x0) * i / 30, y = y0 + (y1 - y0) * j / 30; if (!inPoly(x, y, z.pts)) continue; const dd = Math.hypot(x - (x0 + (x1 - x0) * fx), y - (y0 + (y1 - y0) * fy)); if (!best || dd < best.dd) best = { x, y, dd }; }
@@ -78,6 +80,23 @@ const { setup } = require('./cap');
   await p.locator('[data-a="imp"]').scrollIntoViewIfNeeded(); await S.shot('merge', { hl: '[data-a="imp"]' });
   await p.locator('#sAlb').scrollIntoViewIfNeeded(); await S.shot('local', { hl: '#sAlb' });
   await p.locator('[data-a="bknew"]').scrollIntoViewIfNeeded(); await S.shot('backup', { hl: '[data-a="bknew"]' });
+  await p.locator('#bkRound').scrollIntoViewIfNeeded(); await S.shot('backup_round', { hl: '#bkRound' });
+  // a second round, then the merge section
+  await p.click('#panel .x'); await p.waitForTimeout(400);
+  await S.tap('#btnRound', null);
+  await p.locator('[data-a="new"]').scrollIntoViewIfNeeded(); await S.shot('round_new', { hl: '[data-a="new"]' });
+  await S.tap('[data-a="new"]', null, { wait: 1200 }); await S.shot('round2');
+  await S.tap('#btnRound', null);
+  const mg = p.locator('#panel .sec', { hasText: '合併批次' });
+  if (await mg.count()) { await p.evaluate(() => { const b = document.querySelector('#panel .pb'); b.scrollTop = b.scrollHeight; }); await p.waitForTimeout(400); 
+    for (const c of await p.locator('[data-m]').all()) await c.check(); await p.fill('#mgName', '第1次驗收（全部）');
+    await p.evaluate(() => { const b = document.querySelector('#panel .pb'); b.scrollTop = b.scrollHeight; }); await p.waitForTimeout(400);
+    await S.shot('round_merge', { hl: '[data-a="merge"]' }); }
+  await p.click('#panel .x'); await p.waitForTimeout(400);
+  // drainage set
+  await S.tap('#setSeg [data-set="drainage"]', 'drain_btn', { wait: 2000 });
+  for (let i = 0; i < 90 && await p.evaluate(() => !document.querySelector('#busy').hidden || !document.querySelector('#empty').hidden); i++) await p.waitForTimeout(1000);
+  await p.waitForTimeout(2500); await S.shot('drainage');
   console.log(await p.locator('#panel').innerText());
   S.save(); await S.b.close();
 })();

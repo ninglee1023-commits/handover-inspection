@@ -24,7 +24,8 @@ async function setup(name) {
       const el = typeof sel === 'string' ? p.locator(sel).first() : sel;
       const bb = await el.boundingBox(); const x = bb.x + bb.width / 2, y = bb.y + bb.height / 2;
       if (id) await S.shot(id, { tap: [x, y], ...opt });
-      await el.click(); await p.waitForTimeout(opt.wait ?? 700);
+      // a button pushed off-screen (phone top bar) is clicked through the DOM instead
+      await el.click({ timeout: 4000 }).catch(() => el.evaluate(e => e.click())); await p.waitForTimeout(opt.wait ?? 700);
     },
     async tapXY(x, y, id, wait = 900) { if (id) await S.shot(id, { tap: [x, y] }); await p.mouse.click(x, y); await p.waitForTimeout(wait); },
     async drag(pts, id) { // draw on canvas

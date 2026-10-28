@@ -115,7 +115,7 @@ def card(name):
         if sub:
             for j, ln in enumerate(wrap(sub, F(27), x1 - x0 - 80, dr)): dr.text((x0 + 40, y1 - 40 - 40 * (len(wrap(sub, F(27), x1 - x0 - 80, dr)) - 1 - j)), ln, font=F(27), fill=MUTED, anchor='ls')
     if name == 'title':
-        ic = Image.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../icon-512.png')).convert('RGBA').resize((200, 200))
+        ic = Image.open(os.path.join(os.environ.get('APP_ROOT', os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..')), 'icon-512.png')).convert('RGBA').resize((200, 200))
         img.paste(ic, (W // 2 - 100, 170), ic)
         dr.text((W // 2, 470), '竣工驗收記錄', font=F(96, True), fill=FG, anchor='mm')
         dr.text((W // 2, 570), '使用教學', font=F(52), fill=MUTED, anchor='mm')
@@ -138,7 +138,7 @@ def card(name):
         dr.text((W // 2, 140), '導出 PDF／Word／備份 ZIP 時', font=F(40, True), fill=FG, anchor='mm')
     if name == 'end':
         dr.text((W // 2, 190), '記住三件事', font=F(64, True), fill=FG, anchor='mm')
-        items = [('從主畫面圖示開啟', '資料長期保存，可離線使用'), ('每部機設定不同代號', 'A、B、C… 合併時不會撞號'), ('每日完工前備份', '導出 → 備份新增記錄')]
+        items = [('從主畫面圖示開啟', '資料長期保存，可離線使用'), ('每部機輸入自己的名字', '記錄編號以名字開頭，例如 陳大文-001'), ('每日完工前備份', '導出 → 備份新增記錄')]
         y = 300
         for i, (a, b) in enumerate(items):
             rrect(dr, (360, y, W - 360, y + 150), 24, fill=PANEL, outline=(52, 64, 63), width=2)
