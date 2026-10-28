@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.4';
+const VERSION = '0.8.7';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -399,7 +399,7 @@ function renderOverlay() {
       const act = fixm ? !!(S.fixItem && S.fixItem.id === it.id) : !!(S.editing && S.editing.id === it.id); const r = (act ? 17 : 14) * u;
       // green = 已回復, grey = 不跟進; open records: blue once a 分判 is set, red otherwise
       const st = fixStatus(it), pf = st === 'done' ? '#2f7d4f' : st === 'na' ? '#8a9391' : subsOf(it).length ? '#1f6f9c' : '#d42a1e';
-      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="${pf}" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devOf(it) + it.no}</text>`;
+      h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="${pf}" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devShort(it) + it.no}</text>`;
     }
   }
   const [tx, ty, deg] = rotT(d);
@@ -1005,7 +1005,7 @@ function exportPanel() {
     <button class="btn" data-a="renum">整理編號（按樓層、位置）</button>
     <div class="note">全部記錄匯入後按這裏，編號會改為按樓層排列，例如 B1-001、B1-002、B2-001，同一單位或區域的記錄排在一起，就像一個人做了全部記錄。原來的編號會保留在記錄內。之後再匯入或新增記錄，可再按一次重新整理。</div>
     <div class="sec">本機</div>
-    <div class="row"><button class="btn" data-a="setup">代號 ${esc(S.settings.dev || '—')}　${esc(S.settings.inspector || '')}</button></div>
+    <div class="row"><button class="btn" data-a="setup">檢查人員：${esc(S.settings.inspector || '—')}</button></div>
     <label class="toggle">點選位置後直接開相機<input type="checkbox" id="sCam" ${S.settings.autoCam ? 'checked' : ''}></label>
     <label class="toggle">${IS_ANDROID ? '拍照後自動存入手機（相簿的「Download」資料夾）' : '拍照後即時存入相簿（分享選單按「儲存影像」）'}<input type="checkbox" id="sAlb" ${S.settings.autoAlbum !== false ? 'checked' : ''}></label>
     <label class="toggle">驗收時顯示單位範圍<input type="checkbox" id="sZone" ${S.settings.showZones ? 'checked' : ''}></label>
@@ -1267,7 +1267,9 @@ const inScope = (i, od) => (!od || devOf(i) === od) && (!S.repSub || (S.repSub =
 const itemLabel = it => it.code || `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
 const byOrder = (a, b) => (a.ord ?? 1e9) - (b.ord ?? 1e9) || devOf(a).localeCompare(devOf(b)) || a.no - b.no;
 // pins have little room: number only, or floor + number where one plan stands for several floors
-const pinLabel = (it, short) => { if (!it.code) return devOf(it) + it.no; const n = String(+it.code.split('-').pop()); return short || !(it.loc && it.loc.floor) ? n : `${it.loc.floor}-${n}`; };
+// on pins a record of someone else shows the first character of its owner (old letter codes in full)
+const devShort = it => { const d = devOf(it); return /^[A-Z0-9]{1,3}$/.test(d) ? d : [...d][0]; };
+const pinLabel = (it, short) => { if (!it.code) return devShort(it) + it.no; const n = String(+it.code.split('-').pop()); return short || !(it.loc && it.loc.floor) ? n : `${it.loc.floor}-${n}`; };
 
 /* unified numbering: as if one inspector made every record — grouped by floor, ordered by location */
 function floorRank(f) {
@@ -1424,7 +1426,7 @@ async function exportBackup(onlyNew, roundId) {
       out.push({ ...it, photos, fix });
     }
     const drawings = S.drawings.filter(d => d.src !== 'bundle' || true).map(d => ({ id: d.id, src: d.src, views: d.src === 'user' ? d.views : undefined }));
-    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, inspector: S.settings.inspector, onlyNew: !!onlyNew, round: rd ? rd.id : undefined, project: S.project, rounds: rd ? [rd] : S.rounds, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
+    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, devId: S.settings.devId, inspector: S.settings.inspector, onlyNew: !!onlyNew, round: rd ? rd.id : undefined, project: S.project, rounds: rd ? [rd] : S.rounds, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
     busy('正在壓縮…');
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
     busy();
@@ -1480,12 +1482,13 @@ async function importBackup(file) {
     else data = JSON.parse(await file.text());
     if (data.app !== 'handover-inspect') throw new Error('不是本程式的備份檔');
     if (data.project && !S.project.name) S.project = { ...S.project, ...data.project };
-    const rmap = {}; for (const r of data.rounds || []) rmap[r.id] = mergeRound(r.id, r.name, r.date, r.set);
+    const from = { devId: data.devId, dev: data.dev, owner: data.inspector || data.dev };
+    const rmap = {}; for (const r of data.rounds || []) rmap[r.id] = importRound(r, from);
     let add = 0, upd = 0, skip = 0, i = 0;
     for (const it of data.items || []) {
       busy(`正在匯入記錄 ${++i}／${data.items.length}`);
       if (!it.dev) it.dev = data.dev || 'X';
-      it.round = it.round ? (rmap[it.round] || mergeRound(it.round)) : 'r1';
+      it.round = rmap[it.round || 'r1'] || (rmap[it.round || 'r1'] = importRound({ id: it.round }, from));
       if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
       const ex = S.items.find(x => x.id === it.id);
       const conv = async p => { // a photo of the incoming copy, with its image read from the backup
@@ -1509,18 +1512,17 @@ $('#jsonInput').onchange = e => { const f = e.target.files[0]; e.target.value = 
 
 function setupPanel(first) {
   openPanel('setup', first ? '開始前：設定本機' : '本機設定', `
-    <div class="note">多部 iPad 同時驗收時，每部機用不同代號（A、B、C…），編號會變成 A-001、B-001，合併時不會撞號。</div>
-    <div class="grid2"><label class="f">本機代號<input id="sDev" value="${esc(S.settings.dev || '')}" maxlength="3" autocapitalize="characters" placeholder="A"></label>
-    <label class="f">檢查人員<input id="sBy" value="${esc(S.settings.inspector || '')}" placeholder="姓名"></label></div>
+    <div class="note">記錄編號會以檢查人員名字開頭，例如 陳大文-001，多部 iPad 的記錄合併後也分得出是誰做的。</div>
+    <label class="f">檢查人員<input id="sBy" value="${esc(S.settings.inspector || '')}" placeholder="姓名"></label>
     <button class="btn dk" id="sOk">儲存</button>`, { compact: true });
   $('#sOk').onclick = async () => {
-    const dev = ($('#sDev').value.trim().toUpperCase() || 'A').replace(/[^A-Z0-9]/g, '') || 'A';
-    const clash = S.items.some(i => i.dev && i.dev !== dev && i.dev === S.settings.dev) && false;
-    S.settings.dev = dev; S.settings.inspector = $('#sBy').value.trim(); if (!S.project.inspector) S.project.inspector = S.settings.inspector;
-    for (const it of S.items) if (!it.dev) { it.dev = dev; await saveItem(it); }
-    await saveKV(); closePanel(); updateBar(); renderOverlay(); toast(`本機代號 ${dev}`);
+    const name = $('#sBy').value.trim(); if (!name) return toast('請輸入檢查人員名字');
+    for (const it of S.items) if (!it.dev) { it.dev = S.settings.dev || 'A'; await saveItem(it); }
+    S.settings.inspector = name; S.settings.dev = devName(name); if (!S.project.inspector) S.project.inspector = name;
+    await saveKV(); closePanel(); updateBar(); renderOverlay(); toast(`檢查人員：${name}`);
   };
 }
+const devName = n => n.replace(/[\s\u3000]+/g, '').slice(0, 12) || 'A';
 
 /* ---------------- report pages drawn on canvas: preview + PDF ---------------- */
 const PG = { W: 842, H: 595, k: 2, M: 28 }; // A4 landscape in pt, 2 px per pt
@@ -1771,7 +1773,12 @@ function roundPanel() {
     <button class="btn p" data-a="new">開始新一次驗收</button>
     <div class="sec">修改目前批次名稱</div>
     <div class="grid2"><label class="f">名稱<input id="rcName" value="${esc(curRound().name)}"></label><label class="f">日期<input id="rcDate" type="date" value="${esc(curRound().date || '')}"></label></div>
-    <button class="btn" data-a="ren">儲存名稱</button>`);
+    <button class="btn" data-a="ren">儲存名稱</button>
+    ${setRounds().length > 1 ? `<div class="sec">合併批次</div>
+    <div class="note">勾選兩個或以上的批次（例如同事匯入、名稱不同的批次），輸入新名稱後合併成一個批次，之後圖上、記錄清單和報告會一次包括全部記錄。記錄、相片及檢查人員不變；之後再匯入這些批次的備份檔，記錄會自動放入合併後的批次。</div>
+    ${setRounds().map(r => `<label class="toggle">${esc(r.name)}${r.date ? '　' + esc(r.date) : ''}（${S.items.filter(i => roundOf(i) === r.id).length} 項）<input type="checkbox" data-m="${r.id}"></label>`).join('')}
+    <label class="f">合併後名稱<input id="mgName" placeholder="例如：第1次驗收（全部）"></label>
+    <button class="btn" data-a="merge">合併所選批次</button>` : ''}`);
   panel.querySelector('.pb').onclick = async e => {
     const b = e.target.closest('[data-r]');
     if (b) { setCurRound(b.dataset.r); await saveKV(); closePanel(); renderOverlay(); updateBar(); return toast(`已切換到「${roundLabel()}」`); }
@@ -1782,14 +1789,47 @@ function roundPanel() {
       const r = { id: uid(), name, date: $('#rnDate').value, set: curSet() }; S.rounds.push(r); setCurRound(r.id);
       await saveRounds(); await saveKV(); closePanel(); renderOverlay(); updateBar(); toast(`已開始「${name}」，編號由 1 開始`, 3500);
     }
+    if (a === 'merge') {
+      const ids = [...panel.querySelectorAll('[data-m]:checked')].map(x => x.dataset.m); if (ids.length < 2) return toast('請勾選最少兩個批次');
+      const name = $('#mgName').value.trim(); if (!name) return toast('請輸入合併後的名稱');
+      if (setRounds().some(r => r.name === name && !ids.includes(r.id))) return toast('已有同名的批次');
+      const n = S.items.filter(i => ids.includes(roundOf(i))).length;
+      if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = `再按一次確認把 ${ids.length} 個批次（${n} 項記錄）合併為「${name}」`; return; }
+      // the current round (if ticked) or the first ticked one keeps its id and takes the new name
+      const keep = setRounds().find(r => r.id === curRound().id && ids.includes(r.id)) || setRounds().find(r => ids.includes(r.id));
+      keep.name = name; setCurRound(keep.id); await mergeRounds(ids.filter(id => id !== keep.id), keep.id); return roundPanel();
+    }
     if (a === 'ren') { const r = curRound(); r.name = $('#rcName').value.trim() || r.name; r.date = $('#rcDate').value; if (!S.rounds.includes(r)) S.rounds.push(r); await saveRounds(); updateBar(); toast('已儲存'); roundPanel(); }
   };
 }
-function mergeRound(id, name, date, set) { // returns the local round id for an incoming round
-  id = id || 'r1'; set = set || SETS.map(x => x.id).find(k => id === 'r1-' + k) || 'gbp';
-  if (S.rounds.some(r => r.id === id)) return id;
-  const same = name && S.rounds.find(r => r.name === name && setOfRound(r) === set); if (same) return same.id;
-  S.rounds.push({ id, name: name || (id === 'r1' || id === 'r1-' + set ? R1.name : '匯入批次'), date: date || '', ...(set === 'gbp' ? {} : { set }) }); return id;
+// merge whole rounds into one; the merged ids are remembered so later backups of them land in the target too
+async function mergeRounds(ids, target) {
+  busy('正在合併…'); const now = Date.now(), al = { ...S.settings.roundAlias };
+  for (const it of S.items) if (ids.includes(roundOf(it))) { it.round = target; it.mod = now; await saveItem(it); }
+  for (const id of ids) al[id] = target;
+  for (const k of Object.keys(al)) if (ids.includes(al[k])) al[k] = target;
+  delete al[target]; S.settings.roundAlias = al;
+  S.rounds = S.rounds.filter(r => !ids.includes(r.id));
+  await saveRounds(); await saveKV(); busy(); renderOverlay(); updateBar();
+  const L = roundItems().map(itemLabel), dup = L.length - new Set(L).size;
+  toast(`已合併，「${curRound().name}」共 ${L.length} 項記錄${dup ? `；有 ${dup} 個編號重複，可到「導出 → 整理編號」重新編號` : ''}`, dup ? 6000 : 3500);
+}
+/* an incoming round always gets a local round of its own, named after the person who made it
+   (陳大文-第1次驗收, with （2） etc. if the name is taken); the same round from the same person
+   keeps landing in it, and merging rounds is left to the user (合併批次) */
+function importRound(r, from) {
+  const rid = r.srcId || r.id || 'r1', set = r.set || SETS.map(x => x.id).find(k => rid === 'r1-' + k) || 'gbp';
+  const origin = r.src || from.devId || from.dev || 'X', al = { ...S.settings.roundAlias };
+  const resolve = id => { for (let k = 0; al[id] && k < 20; k++) id = al[id]; return id; };
+  const own = origin === S.settings.devId || (!r.src && !from.devId && from.dev === S.settings.dev && from.owner === S.settings.inspector);
+  if (own) { const id = resolve(rid); if (S.rounds.some(x => x.id === id)) return id; }
+  else { const key = origin + '|' + rid, id = al[key] && resolve(al[key]); if (id && S.rounds.some(x => x.id === id)) return id; }
+  let name = r.name || (rid === 'r1' || rid === 'r1-' + set ? R1.name : '匯入批次');
+  if (!own && !r.src) name = `${from.owner || from.dev || '匯入'}-${name}`;
+  const base = name; for (let n = 2; S.rounds.some(x => x.name === name && setOfRound(x) === set); n++) name = `${base}（${n}）`;
+  const nr = { id: own ? rid : uid(), name, date: r.date || '', ...(set === 'gbp' ? {} : { set }), ...(own ? {} : { src: origin, srcId: rid }) };
+  S.rounds.push(nr); if (!own) S.settings.roundAlias = { ...al, [origin + '|' + rid]: nr.id };
+  return nr.id;
 }
 
 /* ================= v0.6: 執修 (repair follow-up) ================= */
@@ -1939,7 +1979,7 @@ async function restoreFromPhotos(files) {
     if (!it) {
       const L = resolveLoc(d, m.x, m.y);
       Object.assign(L, { viewId: m.v || L.viewId, tower: m.tw, floor: m.f, flat: m.fl, room: m.rm, area: m.ar, grid: m.gr || L.grid });
-      it = { id: m.i, dev: m.dv, by: m.b, no: m.n, drawingId: d.id, x: m.x, y: m.y, loc: L, locText: m.lt || fmtLoc(L), locEdited: !!m.lt, photos: [], note: m.note || '', created: m.t || Date.now(), mod: Date.now(), round: mergeRound(m.r, m.rn, null, setOf(d)), restored: true };
+      it = { id: m.i, dev: m.dv, by: m.b, no: m.n, drawingId: d.id, x: m.x, y: m.y, loc: L, locText: m.lt || fmtLoc(L), locEdited: !!m.lt, photos: [], note: m.note || '', created: m.t || Date.now(), mod: Date.now(), round: importRound({ id: m.r, name: m.rn, set: setOf(d) }, { dev: m.dv, owner: m.b || m.dv }), restored: true };
       if (m.c) it.code = m.c;
       if (m.st && m.st !== 'open') it.fix = { status: m.st, reply: m.rp || '', photos: [] };
       S.items.push(it); add++;
@@ -2135,8 +2175,9 @@ async function boot() {
     const cur = await DB.kget('cur');
     await showDrawing(setDrawings().some(d => d.id === cur) ? cur : setDrawings()[0]?.id || null);
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { });
-    for (const it of S.items) { if (!it.dev && S.settings.dev) it.dev = S.settings.dev; }
-    if (!S.settings.dev) setupPanel(true);
+    for (const it of S.items) { if (!it.dev && S.settings.dev) { it.dev = S.settings.dev; await saveItem(it, true); } }
+    if (!S.settings.devId) { S.settings.devId = uid(); if (S.settings.inspector) S.settings.dev = devName(S.settings.inspector); await saveKV(); }
+    if (!S.settings.dev || !S.settings.inspector) setupPanel(true);
     warmLater(15000);
   } catch (err) { console.error(err); busy(); toast('啟動失敗：' + err.message, 8000); }
   updateBar();
