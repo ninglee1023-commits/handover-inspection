@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.9.0';
+const VERSION = '0.9.1';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -394,7 +394,7 @@ function renderOverlay() {
   }
   if (!map) {
     const fixm = S.mode === 'fix';
-    let items = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i));
+    let items = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i) && subOk(i));
     if (fixm && S.fixOnlyOpen) items = items.filter(i => fixStatus(i) === 'open' || (S.fixItem && S.fixItem.id === i.id));
     const all = !fixm && S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
     for (const it of all) {
@@ -423,6 +423,8 @@ function updateBar() {
   document.querySelectorAll('#setSeg [data-set]').forEach(b => b.setAttribute('aria-pressed', b.dataset.set === curSet()));
   const ub = unbacked(); $('#btnExport').innerHTML = '導出' + (ub ? `<span class="n" title="未備份">${ub}</span>` : '');
   $('#mInspect').setAttribute('aria-pressed', S.mode === 'inspect'); $('#mMap').setAttribute('aria-pressed', S.mode === 'map');
+  const sf = subFilter(); $('#btnSub').hidden = S.mode === 'map' || (!sf && !roundItems().some(i => subsOf(i).length));
+  $('#btnSub').classList.toggle('on', !!sf); $('#btnSub').innerHTML = sf ? `分判 <b>${esc(subFilterName())}</b>` : '分判';
   const mv = multiFloorViews(d);
   $('#btnFloor').hidden = !mv.length || S.mode === 'map';
   if (mv.length) $('#btnFloor').innerHTML = `樓層 <b>${esc(mv.map(v => floorFor(v)).filter((f, i, a) => a.indexOf(f) === i).join('/'))}</b>`;
@@ -437,7 +439,7 @@ function updateBar() {
   $('#empty').hidden = !!d; $('#zoombtns').hidden = !d;
   const hints = { select: '點選區域或軸線可修改；兩指縮放、拖動', rect: '在圖上拖出矩形，框住單位、房間或區域', poly: '逐點點選邊界，完成後按「完成多邊形」', gx: '在每條縱向軸線上點一下（會自動編號）', gy: '在每條橫向軸線上點一下（會自動編號）' };
   const hint = $('#hint');
-  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : S.mode === 'fix' ? (S.fixItem ? `${itemLabel(S.fixItem)}：${S.fixItem.locText || ''}` : (c => `執修（${roundLabel()}）：未完成 ${c.open}／共 ${c.all}　點選紅點處理`)(fixCounts())) : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : '點選圖上的問題位置 → 拍照');
+  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : S.mode === 'fix' ? (S.fixItem ? `${itemLabel(S.fixItem)}：${S.fixItem.locText || ''}` : (c => `執修（${roundLabel()}）：未完成 ${c.open}／共 ${c.all}　點選紅點處理`)(fixCounts())) : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : sf ? `只顯示 ${subFilterName()}（${roundItems().filter(subOk).length} 項）　點選圖上的點回復` : '點選圖上的問題位置 → 拍照');
   hint.hidden = !d;
 }
 
@@ -515,12 +517,12 @@ function onTap(cx, cy) {
   const p = toDwg(cx, cy); const u = 1 / S.view.k;
   if (p.x < 0 || p.y < 0 || p.x > d.w || p.y > d.h) return;
   if (S.mode === 'fix') {
-    const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && (!S.fixOnlyOpen || fixStatus(i) === 'open')).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
+    const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && subOk(i) && (!S.fixOnlyOpen || fixStatus(i) === 'open')).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
     if (hit) { fixPanel(hit.i); renderOverlay(); updateBar(); return; }
     return toast('執修模式：請點選圖上已有的紅點');
   }
   if (S.mode === 'inspect') {
-    const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i)).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
+    const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i) && subOk(i)).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
     if (hit) return openItem(hit.i);
     return newItem(p);
   }
@@ -579,9 +581,9 @@ function newItem(p) {
   if (S.settings.autoCam) $('#camInput').click();
 }
 /* office pass: walk through the records in list order without going back to the list */
-function navPos(it) { const L = roundItems().sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length, noSub = L.filter(x => !subsOf(x).length).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項　·　未指定分判 ${noSub} 項`; }
+function navPos(it) { const L = roundItems().filter(subOk).sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length, noSub = L.filter(x => !subsOf(x).length).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項　·　未指定分判 ${noSub} 項`; }
 function stepItem(it, how) {
-  const L = roundItems().sort(byOrder); const i = L.findIndex(x => x.id === it.id); if (i < 0) return;
+  const L = roundItems().filter(subOk).sort(byOrder); const i = L.findIndex(x => x.id === it.id); if (i < 0) return;
   let nx = null;
   if (how === 'prev') nx = L[i - 1];
   else if (how === 'next') nx = L[i + 1];
@@ -695,7 +697,7 @@ function itemsPanel() {
   freeURLs();
   const d = curD();
   const scoped = (S.listScope === 'cur' && d ? roundItems().filter(i => i.drawingId === d.id) : roundItems());
-  const subF = S.listSub || ''; const nNone = scoped.filter(i => !subsOf(i).length).length;
+  const subF = subFilter(); const nNone = scoped.filter(i => !subsOf(i).length).length;
   const list = scoped.filter(i => !subF || (subF === '-' ? !subsOf(i).length : subsOf(i).includes(subF))).slice().sort(byOrder);
   const subOpts = allSubs().map(x => [x, scoped.filter(i => subsOf(i).includes(x)).length]).filter(([, n]) => n);
   const rows = list.map(it => {
@@ -705,9 +707,9 @@ function itemsPanel() {
   openPanel('items', `${esc(roundLabel())}（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
     <label class="f">分判<select id="lSub"><option value="">全部（${scoped.length}）</option><option value="-" ${subF === '-' ? 'selected' : ''}>未指定分判（${nNone}）</option>${subOpts.map(([x, n]) => `<option value="${esc(x)}" ${subF === x ? 'selected' : ''}>${esc(x)}（${n}）</option>`).join('')}</select></label>
-    <div class="note">圖上：<b style="color:#d42a1e">紅點</b>＝未指定分判，<b style="color:#1f6f9c">藍點</b>＝已指定分判。</div>
+    <div class="note">選了分判之後，圖上亦只顯示該分判的點（頂部「分判」按鈕可隨時改回全部）。圖上：<b style="color:#d42a1e">紅點</b>＝未指定分判，<b style="color:#1f6f9c">藍點</b>＝已指定分判，<b style="color:#2f7d4f">綠點</b>＝已回復。</div>
     <div class="list">${rows || '<div class="note">沒有符合的記錄。</div>'}</div>`);
-  $('#lSub').onchange = e => { S.listSub = e.target.value; itemsPanel(); };
+  $('#lSub').onchange = async e => { await setSubFilter(e.target.value); itemsPanel(); };
   panel.querySelector('.pb').onclick = e => {
     const s = e.target.closest('[data-s]'); if (s) { S.listScope = s.dataset.s; return itemsPanel(); }
     const b = e.target.closest('.li'); if (!b) return;
@@ -720,6 +722,15 @@ function itemsPanel() {
   };
 }
 
+async function setSubFilter(f) { S.settings.subFilter = f; await saveKV(); renderOverlay(); updateBar(); }
+function subPanel() {
+  const L = roundItems(), f = subFilter(), n = x => x === '-' ? L.filter(i => !subsOf(i).length).length : L.filter(i => subsOf(i).includes(x)).length;
+  const opts = [['', `全部（${L.length}）`], ...allSubs().filter(x => n(x)).map(x => [x, `${x}（${n(x)}）`]), ['-', `未指定分判（${n('-')}）`]];
+  if (f && !opts.some(([k]) => k === f)) opts.push([f, `${f}（0）`]);
+  openPanel('subf', '只顯示一個分判', `<div class="chips pick">${opts.map(([k, t]) => `<button class="chip ${k === f ? 'on' : ''}" data-f="${esc(k)}">${esc(t)}</button>`).join('')}</div>
+    <div class="note">圖上的點、記錄清單及「上一項／下一項」只包括所選分判，其他點暫時隱藏（不會刪除）。這部機會記住所選分判，分判在自己的 iPad 選一次即可。</div>`);
+  panel.querySelector('.pb').onclick = async e => { const b = e.target.closest('[data-f]'); if (!b) return; await setSubFilter(b.dataset.f); closePanel(); toast(b.dataset.f ? `只顯示 ${subFilterName()}` : '顯示全部分判'); };
+}
 function floorPanel() {
   const d = curD(); const mv = multiFloorViews(d);
   openPanel('floor', '選擇樓層', mv.map(v => `<div class="f-l">${esc(v.title)}</div><div class="chips pick">${v.floors.map(f => `<button class="chip ${f === floorFor(v) ? 'on' : ''}" data-v="${v.id}" data-f="${esc(f)}">${esc(f)}</button>`).join('')}</div>`).join('') + '<div class="note">之後在這張平面圖上點選的位置會用所選樓層；每個記錄仍可個別修改。</div>');
@@ -863,6 +874,7 @@ $('#btnDrawings').onclick = () => S.panel === 'drawings' ? closePanel() : drawin
 $('#btnItems').onclick = () => S.panel === 'items' ? closePanel() : itemsPanel();
 $('#btnExport').onclick = () => S.panel === 'export' ? closePanel() : exportPanel();
 $('#btnFloor').onclick = () => S.panel === 'floor' ? closePanel() : floorPanel();
+$('#btnSub').onclick = () => S.panel === 'subf' ? closePanel() : subPanel();
 $('#btnRound').onclick = () => S.panel === 'round' ? closePanel() : roundPanel();
 $('#setSeg').onclick = e => { const b = e.target.closest('[data-set]'); if (b) switchSet(b.dataset.set); };
 async function switchSet(k) {
@@ -984,7 +996,7 @@ function exportPanel() {
     <button class="btn" data-a="bk">完整備份（全部 ${S.items.length} 項）</button>
     <div class="row"><label class="f" style="flex:2 1 0;min-width:0">按驗收批次備份（整次驗收一個檔案）<select id="bkRound">${S.rounds.filter(r => S.items.some(i => roundOf(i) === r.id)).map(r => { const n = S.items.filter(i => roundOf(i) === r.id).length, t = (S.settings.roundBackup || {})[r.id]; return `<option value="${r.id}" ${r.id === curRound().id ? 'selected' : ''}>${esc(setName(setOfRound(r)) + ' ' + r.name)}（${n} 項）${t ? '　已備份 ' + fmtTime(t) : ''}</option>`; }).join('') || '<option value="">還沒有任何記錄</option>'}</select></label><button class="btn" data-a="bkround" style="align-self:flex-end">備份此批次</button></div>
     <button class="btn" data-a="bkreply">導出此批次的回復包（只含已回復項目）</button>
-    <div class="note">分判用：匯入你發出的批次備份，在「執修」模式拍完成照後，導出回復包發回。回復包只有回復內容及完成照，不含完成前照片，檔案細很多；匯入後按記錄自動對回原本的項目。</div>
+    <div class="note">分判用：匯入你發出的批次備份，按頂部「分判」只顯示自己的點，逐點按「回復」拍完成照後，導出回復包發回。回復包只有回復內容及完成照，不含完成前照片，檔案細很多；匯入後按記錄自動對回原本的項目。</div>
     <div class="note">備份檔是 ZIP，可用分享選單存到「檔案」、iCloud Drive、Google Drive 或 WhatsApp。ZIP 內的「相片」資料夾在電腦上可直接開啟，每張相底部印有編號、位置、時間及檢查人員。</div>
     <div class="sec">報告（${esc(roundLabel())}，${roundItems().length} 項）</div>
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
@@ -1269,6 +1281,10 @@ const subText = it => subsOf(it).join('、');
 const allSubs = () => [...new Set([...SUBS, ...(S.settings.customSubs || []), ...S.items.flatMap(subsOf)])];
 // report scope: device and/or subcontractor ('-' = records without one)
 const inScope = (i, od) => (!od || devOf(i) === od) && (!S.repSub || (S.repSub === '-' ? !subsOf(i).length : subsOf(i).includes(S.repSub)));
+// 分判 filter of this device: pins on the plan, the record list and stepping through records show only that 分判's
+const subFilter = () => S.settings.subFilter || '';
+const subOk = i => { const f = subFilter(); return !f || (f === '-' ? !subsOf(i).length : subsOf(i).includes(f)); };
+const subFilterName = () => subFilter() === '-' ? '未指定分判' : subFilter();
 const itemLabel = it => it.code || `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
 const byOrder = (a, b) => (a.ord ?? 1e9) - (b.ord ?? 1e9) || devOf(a).localeCompare(devOf(b)) || a.no - b.no;
 // pins have little room: number only, or floor + number where one plan stands for several floors

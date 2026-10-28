@@ -115,6 +115,7 @@ label.f textarea{resize:vertical;min-height:62px}
 details summary{font-size:13px;color:var(--muted);cursor:pointer;padding:4px 0}
 details[open]{display:flex;flex-direction:column;gap:8px}
 #btnFloor b{font-family:var(--mono)}
+#btnSub.on{background:#1f6f9c;color:#fff;border-color:#1f6f9c}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:3px 9px}
 .chip b{font-weight:600}
@@ -202,6 +203,7 @@ details[open]{display:flex;flex-direction:column;gap:8px}
   </div>
   <button class="tb" id="btnRound" title="驗收批次">第1次</button>
   <button class="tb" id="btnFloor" hidden>樓層</button>
+  <button class="tb" id="btnSub" hidden>分判</button>
   <button class="tb" id="btnItems">記錄<span class="n" id="cnt">0</span></button>
   <button class="tb" id="btnExport">導出</button>
 </header>
