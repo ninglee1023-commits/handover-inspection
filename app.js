@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.7';
+const VERSION = '0.8.8';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1139,7 +1139,7 @@ async function overviewImage(d, it, asp = 4 / 3) { // whole plan view, small, wi
 }
 async function keyPlanImage(d, v, items) {
   const b = v ? v.bbox : [0, 0, d.w, d.h]; const bw = b[2] - b[0], bh = b[3] - b[1];
-  const outW = 2400; const c = await renderRegion(d, b[0], b[1], bw, bh, outW); const x = c.getContext('2d'); const s = outW / bw;
+  const outW = 3200; const c = await renderRegion(d, b[0], b[1], bw, bh, outW); const x = c.getContext('2d'); const s = outW / bw;
   for (const it of items) pinOn(x, (it.x - b[0]) * s, (it.y - b[1]) * s, pinLabel(it, true), Math.max(16, outW / 90));
   return { blob: await canvasBlob(c, 'image/jpeg', 0.88), w: c.width, h: c.height };
 }
@@ -1525,7 +1525,18 @@ function setupPanel(first) {
 const devName = n => n.replace(/[\s\u3000]+/g, '').slice(0, 12) || 'A';
 
 /* ---------------- report pages drawn on canvas: preview + PDF ---------------- */
-const PG = { W: 842, H: 595, k: 2, M: 28 }; // A4 landscape in pt, 2 px per pt
+const PG = { W: 842, H: 595, k: 4, M: 28 }; // A4 landscape in pt, 4 px per pt (288 dpi)
+/* pages are finished one at a time, since a whole report of canvases this size would run an iPad out of memory;
+   the header with the page count is stamped on at the end */
+async function pageBlob(c, q = 0.95) { const b = await canvasBlob(c, 'image/jpeg', q); c.width = c.height = 0; return b; }
+async function stampPages(bodies, stamp) {
+  const out = [];
+  for (const [i, b] of bodies.entries()) {
+    const c = document.createElement('canvas'); c.width = PG.W * PG.k; c.height = PG.H * PG.k; const x = c.getContext('2d'); x.scale(PG.k, PG.k);
+    await drawBlob(x, b, 0, 0, PG.W, PG.H); stamp(x, i); out.push(await pageBlob(c, 0.9)); bodies[i] = null;
+  }
+  return out;
+}
 const RFONT = '-apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif';
 function wrapLines(x, text, maxW) {
   const out = []; for (const para of String(text || '').split('\n')) {
@@ -1575,16 +1586,16 @@ async function buildReportPages(items, progress) {
   const pages = []; let c, x, y, fails = [];
   const line = (X0, Y0, X1, Y1) => { x.beginPath(); x.moveTo(X0, Y0); x.lineTo(X1, Y1); x.stroke(); };
   const box = (X, Y, W, H, fill) => { if (fill) { x.fillStyle = fill; x.fillRect(X, Y, W, H); } x.strokeStyle = '#333'; x.lineWidth = 0.6; x.strokeRect(X, Y, W, H); };
-  const blankPage = () => { c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k); x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); pages.push(c); y = headTop; };
-  const newPage = () => {
-    blankPage();
+  const blankPage = async () => { if (c) pages.push(await pageBlob(c)); c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k); x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); y = headTop; };
+  const newPage = async () => {
+    await blankPage();
     box(M, y, UW, 13, REP_GREY); drawText(x, worksOf(), M + 4, y + 2.5, UW, 8.5, { bold: true, font: RSERIF }); y += 13;
     box(M, y, UW, 14); cx.slice(1).forEach(X => line(X, y, X, y + 14));
     heads.forEach((h, i) => drawText(x, h, cx[i] + 4, y + 3, cw[i] - 6, 8.5, { bold: true, font: RSERIF })); y += 14;
   };
   // header block of every page; drawn last, when the page count is known
-  const header = (pc, i, n) => {
-    x = pc.getContext('2d'); const tw = UW * 0.765, lw = 108, X2 = M + tw, X3 = X2 + lw, Y = M;
+  const header = (ctx, i, n) => {
+    x = ctx; const tw = UW * 0.765, lw = 108, X2 = M + tw, X3 = X2 + lw, Y = M;
     box(M, Y, cw[0], 22, REP_BLUE); box(M + cw[0], Y, tw - cw[0], 22, REP_BLUE); box(X2, Y, UW - tw, 22);
     drawText(x, 'OP Inspection Records (Defects and Outstanding Works)', M + cw[0] + 5, Y + 4, tw - cw[0] - 8, 14, { bold: true, font: RSERIF, max: 1 });
     drawText(x, repTag(), X2 + 4, Y + 6, UW - tw - 8, 10, { bold: true, color: '#1f6fb2', font: RSERIF, max: 1, right: true });
@@ -1594,7 +1605,7 @@ async function buildReportPages(items, progress) {
       drawText(x, r[0], M + 4, ry + 3, cw[0] - 6, 8.5, { font: RSERIF, max: 1 }); drawText(x, r[1], M + cw[0] + 5, ry + 3, tw - cw[0] - 8, 8.5, { font: RSERIF, max: 1 });
       drawText(x, r[2], X2 + 4, ry + 3, lw - 8, 8.5, { font: RSERIF, max: 1, right: true }); drawText(x, r[3], X3 + 4, ry + 3, UW - tw - lw - 8, 8.5, { font: RSERIF, max: 1 }); });
   };
-  newPage();
+  await newPage();
   let n = 0;
   for (const it of items) {
     progress && progress(++n, items.length);
@@ -1613,7 +1624,7 @@ async function buildReportPages(items, progress) {
     const stackH = h => np * (h + 4) - 4 + (rps.length ? 10 * rps.length : 0) + (reply ? 40 : 0);
     if (stackH(ph) > avail) ph = Math.max(40, (avail - (rps.length ? 10 * rps.length : 0) - (reply ? 40 : 0) - 4 * (np - 1)) / np);
     const rowH = Math.max(imgH, stackH(ph), textH) + 2 * pad;
-    if (y + 8 + rowH > bottom) newPage();
+    if (y + 8 + rowH > bottom) await newPage();
     box(M, y, UW, 8, REP_GREY); y += 8;
     const y0 = y; box(cx[0], y0, cw[0], rowH, REP_ITEM); box(M, y0, UW, rowH); cx.slice(1).forEach(X => line(X, y0, X, y0 + rowH));
     drawText(x, itemLabel(it), cx[0] + 4, y0 + pad, cw[0] - 6, 10, { bold: true, font: RSERIF });
@@ -1646,16 +1657,15 @@ async function buildReportPages(items, progress) {
       const [did, vid, fl] = key.split('|'); const d = S.drawings.find(q => q.id === did); if (!d) continue; const v = viewById(d, vid); const vt = (v ? v.title : d.name) + (fl ? `（${fl}）` : '');
       try {
         const kp = await keyPlanImage(d, v, its);
-        blankPage();
+        await blankPage();
         y += drawText(x, `Location Plan: ${vt}`, M, y, UW, 12, { bold: true, font: RSERIF }) + 2;
         y += drawText(x, `${d.no || ''}　${its.map(i => itemLabel(i) + (i.loc.floor ? '(' + i.loc.floor + ')' : '')).join('、')}`, M, y, UW, 7.5, { color: '#5f6b69', max: 3 }) + 6;
         const s = Math.min(UW / kp.w, (bottom - y) / kp.h); await drawBlob(x, kp.blob, M + (UW - kp.w * s) / 2, y, kp.w * s, kp.h * s);
       } catch (e) { fails.push(`位置總圖 ${vt}：${e.message}`); }
     }
   }
-  const blobs = [];
-  for (const [i, pc] of pages.entries()) { header(pc, i + 1, pages.length); blobs.push(await canvasBlob(pc, 'image/jpeg', 0.88)); pc.width = pc.height = 0; }
-  return { pages: blobs, fails };
+  pages.push(await pageBlob(c));
+  return { pages: await stampPages(pages, (ctx, i) => header(ctx, i + 1, pages.length)), fails };
 }
 
 let PV = null;
@@ -1668,7 +1678,7 @@ async function previewReport(onlyDev, kind = 'inspect') {
     ovCache.clear(); busy();
     PV = { ...r, onlyDev, kind, urls: r.pages.map(b => URL.createObjectURL(b)) };
     const el = $('#preview'); if (!el) { busy(); return toast('程式未完全更新，請關閉並重新開啟程式', 6000); }
-    el.querySelector('.pvpages').innerHTML = PV.urls.map((u, i) => `<img src="${u}" alt="第 ${i + 1} 頁">`).join('');
+    el.querySelector('.pvpages').innerHTML = PV.urls.map((u, i) => `<img src="${u}" loading="lazy" decoding="async" alt="第 ${i + 1} 頁">`).join('');
     el.querySelector('.pvinfo').textContent = `共 ${PV.pages.length} 頁　${items.length} 項記錄${PV.fails.length ? `　·　${PV.fails.length} 處圖片有問題` : ''}`;
     el.hidden = false; el.querySelector('.pvpages').scrollTop = 0;
   } catch (e) { busy(); toast('預覽失敗：' + e.message, 6000); console.error(e); }
@@ -2014,7 +2024,8 @@ async function buildFixPages(items, progress, kind) {
   const pad = 4, dW = cw[2] - 2 * pad, pW = cw[3] - 2 * pad, top0 = M + 14, bottom = PG.H - M - 14, headH = 20;
   const pages = []; let c, x, y; const fails = [];
   const head = () => { drawText(x, `${P.name || ''}　${title}　${rn}`, M, M - 14, UW, 7.5, { color: '#5f6b69' }); };
-  const newPage = first => {
+  const newPage = async first => {
+    if (c) pages.push(await pageBlob(c));
     c = document.createElement('canvas'); c.width = PG.W * k; c.height = PG.H * k; x = c.getContext('2d'); x.scale(k, k);
     x.fillStyle = '#fff'; x.fillRect(0, 0, PG.W, PG.H); head(); y = top0;
     if (first) {
@@ -2027,10 +2038,10 @@ async function buildFixPages(items, progress, kind) {
     }
     x.fillStyle = '#1d2629'; x.fillRect(M, y, UW, headH);
     heads.forEach((h, i) => drawText(x, h, cx[i], y + 5, cw[i], 8.5, { bold: true, color: '#fff', center: true }));
-    y += headH; pages.push(c);
+    y += headH;
   };
   const grid = (y0, h) => { x.strokeStyle = '#8a9391'; x.lineWidth = 0.6; x.strokeRect(M, y0, UW, h); cx.slice(1).forEach(X => { x.beginPath(); x.moveTo(X, y0); x.lineTo(X, y0 + h); x.stroke(); }); };
-  newPage(true);
+  await newPage(true);
   let n = 0;
   for (const it of items) {
     progress && progress(++n, items.length);
@@ -2043,7 +2054,7 @@ async function buildFixPages(items, progress, kind) {
     let phH = pW * 0.75; const avail = bottom - top0 - headH - 2 * pad;
     if (np * (phH + 4) > avail) phH = (avail - (np - 1) * 4) / np;
     const rowH = Math.max(ovH + 4 + crH, np * (phH + 4) - 4, 40) + 2 * pad;
-    if (y + rowH > bottom) newPage(false);
+    if (y + rowH > bottom) await newPage(false);
     const y0 = y; grid(y0, rowH);
     drawText(x, itemLabel(it), cx[0], y0 + rowH / 2 - 10, cw[0], 7.5, { bold: true, color: '#d42a1e', center: true });
     drawText(x, fmtTime(it.created).slice(5, 10), cx[0], y0 + rowH / 2 + 2, cw[0], 6, { color: '#5f6b69', center: true });
@@ -2068,9 +2079,8 @@ async function buildFixPages(items, progress, kind) {
     const s = fixStatus(it); drawText(x, fixStatusText(it), cx[6] + 2, y0 + rowH / 2 - 8, cw[6] - 4, 7.5, { bold: true, center: true, color: s === 'done' ? '#2f7d4f' : s === 'na' ? '#5f6b69' : '#d42a1e' });
     y += rowH;
   }
-  const blobs = [];
-  for (const [i, pc] of pages.entries()) { const px = pc.getContext('2d'); drawText(px, `第 ${i + 1} 頁，共 ${pages.length} 頁`, M, PG.H - M + 2, UW, 7.5, { color: '#5f6b69', center: true }); blobs.push(await canvasBlob(pc, 'image/jpeg', 0.88)); pc.width = pc.height = 0; }
-  return { pages: blobs, fails };
+  pages.push(await pageBlob(c));
+  return { pages: await stampPages(pages, (px, i) => drawText(px, `第 ${i + 1} 頁，共 ${pages.length} 頁`, M, PG.H - M + 2, UW, 7.5, { color: '#5f6b69', center: true })), fails };
 }
 async function exportFixDocx(items, kind) {
   items = await freshItems(items);
