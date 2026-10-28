@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.9.1';
+const VERSION = '0.9.2';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -74,7 +74,7 @@ const S = {
   project: { name: '', site: '', date: today(), inspector: '', company: '' },
   settings: { autoCam: true, showZones: true, crop: 'm', keyPlan: true },
   floorSel: {}, recentAreas: [], views: {}, rots: {}, repSub: '',
-  drawings: [], items: [], rounds: [], fixOnlyOpen: false, fixItem: null, cur: null, mode: 'inspect', tool: 'select',
+  drawings: [], items: [], rounds: [], fixItem: null, cur: null, mode: 'inspect', tool: 'select',
   view: { x: 0, y: 0, k: 1 }, editing: null, draft: null, sel: null, panel: null, listScope: 'cur',
 };
 const imgCache = new Map(); // drawingId -> {url, img}
@@ -393,12 +393,10 @@ function renderOverlay() {
     if (S.draft.type === 'poly' && S.draft.pts.length) { h += `<polyline points="${S.draft.pts.map(p => p.join(',')).join(' ')}" fill="rgba(242,194,48,.25)" stroke="#b8860b" stroke-width="2" vector-effect="non-scaling-stroke"/>`; S.draft.pts.forEach(q => h += `<circle cx="${q[0]}" cy="${q[1]}" r="${5 * u}" fill="#b8860b"/>`); }
   }
   if (!map) {
-    const fixm = S.mode === 'fix';
-    let items = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i) && subOk(i));
-    if (fixm && S.fixOnlyOpen) items = items.filter(i => fixStatus(i) === 'open' || (S.fixItem && S.fixItem.id === i.id));
-    const all = !fixm && S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
+    const items = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i) && subOk(i));
+    const all = S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
     for (const it of all) {
-      const act = fixm ? !!(S.fixItem && S.fixItem.id === it.id) : !!(S.editing && S.editing.id === it.id); const r = (act ? 17 : 14) * u;
+      const act = !!(S.editing && S.editing.id === it.id); const r = (act ? 17 : 14) * u;
       // green = 已回復, grey = 不跟進; open records: blue once a 分判 is set, red otherwise
       const st = fixStatus(it), pf = st === 'done' ? '#2f7d4f' : st === 'na' ? '#8a9391' : subsOf(it).length ? '#1f6f9c' : '#d42a1e';
       h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="${pf}" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devShort(it) + it.no}</text>`;
@@ -439,7 +437,7 @@ function updateBar() {
   $('#empty').hidden = !!d; $('#zoombtns').hidden = !d;
   const hints = { select: '點選區域或軸線可修改；兩指縮放、拖動', rect: '在圖上拖出矩形，框住單位、房間或區域', poly: '逐點點選邊界，完成後按「完成多邊形」', gx: '在每條縱向軸線上點一下（會自動編號）', gy: '在每條橫向軸線上點一下（會自動編號）' };
   const hint = $('#hint');
-  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : S.mode === 'fix' ? (S.fixItem ? `${itemLabel(S.fixItem)}：${S.fixItem.locText || ''}` : (c => `執修（${roundLabel()}）：未完成 ${c.open}／共 ${c.all}　點選紅點處理`)(fixCounts())) : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : sf ? `只顯示 ${subFilterName()}（${roundItems().filter(subOk).length} 項）　點選圖上的點回復` : '點選圖上的問題位置 → 拍照');
+  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : sf ? `只顯示 ${subFilterName()}（${roundItems().filter(subOk).length} 項）　點選圖上的點回復` : '點選圖上的問題位置 → 拍照');
   hint.hidden = !d;
 }
 
@@ -516,11 +514,6 @@ function onTap(cx, cy) {
   const d = curD(); if (!d) return;
   const p = toDwg(cx, cy); const u = 1 / S.view.k;
   if (p.x < 0 || p.y < 0 || p.x > d.w || p.y > d.h) return;
-  if (S.mode === 'fix') {
-    const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && subOk(i) && (!S.fixOnlyOpen || fixStatus(i) === 'open')).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
-    if (hit) { fixPanel(hit.i); renderOverlay(); updateBar(); return; }
-    return toast('執修模式：請點選圖上已有的紅點');
-  }
   if (S.mode === 'inspect') {
     const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i) && subOk(i)).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
     if (hit) return openItem(hit.i);
@@ -568,7 +561,6 @@ function openPanel(kind, title, body, opts = {}) {
 }
 function closePanel() {
   if (S.panel === 'item') finishItem();
-  if (S.panel === 'fix') S.fixItem = null;
   panel.hidden = true; document.body.classList.remove('pnl'); S.panel = null; S.sel = null; freeURLs(); renderOverlay(); updateBar();
 }
 
@@ -714,7 +706,6 @@ function itemsPanel() {
     const s = e.target.closest('[data-s]'); if (s) { S.listScope = s.dataset.s; return itemsPanel(); }
     const b = e.target.closest('.li'); if (!b) return;
     const it = S.items.find(i => i.id === b.dataset.id);
-    if (S.mode === 'fix') { const go = () => { fixPanel(it); centerOn(it.x, it.y, Math.max(S.view.k, 1)); renderOverlay(); updateBar(); }; if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(go); else go(); return; }
     if (S.mode !== 'inspect') setMode('inspect');
     S.editing = it; showFloorOf(it);
     if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { itemPanel(); centerOn(it.x, it.y, 1); });
@@ -889,7 +880,6 @@ async function switchSet(k) {
   await showDrawing(L.some(d => d.id === want) ? want : L[0]?.id || null);
   renderOverlay(); updateBar(); toast(`已切換到${setName()}圖紙（${roundLabel()}）`);
 }
-$('#fixLib').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
 $('#fixCam').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
 $('#photoRestore').onchange = e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) restoreFromPhotos(fs); };
 $('#zIn').onclick = () => zoomAt(1.6); $('#zOut').onclick = () => zoomAt(1 / 1.6); $('#zFit').onclick = () => fit();
@@ -1908,76 +1898,16 @@ const FIX_ST = { open: '未回復', done: '已完成', na: '不跟進' };
 const fixOf = it => it.fix || (it.fix = { status: 'open', reply: '', photos: [] });
 const fixStatus = it => (it.fix && it.fix.status) || 'open';
 const hasReply = it => !!it.fix && (fixStatus(it) !== 'open' || !!(it.fix.reply || '').trim() || !!(it.fix.photos || []).length);
-function fixCounts() { const L = roundItems(); return { all: L.length, open: L.filter(i => fixStatus(i) === 'open').length, done: L.filter(i => fixStatus(i) === 'done').length }; }
 async function persistFix(it) { it.mod = Date.now(); await saveItem(it); updateBar(); }
-function fixPanel(it) {
-  freeURLs(); S.fixItem = it; const F = fixOf(it); const d = S.drawings.find(x => x.id === it.drawingId); const v = d ? viewById(d, it.loc.viewId) : null;
-  const before = it.photos.map(ph => `<div class="ph1"><img src="${burl(ph.out)}" alt=""></div>`).join('') || '<div class="note">沒有完成前照片</div>';
-  const after = F.photos.map((ph, i) => `<div class="ph1"><img src="${burl(ph.out)}" data-a="ed" data-i="${i}" alt="完成後 ${i + 1}"><button class="del" data-a="delph" data-i="${i}" aria-label="刪除照片">✕</button><span class="ed">點擊修改標記</span></div>`).join('');
-  openPanel('fix', esc(v ? v.title : (d ? d.name : '')), `
-    <div class="idx">${esc(it.locText || '')}</div>
-    ${it.note ? `<div class="note"><b>問題：</b>${esc(it.note)}</div>` : ''}
-    <div class="f-l">完成前</div><div class="photos">${before}</div>
-    <div class="f-l">完成後</div>${after ? `<div class="photos">${after}</div>` : ''}
-    <div class="row"><button class="btn p" data-a="ghost">拍完成照（對位拍攝）</button></div>
-    <div class="row"><label class="btn" for="fixCam">系統相機</label><label class="btn" for="fixLib">從相簿加入</label></div>
-    <div class="f-l">狀態</div>
-    <div class="chips pick">${Object.entries(FIX_ST).map(([k, t]) => `<button class="chip ${F.status === k ? 'on' : ''}" data-st="${k}">${t}</button>`).join('')}</div>
-    <label class="f">回覆（可留空）<textarea id="fxReply" rows="2" placeholder="例如：已更換門鉸">${esc(F.reply || '')}</textarea></label>
-    ${F.done && F.status === 'done' ? `<div class="note">完成日期：${fmtTime(F.done).slice(0, 10)}${F.by ? '　' + esc(F.by) : ''}</div>` : ''}
-    <div class="row"><button class="btn dk" data-a="close2">完成</button></div>`, { badge: `<span class="no" style="background:${F.status === 'done' ? 'var(--ok)' : F.status === 'na' ? '#8a9391' : 'var(--red)'}">${itemLabel(it)}</span>` });
-  const q = s => panel.querySelector(s);
-  q('#fxReply').oninput = e => { F.reply = e.target.value; clearTimeout(persistT); persistT = setTimeout(() => persistFix(it), 400); };
-  panel.querySelector('.pb').onclick = async e => {
-    const st = e.target.closest('[data-st]');
-    if (st) { F.status = st.dataset.st; if (F.status === 'done' && !F.done) { F.done = Date.now(); F.by = S.settings.inspector || ''; } if (F.status !== 'done') F.done = null; await persistFix(it); renderOverlay(); return fixPanel(it); }
-    const a = e.target.dataset.a; if (!a) return;
-    if (a === 'close2') closePanel();
-    if (a === 'ghost') ghostCam(it);
-    if (a === 'ed') { const i = +e.target.dataset.i; const ph = F.photos[i]; if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistFix(it); fixPanel(it); } }
-    if (a === 'delph') { if (e.target.dataset.armed) { F.photos.splice(+e.target.dataset.i, 1); await persistFix(it); fixPanel(it); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
-  };
-}
 async function addFixPhoto(file) {
   const it = S.fixItem || S.editing; if (!file || !it) return;
   S.replyShot = true; let r; try { r = await openEditor(file, null); } finally { S.replyShot = false; } if (!r) return;
   const F = fixOf(it); F.photos.push(r);
   if (F.status !== 'done' && F.status !== 'na') { F.status = 'done'; F.done = Date.now(); F.by = S.settings.inspector || ''; }
   if (it._new) await persistItem(true); else await persistFix(it);
-  renderOverlay(); if (S.panel === 'fix') fixPanel(it); else if (S.panel === 'item' && S.editing === it) itemPanel();
-  if (S.panel !== 'fix') S.fixItem = null; toast(`${itemLabel(it)} 已加入回復照片`, 2500);
+  renderOverlay(); if (S.panel === 'item' && S.editing === it) itemPanel();
+  S.fixItem = null; toast(`${itemLabel(it)} 已加入回復照片`, 2500);
 }
-/* alignment camera: live camera with the before-photo laid over it, so the after-photo is taken from the same spot */
-async function ghostCam(it) {
-  const before = it.photos[0];
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('這部機不支援對位拍攝，請按「系統相機」', 4000); return; }
-  let stream;
-  try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false }); }
-  catch (e) { toast('未能開啟相機（' + (e.name === 'NotAllowedError' ? '未獲相機權限' : e.message) + '），請按「系統相機」', 5000); return; }
-  const g = document.createElement('div'); g.id = 'ghost';
-  g.innerHTML = `<video playsinline autoplay muted></video>${before ? `<img alt="" src="${burl(before.out)}">` : ''}
-    <div class="gtop"><span>${esc(itemLabel(it))}　${esc(it.locText || '')}</span><button data-g="cancel">取消</button></div>
-    <div class="gbot">${before ? '<label class="gsl">完成前照片<input type="range" min="0" max="85" value="40" data-g="op"></label>' : '<span></span>'}
-    <button class="gshut" data-g="shot" aria-label="拍攝"></button>${before ? '<button data-g="peek">按住看完成前</button>' : '<span></span>'}</div>`;
-  document.body.appendChild(g);
-  const vid = g.querySelector('video'), ghost = g.querySelector('img'); vid.srcObject = stream;
-  try { await vid.play(); } catch (e) { }
-  if (ghost) ghost.style.opacity = 0.4;
-  const stop = () => { stream.getTracks().forEach(t => t.stop()); g.remove(); };
-  g.addEventListener('input', e => { if (e.target.dataset.g === 'op' && ghost) ghost.style.opacity = e.target.value / 100; });
-  const peek = g.querySelector('[data-g="peek"]');
-  if (peek) { peek.onpointerdown = () => ghost.style.opacity = 1; peek.onpointerup = peek.onpointerleave = () => ghost.style.opacity = g.querySelector('[data-g="op"]').value / 100; }
-  g.addEventListener('click', async e => {
-    const a = e.target.dataset.g;
-    if (a === 'cancel') stop();
-    if (a === 'shot') {
-      if (!vid.videoWidth) return toast('相機未就緒');
-      const c = document.createElement('canvas'); c.width = vid.videoWidth; c.height = vid.videoHeight; c.getContext('2d').drawImage(vid, 0, 0);
-      const b = await canvasBlob(c, 'image/jpeg', 0.9); stop(); addFixPhoto(b);
-    }
-  });
-}
-
 /* ================= v0.6: coordinates carried inside each saved photo ================= */
 // ASCII-only JSON so it survives EXIF (ASCII) and QR byte mode on every platform
 const asciiJSON = o => JSON.stringify(o).replace(/[\u007f-￿]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
