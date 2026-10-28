@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.8';
+const VERSION = '0.8.9';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1003,7 +1003,7 @@ function exportPanel() {
     <div class="note">本程式存的每張相片都帶有圖紙坐標（相片資料內及底部二維碼）。即使只剩下相片，在這裏一次揀選多張，就可以把記錄放回原來的圖紙位置及驗收批次。</div>
     <div class="note">匯入後所有記錄會在同一張圖上顯示，連同圖上位置、照片標註及檢查人員；同一記錄以較新的版本為準。</div>
     <button class="btn" data-a="renum">整理編號（按樓層、位置）</button>
-    <div class="note">全部記錄匯入後按這裏，編號會改為按樓層排列，例如 B1-001、B1-002、B2-001，同一單位或區域的記錄排在一起，就像一個人做了全部記錄。原來的編號會保留在記錄內。之後再匯入或新增記錄，可再按一次重新整理。</div>
+    <div class="note">全部記錄匯入後按這裏，編號會改為按樓層排列，例如 B1-001、B1-002、G-001；3F 或以上按單位 A–Z 分開編號，例如 T1-3F-A-001、T1-3F-B-001，公共位置排在各單位之後（T1-3F-001）。同一單位或區域的記錄排在一起，就像一個人做了全部記錄。原來的編號會保留在記錄內。之後再匯入或新增記錄，可再按一次重新整理。</div>
     <div class="sec">本機</div>
     <div class="row"><button class="btn" data-a="setup">檢查人員：${esc(S.settings.inspector || '—')}</button></div>
     <label class="toggle">點選位置後直接開相機<input type="checkbox" id="sCam" ${S.settings.autoCam ? 'checked' : ''}></label>
@@ -1269,7 +1269,9 @@ const byOrder = (a, b) => (a.ord ?? 1e9) - (b.ord ?? 1e9) || devOf(a).localeComp
 // pins have little room: number only, or floor + number where one plan stands for several floors
 // on pins a record of someone else shows the first character of its owner (old letter codes in full)
 const devShort = it => { const d = devOf(it); return /^[A-Z0-9]{1,3}$/.test(d) ? d : [...d][0]; };
-const pinLabel = (it, short) => { if (!it.code) return devShort(it) + it.no; const n = String(+it.code.split('-').pop()); return short || !(it.loc && it.loc.floor) ? n : `${it.loc.floor}-${n}`; };
+// on 3F and above the code carries the flat (T1-3F-A-001) and numbers restart per flat: keep the flat on the pin
+const pinLabel = (it, short) => { if (!it.code) return devShort(it) + it.no; const p = it.code.split('-'), L = it.loc || {};
+  const n = String(+p.pop()), fl = L.flat && p.pop() === L.flat ? `${L.flat}-${n}` : n; return short || !L.floor ? fl : `${L.floor}-${fl}`; };
 
 /* unified numbering: as if one inspector made every record — grouped by floor, ordered by location */
 function floorRank(f) {
@@ -1286,11 +1288,13 @@ function floorOfItem(it) {
   const main = (d.views || []).filter(v => v.floors && v.floors.length === 1).sort((a, b) => area(b) - area(a))[0];
   return main ? main.floors[0] : '';
 }
+// 3F and above are typical flat floors: each flat (A-Z) gets its own run of numbers, common areas follow the flats
+const byFlat = it => floorRank(floorOfItem(it)) >= 3 ? (it.loc && it.loc.flat) || '' : '';
 async function renumberAll() {
-  const key = it => { const L = it.loc || {}; return [L.tower || '', floorOfItem(it)].filter(Boolean).join('-') || '其他'; };
-  const cmp = (a, b) => { const A = a.loc || {}, B = b.loc || {};
+  const key = it => { const L = it.loc || {}; return [L.tower || '', floorOfItem(it), byFlat(it)].filter(Boolean).join('-') || '其他'; };
+  const cmp = (a, b) => { const A = a.loc || {}, B = b.loc || {}, fa = byFlat(a), fb = byFlat(b);
     return floorRank(floorOfItem(a)) - floorRank(floorOfItem(b)) || (A.tower || '').localeCompare(B.tower || '', 'en', { numeric: true })
-      || (A.flat || '').localeCompare(B.flat || '', 'en', { numeric: true }) || (A.room || A.area || '').localeCompare(B.room || B.area || '', 'zh-Hant')
+      || !fa - !fb || (A.flat || '').localeCompare(B.flat || '', 'en', { numeric: true }) || (A.room || A.area || '').localeCompare(B.room || B.area || '', 'zh-Hant')
       || a.y - b.y || a.x - b.x; };
   const list = roundItems().sort(cmp); const cnt = new Map(); const now = Date.now();
   for (const [i, it] of list.entries()) {
