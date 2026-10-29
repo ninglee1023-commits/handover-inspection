@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.9.3';
+const VERSION = '0.9.4';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -152,7 +152,7 @@ const dataURLToBlob = async u => (await fetch(u)).blob();
 function curD() { return S.drawings.find(d => d.id === S.cur) || null; }
 // drawing sets shown one at a time (top-bar switch); drawings imported on the device join the set that was showing
 const SETS = [
-  { id: 'gbp', name: '建築', mapping: 'gbp/mapping.json', size: '20 MB', fileRef: '20260708_BD_GBP 13th Amd Approval Drawing / 20261028_14th GBP Amd Draft', works: "BUILDER'S WORKS" },
+  { id: 'gbp', name: '建築', mapping: 'gbp/mapping.json', size: '20 MB', fileRef: '20260708_BD_GBP 13th Amd Approval Drawing', works: "BUILDER'S WORKS" },
   { id: 'drainage', name: '渠務', mapping: 'gbp/drainage-mapping.json', size: '36 MB', fileRef: '20260921_7th Drainage Amendment Approval Drawing', works: 'DRAINAGE WORKS' }];
 const curSet = () => SETS.some(x => x.id === S.settings.set) ? S.settings.set : 'gbp';
 const setName = (k = curSet()) => (SETS.find(x => x.id === k) || SETS[0]).name;
@@ -218,8 +218,9 @@ async function ensureBase(d, quiet, force) {
 }
 
 /* ---------------- reissued sheets ---------------- */
-// a sheet replaced by a newer issue keeps its id; its xf maps points placed on the previous issue (pf = from) onto the new one (pf = to)
-function framePt(d, x, y, pf) { const f = d && d.xf; if (!f || pf === f.to || (pf && pf !== f.from)) return { x, y, pf }; return { x: Math.round(f.k * x + f.tx), y: Math.round(f.k * y + f.ty), pf: f.to }; }
+// a sheet replaced by another issue keeps its id; its xf maps points placed on the previous issue (pf = from) onto this one (pf = to);
+// unset names the issue of points that carry no pf (records made before pf existed, or on a sheet that had no xf)
+function framePt(d, x, y, pf) { const f = d && d.xf; if (!f || (pf || f.unset || f.from) !== f.from) return { x, y, pf }; return { x: Math.round(f.k * x + f.tx), y: Math.round(f.k * y + f.ty), pf: f.to }; }
 function toFrame(it) { const d = S.drawings.find(x => x.id === it.drawingId); if (!d || !d.xf) return false; const p = framePt(d, it.x, it.y, it.pf); if (p.pf === it.pf) return false; Object.assign(it, p); return true; }
 const curFrame = d => d && d.xf ? d.xf.to : undefined;
 
@@ -2165,6 +2166,12 @@ async function loadBundle(k = 'gbp') {
     if (ex && (ex.w !== pd.w || ex.h !== pd.h) && S.views[pd.id]) { delete S.views[pd.id]; await DB.kset('views', S.views); }
     await DB.put('drawings', rec);
     const i = S.drawings.findIndex(d => d.id === rec.id); if (i >= 0) S.drawings[i] = rec; else S.drawings.push(rec);
+  }
+  // sheets dropped from the package go, unless records sit on them
+  for (const d of S.drawings.filter(d => d.src === 'bundle' && setOf(d) === k && !man.drawings.some(pd => pd.id === d.id))) {
+    if (!S.items.some(i => i.drawingId === d.id)) { await DB.del('drawings', d.id); S.drawings.splice(S.drawings.indexOf(d), 1); continue; }
+    // records sit on it: keep it as a picture of the sheet the iPad already prepared, outside the package
+    if (d.base && d.base.blob) { Object.assign(d, { kind: 'img', blob: d.base.blob, src: 'retired', name: d.name + '（已停用）' }); delete d.base; await DB.put('drawings', d); }
   }
   await DB.kset(vkey, man.version); if (k === 'gbp') S.pkgVersion = man.version;
   S.drawings.sort((a, b) => (a.created || 0) - (b.created || 0));
