@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.8.9';
+const VERSION = '0.9.0';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -150,7 +150,7 @@ const dataURLToBlob = async u => (await fetch(u)).blob();
 function curD() { return S.drawings.find(d => d.id === S.cur) || null; }
 // drawing sets shown one at a time (top-bar switch); drawings imported on the device join the set that was showing
 const SETS = [
-  { id: 'gbp', name: '建築', mapping: 'gbp/mapping.json', size: '20 MB', fileRef: '20260708_BD_GBP 13th Amd Approval Drawing', works: "BUILDER'S WORKS" },
+  { id: 'gbp', name: '建築', mapping: 'gbp/mapping.json', size: '20 MB', fileRef: '20260708_BD_GBP 13th Amd Approval Drawing / 20261028_14th GBP Amd Draft', works: "BUILDER'S WORKS" },
   { id: 'drainage', name: '渠務', mapping: 'gbp/drainage-mapping.json', size: '36 MB', fileRef: '20260921_7th Drainage Amendment Approval Drawing', works: 'DRAINAGE WORKS' }];
 const curSet = () => SETS.some(x => x.id === S.settings.set) ? S.settings.set : 'gbp';
 const setName = (k = curSet()) => (SETS.find(x => x.id === k) || SETS[0]).name;
@@ -215,6 +215,12 @@ async function ensureBase(d, quiet, force) {
   } finally { if (!quiet) busy(); }
 }
 
+/* ---------------- reissued sheets ---------------- */
+// a sheet replaced by a newer issue keeps its id; its xf maps points placed on the previous issue (pf = from) onto the new one (pf = to)
+function framePt(d, x, y, pf) { const f = d && d.xf; if (!f || pf === f.to || (pf && pf !== f.from)) return { x, y, pf }; return { x: Math.round(f.k * x + f.tx), y: Math.round(f.k * y + f.ty), pf: f.to }; }
+function toFrame(it) { const d = S.drawings.find(x => x.id === it.drawingId); if (!d || !d.xf) return false; const p = framePt(d, it.x, it.y, it.pf); if (p.pf === it.pf) return false; Object.assign(it, p); return true; }
+const curFrame = d => d && d.xf ? d.xf.to : undefined;
+
 /* ---------------- geometry / location ---------------- */
 function inPoly(x, y, pts) { let c = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const [xi, yi] = pts[i], [xj, yj] = pts[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; }
 function area(pts) { let a = 0; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) a += (pts[j][0] + pts[i][0]) * (pts[j][1] - pts[i][1]); return Math.abs(a / 2); }
@@ -232,11 +238,15 @@ function span(lines, v, other) {
   for (let i = 0; i < s.length - 1; i++) if (v >= s[i].pos && v <= s[i + 1].pos) { const p = [stripPre(s[i].label), stripPre(s[i + 1].label)].sort((a, b) => a.localeCompare(b, 'en', { numeric: true })); return `${p[0]}-${p[1]}`; }
   return `${stripPre(s[s.length - 1].label)}外`;
 }
+// elevations and schematic diagrams: the floor is the level line at or below the point (lines sorted top to bottom)
+function levelAt(v, y) { const ls = v && v.lv; if (!ls || !ls.length) return ''; const b = ls.find(l => l.pos >= y); return (b || ls[ls.length - 1]).f; }
+const levelFloors = v => v && v.lv ? [...new Set([...v.lv].reverse().map(l => l.f))] : [];
 function floorFor(v) { if (!v) return ''; const f = S.floorSel[v.id]; return f && (!v.floors.length || v.floors.includes(f)) ? f : (v.floors[0] || ''); }
 function resolveLoc(d, x, y) {
   const v = viewAt(d, x, y);
   const L = { viewId: v ? v.id : '', tower: v ? v.tower || '' : '', floor: floorFor(v), flat: '', room: '', area: '', grid: '', zoneIds: [] };
   if (!v) return L;
+  if (v.lv) { L.floor = levelAt(v, y); L.area = v.title; }
   const all = (v.zones || []).filter(z => inPoly(x, y, z.pts));
   const tz = all.find(z => z.kind === 'tower'); if (tz) L.tower = tz.name;
   const hits = all.filter(z => z.kind !== 'tower').sort((a, b) => area(a.pts) - area(b.pts));
@@ -385,6 +395,7 @@ function renderOverlay() {
       }
     };
     gl(v.gx, 'gx'); gl(v.gy, 'gy');
+    if (map) for (const l of v.lv || []) h += `<line x1="${bx0}" y1="${l.pos}" x2="${bx1}" y2="${l.pos}" stroke="#d42a1e" stroke-width="1.1" stroke-dasharray="10 5" vector-effect="non-scaling-stroke" opacity=".8"/><text x="${bx0 + 4 * u}" y="${l.pos - 4 * u}" font-size="${12 * u}" fill="#d42a1e" stroke="#fff" stroke-width="${3 * u}" paint-order="stroke" font-weight="700" font-family="${font}">${esc(l.f)}</text>`;
   }
   if (S.draft) {
     if (S.draft.type === 'rect') { const { a, b } = S.draft; h += `<rect x="${Math.min(a.x, b.x)}" y="${Math.min(a.y, b.y)}" width="${Math.abs(b.x - a.x)}" height="${Math.abs(b.y - a.y)}" fill="rgba(242,194,48,.25)" stroke="#b8860b" stroke-width="2" vector-effect="non-scaling-stroke"/>`; }
@@ -572,7 +583,7 @@ function closePanel() {
 function newItem(p) {
   if (S.editing) finishItem();
   const d = curD(); const loc = resolveLoc(d, p.x, p.y);
-  S.editing = { id: uid(), round: curRound().id, dev: S.settings.dev || 'A', by: S.settings.inspector || '', drawingId: d.id, no: nextNo(), x: Math.round(p.x), y: Math.round(p.y), loc, locText: fmtLoc(loc), locEdited: false, photos: [], note: '', created: Date.now(), _new: true };
+  S.editing = { id: uid(), round: curRound().id, dev: S.settings.dev || 'A', by: S.settings.inspector || '', drawingId: d.id, pf: curFrame(d), no: nextNo(), x: Math.round(p.x), y: Math.round(p.y), loc, locText: fmtLoc(loc), locEdited: false, photos: [], note: '', created: Date.now(), _new: true };
   renderOverlay(); itemPanel(); updateBar(); ensureVisible(p);
   if (S.settings.autoCam) $('#camInput').click();
 }
@@ -598,7 +609,7 @@ function itemPanel() {
   const it = S.editing; const d = S.drawings.find(x => x.id === it.drawingId); const L = it.loc;
   const v = d ? viewById(d, L.viewId) : null;
   const towers = [...new Set(S.drawings.flatMap(x => (x.views || []).map(v => v.tower)).filter(Boolean))];
-  const floors = v && v.floors.length ? v.floors : [];
+  const floors = v && v.floors.length ? v.floors : levelFloors(v);
   const flats = v ? [...new Set((v.zones || []).filter(z => z.kind === 'flat' && (!z.tower || z.tower === L.tower)).map(z => z.name))].sort() : [];
   const roomOpts = [...new Set([...(v ? (v.zones || []).filter(z => z.kind === 'room' && (!L.flat || z.flat === L.flat) && (!z.tower || z.tower === L.tower)).map(z => z.name) : []), ...ROOMS])];
   const sel = (id, opts, val, blank) => `<select id="${id}">${blank !== undefined ? `<option value="">${blank}</option>` : ''}${opts.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}${val && !opts.includes(val) ? `<option selected>${esc(val)}</option>` : ''}</select>`;
@@ -727,13 +738,16 @@ function floorPanel() {
 /* ---- drawings ---- */
 function drawingsPanel() {
   freeURLs();
-  const rows = setDrawings().map(d => {
+  const row = d => {
     const n = S.items.filter(i => i.drawingId === d.id).length;
     const th = d.thumb ? `background-image:url('${burl(d.thumb)}');` : '';
     return `<div class="li ${d.id === S.cur ? 'cur' : ''}" style="grid-template-columns:64px 1fr auto"><span class="th" style="${th}background-color:#fff"></span>
       <span class="t" data-open="${d.id}"><b>${esc(d.name)}</b><span>${esc(d.no || '')}${d.base || d.kind !== 'pdf' ? '' : '　·　未準備'}　·　${n} 記錄</span></span>
       <button class="btn" data-edit="${d.id}" style="min-height:38px;padding:6px 10px">設定</button></div>`;
-  }).join('') || '<div class="note">還沒有圖紙。</div>';
+  };
+  const all = setDrawings(), el = all.filter(d => d.cat === 'elev');
+  const rows = !all.length ? '<div class="note">還沒有圖紙。</div>' : !el.length ? all.map(row).join('')
+    : `<div class="sec">平面圖</div>${all.filter(d => d.cat !== 'elev').map(row).join('')}<div class="sec">立面圖</div>${el.map(row).join('')}`;
   const pending = setDrawings().filter(d => d.kind === 'pdf' && !d.base).length;
   openPanel('drawings', `圖紙 · ${setName()}`, `
     ${pending ? `<button class="btn dk" data-a="prep">預先準備全部圖紙（尚有 ${pending} 張）</button><div class="note">第一次開啟每張 A0 圖紙需要數秒轉換。到地盤前先按一次，現場就可以即開即用（之後離線亦可）。</div>` : ''}
@@ -1448,7 +1462,7 @@ async function mergeRecord(ex, inc, conv) {
   const tm = r => r.mod || r.created || 0, incNewer = tm(inc) > tm(ex);
   const empty = (r, g) => g === 'note' ? !(r.note || '').trim() : g === 'sub' ? !subsOf(r).length : g === 'code' ? !r.code
     : g === 'fix' ? !r.fix || ((r.fix.status || 'open') === 'open' && !r.fix.reply && !(r.fix.photos || []).length) : false;
-  const keys = { sub: ['sub', 'subs'], code: ['code', 'ord', 'origLabel'], loc: ['drawingId', 'x', 'y', 'loc', 'locText', 'locEdited'] };
+  const keys = { sub: ['sub', 'subs'], code: ['code', 'ord', 'origLabel'], loc: ['drawingId', 'pf', 'x', 'y', 'loc', 'locText', 'locEdited'] };
   let changed = false; const fm = { ...(ex.fm || {}) };
   for (const g of Object.keys(FG)) {
     if (sigOf(ex, g) === sigOf(inc, g)) continue;
@@ -1494,6 +1508,7 @@ async function importBackup(file) {
       if (!it.dev) it.dev = data.dev || 'X';
       it.round = rmap[it.round || 'r1'] || (rmap[it.round || 'r1'] = importRound({ id: it.round }, from));
       if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
+      toFrame(it);
       const ex = S.items.find(x => x.id === it.id);
       const conv = async p => { // a photo of the incoming copy, with its image read from the backup
         let orig = typeof p.orig === 'string' && p.orig.startsWith('data:') ? await dataURLToBlob(p.orig) : zip && typeof p.orig === 'string' && zip.file(p.orig) ? await zip.file(p.orig).async('blob') : null;
@@ -1925,7 +1940,7 @@ async function ghostCam(it) {
 const asciiJSON = o => JSON.stringify(o).replace(/[\u007f-￿]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
 function photoMeta(it, ph, i, after, full) {
   const d = S.drawings.find(x => x.id === it.drawingId) || {}; const L = it.loc || {};
-  const m = { a: 'HI1', i: it.id, dv: devOf(it), n: it.no, c: it.code || '', r: roundOf(it), rn: roundName(roundOf(it)), g: it.drawingId, dn: d.no || '', v: L.viewId || '', x: it.x, y: it.y,
+  const m = { a: 'HI1', i: it.id, dv: devOf(it), n: it.no, c: it.code || '', r: roundOf(it), rn: roundName(roundOf(it)), g: it.drawingId, dn: d.no || '', v: L.viewId || '', x: it.x, y: it.y, pf: it.pf,
     tw: L.tower || '', f: L.floor || '', fl: L.flat || '', rm: L.room || '', ar: L.area || '', gr: L.grid || '', lt: it.locText || '', b: it.by || '', t: it.created, p: ph.id, pi: i, pt: ph.t, w: ph.w, h: ph.h, k: after ? 'a' : 'b' };
   if (full) Object.assign(m, { note: it.note || '', st: fixStatus(it), rp: (it.fix && it.fix.reply) || '', sh: ph.shapes || [] });
   return m;
@@ -1991,9 +2006,9 @@ async function restoreFromPhotos(files) {
     if (!d) { bad.push((f.name || '') + '（圖紙不存在）'); continue; }
     let it = S.items.find(x => x.id === m.i);
     if (!it) {
-      const L = resolveLoc(d, m.x, m.y);
+      const P = framePt(d, m.x, m.y, m.pf); const L = resolveLoc(d, P.x, P.y);
       Object.assign(L, { viewId: m.v || L.viewId, tower: m.tw, floor: m.f, flat: m.fl, room: m.rm, area: m.ar, grid: m.gr || L.grid });
-      it = { id: m.i, dev: m.dv, by: m.b, no: m.n, drawingId: d.id, x: m.x, y: m.y, loc: L, locText: m.lt || fmtLoc(L), locEdited: !!m.lt, photos: [], note: m.note || '', created: m.t || Date.now(), mod: Date.now(), round: importRound({ id: m.r, name: m.rn, set: setOf(d) }, { dev: m.dv, owner: m.b || m.dv }), restored: true };
+      it = { id: m.i, dev: m.dv, by: m.b, no: m.n, drawingId: d.id, pf: P.pf, x: P.x, y: P.y, loc: L, locText: m.lt || fmtLoc(L), locEdited: !!m.lt, photos: [], note: m.note || '', created: m.t || Date.now(), mod: Date.now(), round: importRound({ id: m.r, name: m.rn, set: setOf(d) }, { dev: m.dv, owner: m.b || m.dv }), restored: true };
       if (m.c) it.code = m.c;
       if (m.st && m.st !== 'open') it.fix = { status: m.st, reply: m.rp || '', photos: [] };
       S.items.push(it); add++;
@@ -2159,6 +2174,7 @@ async function loadBundle(k = 'gbp') {
     const ex = S.drawings.find(d => d.id === pd.id);
     const rec = { ...pd, src: 'bundle', kind: 'pdf', fileId: man.fileId, created: (k === 'gbp' ? 0 : 1000) + pd.order, ...(k === 'gbp' ? {} : { set: k }) };
     if (ex && ex.base && ex.w === pd.w && fileInDb && fileInDb.sha === man.sha) { rec.base = ex.base; rec.thumb = ex.thumb; }
+    if (ex && (ex.w !== pd.w || ex.h !== pd.h) && S.views[pd.id]) { delete S.views[pd.id]; await DB.kset('views', S.views); }
     await DB.put('drawings', rec);
     const i = S.drawings.findIndex(d => d.id === rec.id); if (i >= 0) S.drawings[i] = rec; else S.drawings.push(rec);
   }
@@ -2186,6 +2202,7 @@ async function boot() {
     try { await loadBundle(); } catch (e) { busy(); toast(e.message + '，請連網後重新開啟', 6000); }
     // other sets refresh only once they have been downloaded
     for (const x of SETS) if (x.id !== 'gbp' && (x.id === curSet() || S.drawings.some(d => setOf(d) === x.id && d.src === 'bundle'))) try { await loadBundle(x.id); } catch (e) { busy(); toast(e.message + '，請連網後重新開啟', 6000); }
+    for (const it of S.items) if (toFrame(it)) await saveItem(it, true);
     const cur = await DB.kget('cur');
     await showDrawing(setDrawings().some(d => d.id === cur) ? cur : setDrawings()[0]?.id || null);
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { });
