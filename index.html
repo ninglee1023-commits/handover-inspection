@@ -115,6 +115,7 @@ label.f textarea{resize:vertical;min-height:62px}
 details summary{font-size:13px;color:var(--muted);cursor:pointer;padding:4px 0}
 details[open]{display:flex;flex-direction:column;gap:8px}
 #btnFloor b{font-family:var(--mono)}
+#btnSub.on{background:#1f6f9c;color:#fff;border-color:#1f6f9c}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:3px 9px}
 .chip b{font-weight:600}
@@ -166,15 +167,6 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 .pvbtns{display:flex;gap:8px}
 .pvpages{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:16px max(12px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 24px) max(12px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;align-items:center;gap:14px;touch-action:pan-x pan-y}
 .pvpages img{width:100%;max-width:1100px;height:auto;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.35)}
-#mFix[aria-pressed="true"]{background:#3fa66a;color:#fff}
-#ghost{position:fixed;inset:0;z-index:65;background:#000;touch-action:none}
-#ghost video,#ghost img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
-#ghost img{pointer-events:none}
-#ghost .gtop{position:absolute;left:0;right:0;top:0;padding:calc(env(safe-area-inset-top,0px) + 10px) max(14px,env(safe-area-inset-right,0px)) 10px max(14px,env(safe-area-inset-left,0px));display:flex;justify-content:space-between;align-items:center;gap:12px;color:#fff;background:linear-gradient(rgba(0,0,0,.6),transparent);font-size:14px}
-#ghost .gbot{position:absolute;left:0;right:0;bottom:0;padding:14px max(18px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 18px) max(18px,env(safe-area-inset-left,0px));display:flex;justify-content:space-between;align-items:center;gap:12px;color:#fff;background:linear-gradient(transparent,rgba(0,0,0,.65))}
-#ghost button{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:10px;min-height:44px;padding:8px 14px;touch-action:manipulation}
-#ghost .gshut{width:76px;height:76px;border-radius:50%;border:5px solid #fff;background:rgba(255,255,255,.25);padding:0}
-#ghost .gsl{display:flex;flex-direction:column;font-size:13px;gap:4px;min-width:140px}
 #toast{position:fixed;z-index:60;pointer-events:none;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 80px);background:var(--fg);color:var(--surface);padding:10px 16px;border-radius:10px;font-size:14px;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:90vw}
 #busy{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.45);display:grid;place-items:center;color:#fff;font-size:16px}
 #busy div{background:var(--board);padding:18px 22px;border-radius:12px}
@@ -202,6 +194,7 @@ details[open]{display:flex;flex-direction:column;gap:8px}
   </div>
   <button class="tb" id="btnRound" title="驗收批次">第1次</button>
   <button class="tb" id="btnFloor" hidden>樓層</button>
+  <button class="tb" id="btnSub" hidden>分判</button>
   <button class="tb" id="btnItems">記錄<span class="n" id="cnt">0</span></button>
   <button class="tb" id="btnExport">導出</button>
 </header>
@@ -252,7 +245,6 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 
 <input type="file" id="camInput" class="vh" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
 <input type="file" id="fixCam" class="vh" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
-<input type="file" id="fixLib" class="vh" accept="image/*" tabindex="-1" aria-hidden="true">
 <input type="file" id="photoRestore" class="vh" accept="image/*" multiple tabindex="-1" aria-hidden="true">
 <input type="file" id="libInput" class="vh" accept="image/*" tabindex="-1" aria-hidden="true">
 <input type="file" id="dwgInput" class="vh" accept="application/pdf,image/*" tabindex="-1" aria-hidden="true">

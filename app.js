@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.9.0';
+const VERSION = '0.9.3';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -74,7 +74,7 @@ const S = {
   project: { name: '', site: '', date: today(), inspector: '', company: '' },
   settings: { autoCam: true, showZones: true, crop: 'm', keyPlan: true },
   floorSel: {}, recentAreas: [], views: {}, rots: {}, repSub: '',
-  drawings: [], items: [], rounds: [], fixOnlyOpen: false, fixItem: null, cur: null, mode: 'inspect', tool: 'select',
+  drawings: [], items: [], rounds: [], fixItem: null, cur: null, mode: 'inspect', tool: 'select',
   view: { x: 0, y: 0, k: 1 }, editing: null, draft: null, sel: null, panel: null, listScope: 'cur',
 };
 const imgCache = new Map(); // drawingId -> {url, img}
@@ -119,6 +119,8 @@ async function refreshPhotos(it) {
 const FG = { note: it => it.note || '', sub: it => subText(it), code: it => [it.code, it.ord, it.origLabel],
   loc: it => [it.drawingId, it.x, it.y, it.loc, it.locText, it.locEdited], round: it => it.round || '',
   fix: it => it.fix ? [it.fix.status, it.fix.reply || '', it.fix.done || 0, it.fix.by || '', (it.fix.photos || []).map(p => [p.id, p.shapes])] : null };
+// the record fields each group stands for (a group not listed is the field of the same name)
+const FG_KEYS = { sub: ['sub', 'subs'], code: ['code', 'ord', 'origLabel'], loc: ['drawingId', 'pf', 'x', 'y', 'loc', 'locText', 'locEdited'] };
 const sigOf = (it, g) => { const t = JSON.stringify(FG[g](it)) || ''; let h = 5381; for (let i = 0; i < t.length; i++) h = (h * 33 + t.charCodeAt(i)) | 0; return h.toString(36) + t.length; };
 const sigsOf = it => Object.fromEntries(Object.keys(FG).map(g => [g, sigOf(it, g)]));
 function stampEdits(it) {
@@ -402,12 +404,10 @@ function renderOverlay() {
     if (S.draft.type === 'poly' && S.draft.pts.length) { h += `<polyline points="${S.draft.pts.map(p => p.join(',')).join(' ')}" fill="rgba(242,194,48,.25)" stroke="#b8860b" stroke-width="2" vector-effect="non-scaling-stroke"/>`; S.draft.pts.forEach(q => h += `<circle cx="${q[0]}" cy="${q[1]}" r="${5 * u}" fill="#b8860b"/>`); }
   }
   if (!map) {
-    const fixm = S.mode === 'fix';
-    let items = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i));
-    if (fixm && S.fixOnlyOpen) items = items.filter(i => fixStatus(i) === 'open' || (S.fixItem && S.fixItem.id === i.id));
-    const all = !fixm && S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
+    const items = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i) && subOk(i));
+    const all = S.editing && S.editing.drawingId === d.id && !items.find(i => i.id === S.editing.id) ? [...items, S.editing] : items;
     for (const it of all) {
-      const act = fixm ? !!(S.fixItem && S.fixItem.id === it.id) : !!(S.editing && S.editing.id === it.id); const r = (act ? 17 : 14) * u;
+      const act = !!(S.editing && S.editing.id === it.id); const r = (act ? 17 : 14) * u;
       // green = 已回復, grey = 不跟進; open records: blue once a 分判 is set, red otherwise
       const st = fixStatus(it), pf = st === 'done' ? '#2f7d4f' : st === 'na' ? '#8a9391' : subsOf(it).length ? '#1f6f9c' : '#d42a1e';
       h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="${pf}" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devShort(it) + it.no}</text>`;
@@ -432,6 +432,8 @@ function updateBar() {
   document.querySelectorAll('#setSeg [data-set]').forEach(b => b.setAttribute('aria-pressed', b.dataset.set === curSet()));
   const ub = unbacked(); $('#btnExport').innerHTML = '導出' + (ub ? `<span class="n" title="未備份">${ub}</span>` : '');
   $('#mInspect').setAttribute('aria-pressed', S.mode === 'inspect'); $('#mMap').setAttribute('aria-pressed', S.mode === 'map');
+  const sf = subFilter(); $('#btnSub').hidden = S.mode === 'map' || (!sf && !roundItems().some(i => subsOf(i).length));
+  $('#btnSub').classList.toggle('on', !!sf); $('#btnSub').innerHTML = sf ? `分判 <b>${esc(subFilterName())}</b>` : '分判';
   const mv = multiFloorViews(d);
   $('#btnFloor').hidden = !mv.length || S.mode === 'map';
   if (mv.length) $('#btnFloor').innerHTML = `樓層 <b>${esc(mv.map(v => floorFor(v)).filter((f, i, a) => a.indexOf(f) === i).join('/'))}</b>`;
@@ -446,7 +448,7 @@ function updateBar() {
   $('#empty').hidden = !!d; $('#zoombtns').hidden = !d;
   const hints = { select: '點選區域或軸線可修改；兩指縮放、拖動', rect: '在圖上拖出矩形，框住單位、房間或區域', poly: '逐點點選邊界，完成後按「完成多邊形」', gx: '在每條縱向軸線上點一下（會自動編號）', gy: '在每條橫向軸線上點一下（會自動編號）' };
   const hint = $('#hint');
-  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : S.mode === 'fix' ? (S.fixItem ? `${itemLabel(S.fixItem)}：${S.fixItem.locText || ''}` : (c => `執修（${roundLabel()}）：未完成 ${c.open}／共 ${c.all}　點選紅點處理`)(fixCounts())) : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : '點選圖上的問題位置 → 拍照');
+  hint.textContent = !d ? '' : S.mode === 'map' ? hints[S.tool] : (S.editing ? `${itemLabel(S.editing)}：${S.editing.locText || '未設定位置'}` : sf ? `只顯示 ${subFilterName()}（${roundItems().filter(subOk).length} 項）　點選圖上的點回復` : '點選圖上的問題位置 → 拍照');
   hint.hidden = !d;
 }
 
@@ -523,13 +525,8 @@ function onTap(cx, cy) {
   const d = curD(); if (!d) return;
   const p = toDwg(cx, cy); const u = 1 / S.view.k;
   if (p.x < 0 || p.y < 0 || p.x > d.w || p.y > d.h) return;
-  if (S.mode === 'fix') {
-    const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && (!S.fixOnlyOpen || fixStatus(i) === 'open')).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
-    if (hit) { fixPanel(hit.i); renderOverlay(); updateBar(); return; }
-    return toast('執修模式：請點選圖上已有的紅點');
-  }
   if (S.mode === 'inspect') {
-    const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i)).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
+    const hit = S.items.filter(i => i.drawingId === d.id && inRound(i) && onFloor(d, i) && subOk(i)).map(i => ({ i, dd: Math.hypot(i.x - p.x, i.y - p.y) })).filter(o => o.dd < 22 * u).sort((a, b) => a.dd - b.dd)[0];
     if (hit) return openItem(hit.i);
     return newItem(p);
   }
@@ -575,7 +572,6 @@ function openPanel(kind, title, body, opts = {}) {
 }
 function closePanel() {
   if (S.panel === 'item') finishItem();
-  if (S.panel === 'fix') S.fixItem = null;
   panel.hidden = true; document.body.classList.remove('pnl'); S.panel = null; S.sel = null; freeURLs(); renderOverlay(); updateBar();
 }
 
@@ -588,9 +584,9 @@ function newItem(p) {
   if (S.settings.autoCam) $('#camInput').click();
 }
 /* office pass: walk through the records in list order without going back to the list */
-function navPos(it) { const L = roundItems().sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length, noSub = L.filter(x => !subsOf(x).length).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項　·　未指定分判 ${noSub} 項`; }
+function navPos(it) { const L = roundItems().filter(subOk).sort(byOrder); const i = L.findIndex(x => x.id === it.id); const left = L.filter(x => !(x.note || '').trim()).length, noSub = L.filter(x => !subsOf(x).length).length; return i < 0 ? '' : `第 ${i + 1}／${L.length} 項　·　未填描述 ${left} 項　·　未指定分判 ${noSub} 項`; }
 function stepItem(it, how) {
-  const L = roundItems().sort(byOrder); const i = L.findIndex(x => x.id === it.id); if (i < 0) return;
+  const L = roundItems().filter(subOk).sort(byOrder); const i = L.findIndex(x => x.id === it.id); if (i < 0) return;
   let nx = null;
   if (how === 'prev') nx = L[i - 1];
   else if (how === 'next') nx = L[i + 1];
@@ -704,7 +700,7 @@ function itemsPanel() {
   freeURLs();
   const d = curD();
   const scoped = (S.listScope === 'cur' && d ? roundItems().filter(i => i.drawingId === d.id) : roundItems());
-  const subF = S.listSub || ''; const nNone = scoped.filter(i => !subsOf(i).length).length;
+  const subF = subFilter(); const nNone = scoped.filter(i => !subsOf(i).length).length;
   const list = scoped.filter(i => !subF || (subF === '-' ? !subsOf(i).length : subsOf(i).includes(subF))).slice().sort(byOrder);
   const subOpts = allSubs().map(x => [x, scoped.filter(i => subsOf(i).includes(x)).length]).filter(([, n]) => n);
   const rows = list.map(it => {
@@ -714,14 +710,13 @@ function itemsPanel() {
   openPanel('items', `${esc(roundLabel())}（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
     <label class="f">分判<select id="lSub"><option value="">全部（${scoped.length}）</option><option value="-" ${subF === '-' ? 'selected' : ''}>未指定分判（${nNone}）</option>${subOpts.map(([x, n]) => `<option value="${esc(x)}" ${subF === x ? 'selected' : ''}>${esc(x)}（${n}）</option>`).join('')}</select></label>
-    <div class="note">圖上：<b style="color:#d42a1e">紅點</b>＝未指定分判，<b style="color:#1f6f9c">藍點</b>＝已指定分判。</div>
+    <div class="note">選了分判之後，圖上亦只顯示該分判的點（頂部「分判」按鈕可隨時改回全部）。圖上：<b style="color:#d42a1e">紅點</b>＝未指定分判，<b style="color:#1f6f9c">藍點</b>＝已指定分判，<b style="color:#2f7d4f">綠點</b>＝已回復。</div>
     <div class="list">${rows || '<div class="note">沒有符合的記錄。</div>'}</div>`);
-  $('#lSub').onchange = e => { S.listSub = e.target.value; itemsPanel(); };
+  $('#lSub').onchange = async e => { await setSubFilter(e.target.value); itemsPanel(); };
   panel.querySelector('.pb').onclick = e => {
     const s = e.target.closest('[data-s]'); if (s) { S.listScope = s.dataset.s; return itemsPanel(); }
     const b = e.target.closest('.li'); if (!b) return;
     const it = S.items.find(i => i.id === b.dataset.id);
-    if (S.mode === 'fix') { const go = () => { fixPanel(it); centerOn(it.x, it.y, Math.max(S.view.k, 1)); renderOverlay(); updateBar(); }; if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(go); else go(); return; }
     if (S.mode !== 'inspect') setMode('inspect');
     S.editing = it; showFloorOf(it);
     if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { itemPanel(); centerOn(it.x, it.y, 1); });
@@ -729,6 +724,15 @@ function itemsPanel() {
   };
 }
 
+async function setSubFilter(f) { S.settings.subFilter = f; await saveKV(); renderOverlay(); updateBar(); }
+function subPanel() {
+  const L = roundItems(), f = subFilter(), n = x => x === '-' ? L.filter(i => !subsOf(i).length).length : L.filter(i => subsOf(i).includes(x)).length;
+  const opts = [['', `全部（${L.length}）`], ...allSubs().filter(x => n(x)).map(x => [x, `${x}（${n(x)}）`]), ['-', `未指定分判（${n('-')}）`]];
+  if (f && !opts.some(([k]) => k === f)) opts.push([f, `${f}（0）`]);
+  openPanel('subf', '只顯示一個分判', `<div class="chips pick">${opts.map(([k, t]) => `<button class="chip ${k === f ? 'on' : ''}" data-f="${esc(k)}">${esc(t)}</button>`).join('')}</div>
+    <div class="note">圖上的點、記錄清單及「上一項／下一項」只包括所選分判，其他點暫時隱藏（不會刪除）。這部機會記住所選分判，分判在自己的 iPad 選一次即可。</div>`);
+  panel.querySelector('.pb').onclick = async e => { const b = e.target.closest('[data-f]'); if (!b) return; await setSubFilter(b.dataset.f); closePanel(); toast(b.dataset.f ? `只顯示 ${subFilterName()}` : '顯示全部分判'); };
+}
 function floorPanel() {
   const d = curD(); const mv = multiFloorViews(d);
   openPanel('floor', '選擇樓層', mv.map(v => `<div class="f-l">${esc(v.title)}</div><div class="chips pick">${v.floors.map(f => `<button class="chip ${f === floorFor(v) ? 'on' : ''}" data-v="${v.id}" data-f="${esc(f)}">${esc(f)}</button>`).join('')}</div>`).join('') + '<div class="note">之後在這張平面圖上點選的位置會用所選樓層；每個記錄仍可個別修改。</div>');
@@ -875,6 +879,7 @@ $('#btnDrawings').onclick = () => S.panel === 'drawings' ? closePanel() : drawin
 $('#btnItems').onclick = () => S.panel === 'items' ? closePanel() : itemsPanel();
 $('#btnExport').onclick = () => S.panel === 'export' ? closePanel() : exportPanel();
 $('#btnFloor').onclick = () => S.panel === 'floor' ? closePanel() : floorPanel();
+$('#btnSub').onclick = () => S.panel === 'subf' ? closePanel() : subPanel();
 $('#btnRound').onclick = () => S.panel === 'round' ? closePanel() : roundPanel();
 $('#setSeg').onclick = e => { const b = e.target.closest('[data-set]'); if (b) switchSet(b.dataset.set); };
 async function switchSet(k) {
@@ -889,7 +894,6 @@ async function switchSet(k) {
   await showDrawing(L.some(d => d.id === want) ? want : L[0]?.id || null);
   renderOverlay(); updateBar(); toast(`已切換到${setName()}圖紙（${roundLabel()}）`);
 }
-$('#fixLib').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
 $('#fixCam').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
 $('#photoRestore').onchange = e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) restoreFromPhotos(fs); };
 $('#zIn').onclick = () => zoomAt(1.6); $('#zOut').onclick = () => zoomAt(1 / 1.6); $('#zFit').onclick = () => fit();
@@ -995,6 +999,8 @@ function exportPanel() {
     <div class="row"><button class="btn ${ub ? 'p' : ''}" data-a="bknew">備份新增記錄</button><button class="btn" data-a="repair">檢查及修復相片</button><button class="btn" data-a="album">存入相簿（${ua}）</button></div>
     <button class="btn" data-a="bk">完整備份（全部 ${S.items.length} 項）</button>
     <div class="row"><label class="f" style="flex:2 1 0;min-width:0">按驗收批次備份（整次驗收一個檔案）<select id="bkRound">${S.rounds.filter(r => S.items.some(i => roundOf(i) === r.id)).map(r => { const n = S.items.filter(i => roundOf(i) === r.id).length, t = (S.settings.roundBackup || {})[r.id]; return `<option value="${r.id}" ${r.id === curRound().id ? 'selected' : ''}>${esc(setName(setOfRound(r)) + ' ' + r.name)}（${n} 項）${t ? '　已備份 ' + fmtTime(t) : ''}</option>`; }).join('') || '<option value="">還沒有任何記錄</option>'}</select></label><button class="btn" data-a="bkround" style="align-self:flex-end">備份此批次</button></div>
+    <button class="btn" data-a="bkreply">導出此批次的回復包（只含已回復項目）</button>
+    <div class="note">分判用：匯入你發出的批次備份，按頂部「分判」只顯示自己的點，逐點按「回復」拍完成照後，導出回復包發回。回復包只有回復內容及完成照，不含完成前照片，檔案細很多；匯入後按記錄自動對回原本的項目。</div>
     <div class="note">備份檔是 ZIP，可用分享選單存到「檔案」、iCloud Drive、Google Drive 或 WhatsApp。ZIP 內的「相片」資料夾在電腦上可直接開啟，每張相底部印有編號、位置、時間及檢查人員。</div>
     <div class="sec">報告（${esc(roundLabel())}，${roundItems().length} 項）</div>
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
@@ -1045,6 +1051,7 @@ function exportPanel() {
     if (a === 'bk') exportBackup(false);
     if (a === 'bknew') exportBackup(true);
     if (a === 'bkround') { const id = $('#bkRound').value; if (!id) return toast('還沒有任何記錄'); exportBackup(false, id); }
+    if (a === 'bkreply') { const id = $('#bkRound').value; if (!id) return toast('還沒有任何記錄'); exportBackup(false, id, true); }
     if (a === 'repair') repairPhotos();
     if (a === 'album') albumPanel();
     if (a === 'setup') setupPanel();
@@ -1278,6 +1285,10 @@ const subText = it => subsOf(it).join('、');
 const allSubs = () => [...new Set([...SUBS, ...(S.settings.customSubs || []), ...S.items.flatMap(subsOf)])];
 // report scope: device and/or subcontractor ('-' = records without one)
 const inScope = (i, od) => (!od || devOf(i) === od) && (!S.repSub || (S.repSub === '-' ? !subsOf(i).length : subsOf(i).includes(S.repSub)));
+// 分判 filter of this device: pins on the plan, the record list and stepping through records show only that 分判's
+const subFilter = () => S.settings.subFilter || '';
+const subOk = i => { const f = subFilter(); return !f || (f === '-' ? !subsOf(i).length : subsOf(i).includes(f)); };
+const subFilterName = () => subFilter() === '-' ? '未指定分判' : subFilter();
 const itemLabel = it => it.code || `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
 const byOrder = (a, b) => (a.ord ?? 1e9) - (b.ord ?? 1e9) || devOf(a).localeCompare(devOf(b)) || a.no - b.no;
 // pins have little room: number only, or floor + number where one plan stands for several floors
@@ -1421,17 +1432,19 @@ async function repairPhotos() {
 function reportFails(fails) {
   openPanel('fails', '報告已生成，但部分圖片有問題', `<div class="note">以下 ${fails.length} 處在報告內以紅字標示。請截圖這個畫面給我，方便查找原因。</div><div class="list">${fails.map(f => `<div class="li" style="display:block">${esc(f)}</div>`).join('')}</div>`);
 }
-async function exportBackup(onlyNew, roundId) {
+/* reply = 回復包: only the records of the round that carry a reply, without their before-photos,
+   so a subcontractor's answer is small enough to send back over WhatsApp */
+async function exportBackup(onlyNew, roundId, reply) {
   if (!window.JSZip) return toast('備份元件未載入，請連網後重新開啟');
   try {
     const rd = roundId && S.rounds.find(r => r.id === roundId);
-    const items = S.items.filter(i => rd ? roundOf(i) === rd.id : !onlyNew || (i.mod || i.created || 0) > backedAt(i)).sort(byOrder);
-    if (!items.length) return toast(rd ? '這個批次沒有記錄' : '沒有新的記錄需要備份');
+    const items = S.items.filter(i => rd ? roundOf(i) === rd.id : !onlyNew || (i.mod || i.created || 0) > backedAt(i)).filter(i => !reply || hasReply(i)).sort(byOrder);
+    if (!items.length) return toast(reply ? '這個批次還沒有任何回復' : rd ? '這個批次沒有記錄' : '沒有新的記錄需要備份');
     busy('正在打包…'); const zip = new JSZip(); const out = [];
-    let n = 0, tot = items.reduce((s, i) => s + i.photos.length + ((i.fix && i.fix.photos) || []).length, 0);
+    let n = 0, tot = items.reduce((s, i) => s + (reply ? 0 : i.photos.length) + ((i.fix && i.fix.photos) || []).length, 0);
     for (const it of items) {
       const photos = [];
-      for (const [i, p] of it.photos.entries()) {
+      if (!reply) for (const [i, p] of it.photos.entries()) {
         busy(`正在打包相片 ${++n}／${tot}`);
         const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' });
         zip.file(`相片/${photoName(it, i)}`, await captioned(it, p, i), { compression: 'STORE' });
@@ -1439,31 +1452,33 @@ async function exportBackup(onlyNew, roundId) {
       }
       let fix = it.fix;
       if (fix && fix.photos && fix.photos.length) { const fp = [];
-        for (const [i, p] of fix.photos.entries()) { busy(`正在打包相片 ${++n}／${tot}`); const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' }); zip.file(`相片/${photoName(it, i, true)}`, await captioned(it, p, i, true), { compression: 'STORE' }); const { orig, out: _o, ...meta } = p; fp.push({ ...meta, orig: o }); }
+        for (const [i, p] of fix.photos.entries()) { busy(`正在打包相片 ${++n}／${tot}`); const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' }); if (!reply) zip.file(`相片/${photoName(it, i, true)}`, await captioned(it, p, i, true), { compression: 'STORE' }); const { orig, out: _o, ...meta } = p; fp.push({ ...meta, orig: o }); }
         fix = { ...fix, photos: fp }; }
       out.push({ ...it, photos, fix });
     }
     const drawings = S.drawings.filter(d => d.src !== 'bundle' || true).map(d => ({ id: d.id, src: d.src, views: d.src === 'user' ? d.views : undefined }));
-    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, devId: S.settings.devId, inspector: S.settings.inspector, onlyNew: !!onlyNew, round: rd ? rd.id : undefined, project: S.project, rounds: rd ? [rd] : S.rounds, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
+    zip.file('data.json', JSON.stringify({ app: 'handover-inspect', format: 2, version: VERSION, exported: new Date().toISOString(), dev: S.settings.dev, devId: S.settings.devId, inspector: S.settings.inspector, onlyNew: !!onlyNew, reply: !!reply, round: rd ? rd.id : undefined, project: S.project, rounds: rd ? [rd] : S.rounds, items: out, mapping: S.drawings.filter(d => d.src === 'bundle').map(d => ({ id: d.id, views: d.views })) }));
     busy('正在壓縮…');
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
     busy();
     const stamp = fmtTime().replace(/[-: ]/g, '').slice(0, 12);
     const tag = rd ? `${setName(setOfRound(rd))}_${rd.name}`.replace(/[\\/:*?"<>|\s]+/g, '') : onlyNew ? '新增' : '完整';
-    await deliver(blob, `驗收備份_${S.settings.dev || 'A'}_${tag}_${stamp}.zip`);
+    await deliver(blob, `${reply ? '回復包' : '驗收備份'}_${S.settings.dev || 'A'}_${tag}_${stamp}.zip`);
+    if (reply) return toast(`回復包已導出：${items.length} 項回復`, 3500);
     if (rd) S.settings.roundBackup = { ...S.settings.roundBackup, [rd.id]: Date.now() }; else S.settings.lastBackup = Date.now();
     await saveKV(); updateBar(); if (S.panel === 'export') exportPanel();
   } catch (err) { busy(); toast('備份失敗：' + err.message, 6000); }
 }
 /* merge an incoming copy of a record into the local one, field group by field group:
    the side edited later wins; an empty value from a copy without edit times never clears a filled one;
-   photos are combined (a lost local photo is replaced by the incoming one) */
-async function mergeRecord(ex, inc, conv) {
+   photos are combined (a lost local photo is replaced by the incoming one);
+   with ask, a copy that carries a reply (分判回復) has only its reply merged straight away:
+   any other change it would make (描述, 分判, 編號, 位置) is put in ask for the user to confirm */
+async function mergeRecord(ex, inc, conv, ask) {
   const tm = r => r.mod || r.created || 0, incNewer = tm(inc) > tm(ex);
   const empty = (r, g) => g === 'note' ? !(r.note || '').trim() : g === 'sub' ? !subsOf(r).length : g === 'code' ? !r.code
-    : g === 'fix' ? !r.fix || ((r.fix.status || 'open') === 'open' && !r.fix.reply && !(r.fix.photos || []).length) : false;
-  const keys = { sub: ['sub', 'subs'], code: ['code', 'ord', 'origLabel'], loc: ['drawingId', 'pf', 'x', 'y', 'loc', 'locText', 'locEdited'] };
-  let changed = false; const fm = { ...(ex.fm || {}) };
+    : g === 'fix' ? !hasReply(r) : false;
+  const keys = FG_KEYS; let changed = false; const fm = { ...(ex.fm || {}) };
   for (const g of Object.keys(FG)) {
     if (sigOf(ex, g) === sigOf(inc, g)) continue;
     const fe = ex.fm && ex.fm[g], fi = inc.fm && inc.fm[g];
@@ -1472,6 +1487,7 @@ async function mergeRecord(ex, inc, conv) {
     else if (empty(ex, g) && !empty(inc, g) && !fe) take = true;
     else take = (fi || tm(inc)) > (fe || tm(ex));
     if (!take) continue;
+    if (ask && g !== 'fix' && g !== 'round' && hasReply(inc)) { ask.push({ ex, inc, g }); continue; }
     if (g === 'fix') { const lp = (ex.fix && ex.fix.photos) || []; ex.fix = { ...inc.fix, photos: lp }; }
     else for (const k of keys[g] || [g]) ex[k] = inc[k];
     if (fi) fm[g] = fi; changed = true;
@@ -1501,15 +1517,18 @@ async function importBackup(file) {
     if (data.app !== 'handover-inspect') throw new Error('不是本程式的備份檔');
     if (data.project && !S.project.name) S.project = { ...S.project, ...data.project };
     const from = { devId: data.devId, dev: data.dev, owner: data.inspector || data.dev };
-    const rmap = {}; for (const r of data.rounds || []) rmap[r.id] = importRound(r, from);
-    let add = 0, upd = 0, skip = 0, i = 0;
+    // rounds are only made for records that land in them, so a 回復包 never leaves an empty round behind
+    const rsrc = {}, rmap = {}; for (const r of data.rounds || []) rsrc[r.id] = r;
+    const rnd = id => rmap[id] || (rmap[id] = importRound(rsrc[id] || { id }, from));
+    let add = 0, upd = 0, skip = 0, miss = 0, i = 0; const ask = [];
     for (const it of data.items || []) {
       busy(`正在匯入記錄 ${++i}／${data.items.length}`);
-      if (!it.dev) it.dev = data.dev || 'X';
-      it.round = rmap[it.round || 'r1'] || (rmap[it.round || 'r1'] = importRound({ id: it.round }, from));
-      if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
       toFrame(it);
       const ex = S.items.find(x => x.id === it.id);
+      if (!ex && data.reply) { miss++; continue; } // a reply without the record it answers
+      if (!it.dev) it.dev = data.dev || 'X';
+      it.round = rnd(it.round || 'r1');
+      if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
       const conv = async p => { // a photo of the incoming copy, with its image read from the backup
         let orig = typeof p.orig === 'string' && p.orig.startsWith('data:') ? await dataURLToBlob(p.orig) : zip && typeof p.orig === 'string' && zip.file(p.orig) ? await zip.file(p.orig).async('blob') : null;
         if (!orig) return null; orig = new Blob([orig], { type: 'image/jpeg' });
@@ -1521,11 +1540,39 @@ async function importBackup(file) {
         let fix = it.fix; if (fix && fix.photos) fix = { ...fix, photos: (await Promise.all(fix.photos.map(conv))).filter(Boolean) };
         const rec = { ...it, photos, fix }; await saveItem(rec, true); S.items.push(rec); add++; continue;
       }
-      if (await mergeRecord(ex, it, conv)) { await saveItem(ex, true); upd++; } else skip++;
+      const na = ask.length;
+      if (await mergeRecord(ex, it, conv, ask)) { await saveItem(ex, true); upd++; } else if (ask.length === na) skip++;
     }
-    await saveKV(); await saveRounds(); busy(); toast(`匯入完成：新增 ${add}、更新 ${upd}、略過 ${skip}`, 4000);
+    await saveKV(); await saveRounds(); busy();
+    toast(`匯入完成：${data.reply ? '' : `新增 ${add}、`}更新 ${upd}、略過 ${skip}${miss ? `；${miss} 項回復找不到原記錄` : ''}${ask.length ? `；${ask.length} 項修改待確認` : ''}`, miss ? 6000 : 4000);
     await showDrawing(S.cur || S.drawings[0]?.id); closePanel();
+    if (ask.length) askPanel(ask, data.inspector || data.dev || '對方');
   } catch (err) { busy(); toast('匯入失敗：' + err.message, 6000); console.error(err); }
+}
+/* a reply also changed the record itself: show mine against theirs, untouched (keep mine) by default */
+const AG = { note: '描述', sub: '分判', code: '編號', loc: '位置' };
+const agText = (r, g) => g === 'note' ? r.note || '（空白）' : g === 'sub' ? subText(r) || '（未指定）' : g === 'code' ? itemLabel(r) : r.locText || fmtLoc(r.loc || {}) || '（無位置）';
+function askPanel(ask, who) {
+  const rows = ask.map(({ ex, inc, g }, k) => `<label class="toggle" style="align-items:flex-start;padding:8px 0;border-bottom:1px solid #e3e6e5"><span><b>${esc(itemLabel(ex))}　${AG[g]}</b><br>我的：${esc(agText(ex, g))}<br>${esc(who)}：<b>${esc(agText(inc, g))}</b>${g === 'loc' && (ex.x !== inc.x || ex.y !== inc.y) ? '（圖上的點已移動）' : ''}</span><input type="checkbox" data-k="${k}"></label>`).join('');
+  openPanel('ask', '確認回復以外的修改', `
+    <div class="note">以下 ${ask.length} 項是回復記錄，回復內容及完成照已經匯入。但 <b>${esc(who)}</b> 同時改了記錄本身。勾選要接受的修改；沒有勾選的保留你的版本。</div>
+    <div class="list">${rows}</div>
+    <div class="row"><button class="btn p" data-a="take">接受勾選的修改</button><button class="btn" data-a="all">全部保留我的</button></div>`);
+  const keys = FG_KEYS;
+  panel.querySelector('.pb').onclick = async e => {
+    const a = e.target.dataset.a; if (a !== 'take' && a !== 'all') return;
+    const on = new Set(a === 'take' ? [...panel.querySelectorAll('[data-k]:checked')].map(x => +x.dataset.k) : []);
+    const now = Date.now(), done = new Set();
+    for (const [k, { ex, inc, g }] of ask.entries()) {
+      ex.fm = ex.fm || {};
+      // taking theirs keeps their edit time; keeping mine stamps it now, so the same copy is not asked about again
+      if (on.has(k)) { for (const f of keys[g] || [g]) ex[f] = inc[f]; ex.fm[g] = (inc.fm && inc.fm[g]) || inc.mod || now; }
+      else ex.fm[g] = now;
+      ex.mod = Math.max(ex.mod || 0, ex.fm[g]); done.add(ex);
+    }
+    for (const ex of done) await saveItem(ex, true);
+    closePanel(); renderOverlay(); updateBar(); toast(on.size ? `已接受 ${on.size} 項修改` : '已保留你的版本');
+  };
 }
 $('#jsonInput').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) importBackup(f); };
 
@@ -1865,76 +1912,17 @@ function importRound(r, from) {
 const FIX_ST = { open: '未回復', done: '已完成', na: '不跟進' };
 const fixOf = it => it.fix || (it.fix = { status: 'open', reply: '', photos: [] });
 const fixStatus = it => (it.fix && it.fix.status) || 'open';
-function fixCounts() { const L = roundItems(); return { all: L.length, open: L.filter(i => fixStatus(i) === 'open').length, done: L.filter(i => fixStatus(i) === 'done').length }; }
+const hasReply = it => !!it.fix && (fixStatus(it) !== 'open' || !!(it.fix.reply || '').trim() || !!(it.fix.photos || []).length);
 async function persistFix(it) { it.mod = Date.now(); await saveItem(it); updateBar(); }
-function fixPanel(it) {
-  freeURLs(); S.fixItem = it; const F = fixOf(it); const d = S.drawings.find(x => x.id === it.drawingId); const v = d ? viewById(d, it.loc.viewId) : null;
-  const before = it.photos.map(ph => `<div class="ph1"><img src="${burl(ph.out)}" alt=""></div>`).join('') || '<div class="note">沒有完成前照片</div>';
-  const after = F.photos.map((ph, i) => `<div class="ph1"><img src="${burl(ph.out)}" data-a="ed" data-i="${i}" alt="完成後 ${i + 1}"><button class="del" data-a="delph" data-i="${i}" aria-label="刪除照片">✕</button><span class="ed">點擊修改標記</span></div>`).join('');
-  openPanel('fix', esc(v ? v.title : (d ? d.name : '')), `
-    <div class="idx">${esc(it.locText || '')}</div>
-    ${it.note ? `<div class="note"><b>問題：</b>${esc(it.note)}</div>` : ''}
-    <div class="f-l">完成前</div><div class="photos">${before}</div>
-    <div class="f-l">完成後</div>${after ? `<div class="photos">${after}</div>` : ''}
-    <div class="row"><button class="btn p" data-a="ghost">拍完成照（對位拍攝）</button></div>
-    <div class="row"><label class="btn" for="fixCam">系統相機</label><label class="btn" for="fixLib">從相簿加入</label></div>
-    <div class="f-l">狀態</div>
-    <div class="chips pick">${Object.entries(FIX_ST).map(([k, t]) => `<button class="chip ${F.status === k ? 'on' : ''}" data-st="${k}">${t}</button>`).join('')}</div>
-    <label class="f">回覆（可留空）<textarea id="fxReply" rows="2" placeholder="例如：已更換門鉸">${esc(F.reply || '')}</textarea></label>
-    ${F.done && F.status === 'done' ? `<div class="note">完成日期：${fmtTime(F.done).slice(0, 10)}${F.by ? '　' + esc(F.by) : ''}</div>` : ''}
-    <div class="row"><button class="btn dk" data-a="close2">完成</button></div>`, { badge: `<span class="no" style="background:${F.status === 'done' ? 'var(--ok)' : F.status === 'na' ? '#8a9391' : 'var(--red)'}">${itemLabel(it)}</span>` });
-  const q = s => panel.querySelector(s);
-  q('#fxReply').oninput = e => { F.reply = e.target.value; clearTimeout(persistT); persistT = setTimeout(() => persistFix(it), 400); };
-  panel.querySelector('.pb').onclick = async e => {
-    const st = e.target.closest('[data-st]');
-    if (st) { F.status = st.dataset.st; if (F.status === 'done' && !F.done) { F.done = Date.now(); F.by = S.settings.inspector || ''; } if (F.status !== 'done') F.done = null; await persistFix(it); renderOverlay(); return fixPanel(it); }
-    const a = e.target.dataset.a; if (!a) return;
-    if (a === 'close2') closePanel();
-    if (a === 'ghost') ghostCam(it);
-    if (a === 'ed') { const i = +e.target.dataset.i; const ph = F.photos[i]; if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistFix(it); fixPanel(it); } }
-    if (a === 'delph') { if (e.target.dataset.armed) { F.photos.splice(+e.target.dataset.i, 1); await persistFix(it); fixPanel(it); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
-  };
-}
 async function addFixPhoto(file) {
   const it = S.fixItem || S.editing; if (!file || !it) return;
   S.replyShot = true; let r; try { r = await openEditor(file, null); } finally { S.replyShot = false; } if (!r) return;
   const F = fixOf(it); F.photos.push(r);
   if (F.status !== 'done' && F.status !== 'na') { F.status = 'done'; F.done = Date.now(); F.by = S.settings.inspector || ''; }
   if (it._new) await persistItem(true); else await persistFix(it);
-  renderOverlay(); if (S.panel === 'fix') fixPanel(it); else if (S.panel === 'item' && S.editing === it) itemPanel();
-  if (S.panel !== 'fix') S.fixItem = null; toast(`${itemLabel(it)} 已加入回復照片`, 2500);
+  renderOverlay(); if (S.panel === 'item' && S.editing === it) itemPanel();
+  S.fixItem = null; toast(`${itemLabel(it)} 已加入回復照片`, 2500);
 }
-/* alignment camera: live camera with the before-photo laid over it, so the after-photo is taken from the same spot */
-async function ghostCam(it) {
-  const before = it.photos[0];
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('這部機不支援對位拍攝，請按「系統相機」', 4000); return; }
-  let stream;
-  try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false }); }
-  catch (e) { toast('未能開啟相機（' + (e.name === 'NotAllowedError' ? '未獲相機權限' : e.message) + '），請按「系統相機」', 5000); return; }
-  const g = document.createElement('div'); g.id = 'ghost';
-  g.innerHTML = `<video playsinline autoplay muted></video>${before ? `<img alt="" src="${burl(before.out)}">` : ''}
-    <div class="gtop"><span>${esc(itemLabel(it))}　${esc(it.locText || '')}</span><button data-g="cancel">取消</button></div>
-    <div class="gbot">${before ? '<label class="gsl">完成前照片<input type="range" min="0" max="85" value="40" data-g="op"></label>' : '<span></span>'}
-    <button class="gshut" data-g="shot" aria-label="拍攝"></button>${before ? '<button data-g="peek">按住看完成前</button>' : '<span></span>'}</div>`;
-  document.body.appendChild(g);
-  const vid = g.querySelector('video'), ghost = g.querySelector('img'); vid.srcObject = stream;
-  try { await vid.play(); } catch (e) { }
-  if (ghost) ghost.style.opacity = 0.4;
-  const stop = () => { stream.getTracks().forEach(t => t.stop()); g.remove(); };
-  g.addEventListener('input', e => { if (e.target.dataset.g === 'op' && ghost) ghost.style.opacity = e.target.value / 100; });
-  const peek = g.querySelector('[data-g="peek"]');
-  if (peek) { peek.onpointerdown = () => ghost.style.opacity = 1; peek.onpointerup = peek.onpointerleave = () => ghost.style.opacity = g.querySelector('[data-g="op"]').value / 100; }
-  g.addEventListener('click', async e => {
-    const a = e.target.dataset.g;
-    if (a === 'cancel') stop();
-    if (a === 'shot') {
-      if (!vid.videoWidth) return toast('相機未就緒');
-      const c = document.createElement('canvas'); c.width = vid.videoWidth; c.height = vid.videoHeight; c.getContext('2d').drawImage(vid, 0, 0);
-      const b = await canvasBlob(c, 'image/jpeg', 0.9); stop(); addFixPhoto(b);
-    }
-  });
-}
-
 /* ================= v0.6: coordinates carried inside each saved photo ================= */
 // ASCII-only JSON so it survives EXIF (ASCII) and QR byte mode on every platform
 const asciiJSON = o => JSON.stringify(o).replace(/[\u007f-￿]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
