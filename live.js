@@ -115,14 +115,18 @@ async function liveJoin(code) {
     busy('正在連接伺服器…'); await liveInit(); const F = LV.fb;
     const hd = await F.getDoc(lref(id)); if (!hd.exists()) throw new Error('找不到這個在線批次');
     const h = hd.data(); if (!h.locked) throw new Error('發佈人還在上載這個批次，請稍後再試');
+    if (h.deleted) throw new Error('這個在線批次已被管理員刪除（在回收箱）');
     const set = h.set || 'gbp';
     if (set !== 'gbp' && !S.drawings.some(d => setOf(d) === set && d.src === 'bundle')) await loadBundle(set);
     busy('正在下載記錄…');
     const qs = await F.getDocs(lcol(id, 'items'));
     let name = h.name || '在線批次'; const base = name;
     for (let n = 2; S.rounds.some(x => x.name === name && setOfRound(x) === set); n++) name = `${base}（${n}）`;
-    const rd = { id: uid(), name, date: h.date || '', ...(set === 'gbp' ? {} : { set }), live: { id, owner: h.owner === LV.uid, from: h.ownerName || '', at: Date.now() } };
-    S.rounds.push(rd);
+    const live = { id, owner: h.owner === LV.uid, from: h.ownerName || '', at: Date.now() };
+    // a list restored from the 回收箱 goes back into the round it left here
+    let rd = S.rounds.find(r => r.wasLive === id);
+    if (rd) { delete rd.wasLive; Object.assign(rd, { name: h.name || rd.name, date: h.date || '', live }); }
+    else { rd = { id: uid(), name, date: h.date || '', ...(set === 'gbp' ? {} : { set }), live }; S.rounds.push(rd); }
     for (const ds of qs.docs) {
       const c = ds.data(); toFrame(c);
       const { photos, ...rec } = c, ex = S.items.find(x => x.id === c.id);
@@ -166,14 +170,14 @@ async function liveHead(rd, h) {
   if (!liveOf(rd) || LV.deleting === rd.live.id) return; // deleting it here: liveDeleteList lets go itself
   if (!h || h.deleted) {
     const name = rd.name; await liveDetach(rd);
-    return toast(`在線批次「${name}」已被管理員刪除，本機的記錄保留成本地批次`, 6000);
+    return toast(`在線批次「${name}」已被管理員刪除（移到回收箱），本機的記錄保留成本地批次`, 6000);
   }
   if ((h.name && h.name !== rd.name) || (h.date || '') !== (rd.date || '')) {
     rd.name = h.name || rd.name; rd.date = h.date || ''; await saveRounds(); updateBar(); if (S.panel === 'round') roundPanel();
   }
 }
 async function liveDetach(rd) {
-  liveUnwatch(rd.live.id); LV.rep.delete(rd.live.id); delete rd.live;
+  liveUnwatch(rd.live.id); LV.rep.delete(rd.live.id); rd.wasLive = rd.live.id; delete rd.live;
   for (const it of S.items.filter(i => roundOf(i) === rd.id)) {
     delete it.liveDirty; if (it.fix) { delete it.fix.dirty; delete it.fix.del; }
     for (const p of allPhotos(it)) delete p.remote;
@@ -181,19 +185,38 @@ async function liveDetach(rd) {
   }
   LV.lists = null; await saveRounds(); renderOverlay(); updateBar(); if (S.panel === 'round') roundPanel();
 }
-/* a 管理員 deletes a whole list from the cloud: flag it first, so the other devices let go before its records go */
+/* 刪除 moves a list to the 回收箱: it is only flagged, so every record, reply and photo stays in the cloud (kept until
+   a 管理員 deletes it for good) and 還原 brings it back; the other devices let go of it and keep their records */
 async function liveDeleteList(rd, id = rd.live.id, name = rd.name) {
   try {
-    busy('正在刪除在線清單…'); await liveInit(); const F = LV.fb; LV.deleting = id;
-    await F.updateDoc(lref(id), { deleted: true }); liveUnwatch(id);
+    busy('正在移到回收箱…'); await liveInit(); LV.deleting = id;
+    const mark = { deleted: true, deletedAt: Date.now(), deletedBy: S.settings.inspector || '' };
+    await LV.fb.updateDoc(lref(id), mark); liveUnwatch(id);
+    LV.deleting = null;
+    if (rd && liveOf(rd)) await liveDetach(rd); if (LV.lists) LV.lists = LV.lists.map(x => x.id === id ? { ...x, ...mark } : x);
+    if (S.panel === 'round') roundPanel(); busy();
+    toast(`已把「${name}」移到回收箱；可以在回收箱還原`, 5000);
+  } catch (e) { LV.deleting = null; busy(); toast('刪除失敗：' + e.message, 6000); console.error(e); }
+}
+async function liveRestore(id, name) {
+  try {
+    busy('正在還原…'); await liveInit(); await LV.fb.updateDoc(lref(id), { deleted: false });
+    LV.lists = (LV.lists || []).map(x => x.id === id ? { ...x, deleted: false } : x); busy();
+    if (S.panel === 'round') roundPanel(); toast(`已還原「${name}」，可在「在線批次」加入`, 5000);
+  } catch (e) { busy(); toast('還原失敗：' + e.message, 6000); }
+}
+/* 永久刪除 from the 回收箱: the records, replies and photos go from the cloud for good */
+async function livePurge(id, name) {
+  try {
+    busy('正在永久刪除…'); await liveInit(); const F = LV.fb;
     const [its, reps] = await Promise.all([F.getDocs(lcol(id, 'items')), F.getDocs(lcol(id, 'replies'))]);
     const pids = new Set(); its.docs.forEach(d => (d.data().photos || []).forEach(p => pids.add(p.id))); reps.docs.forEach(d => Object.keys(d.data().photos || {}).forEach(p => pids.add(p)));
     let n = 0; for (const p of pids) { busy(`正在刪除相片 ${++n}／${pids.size}`); await F.deleteDoc(lref(id, 'photos', p)).catch(() => { }); }
     const refs = [...its.docs, ...reps.docs].map(d => d.ref);
     for (let i = 0; i < refs.length; i += 400) { const wb = F.writeBatch(LV.db); refs.slice(i, i + 400).forEach(r => wb.delete(r)); await wb.commit(); }
     await F.deleteDoc(lref(id));
-    LV.deleting = null; LV.lists = (LV.lists || []).filter(l => l.id !== id); if (rd && liveOf(rd)) await liveDetach(rd); else if (S.panel === 'round') roundPanel(); busy(); toast(`已刪除在線批次「${name}」；本機的記錄保留成本地批次`, 5000);
-  } catch (e) { LV.deleting = null; busy(); toast('刪除失敗：' + e.message, 6000); console.error(e); }
+    LV.lists = (LV.lists || []).filter(l => l.id !== id); if (S.panel === 'round') roundPanel(); busy(); toast(`已永久刪除「${name}」`, 5000);
+  } catch (e) { busy(); toast('永久刪除失敗：' + e.message, 6000); console.error(e); }
 }
 /* the publisher changed, added or deleted a record */
 const LIVE_KEYS = ['code', 'no', 'dev', 'by', 'ord', 'origLabel', 'note', 'sub', 'subs', 'drawingId', 'pf', 'x', 'y', 'loc', 'locText', 'locEdited', 'created'];
@@ -402,7 +425,7 @@ function liveOnlineSection() {
       <label class="f">連結<input readonly value="${esc(url)}" onfocus="this.select()"></label>
       <div class="row"><button class="btn p" data-a="liveShare">分享連結</button><button class="btn" data-a="liveCopy">複製連結</button></div>
       ${qr ? `<div style="text-align:center"><img src="${qr.createDataURL(4, 8)}" alt="連結二維碼" style="width:180px;image-rendering:pixelated"></div>` : ''}
-      <div class="f-l">刪除</div><div class="note">從雲端刪除這個在線批次、所有記錄及所有人的回復和相片；各部機已有的記錄會變回本地批次（不再同步）。</div>
+      <div class="f-l">刪除</div><div class="note">移到回收箱：所有人不再看到這個在線批次，各部機已有的記錄會變回本地批次（不再同步）。雲端的記錄、回復及相片全部保留，可在回收箱還原。</div>
       <button class="btn warn" data-a="liveDelete">刪除這個在線批次</button>`;
     }
   }
@@ -439,7 +462,15 @@ function liveListRows() {
     .map(l => row('', esc(l.name), `${esc(l.date || '')}${l.ownerName ? '　' + esc(l.ownerName) + ' 發佈' : ''}　未加入`, `<button class="btn p" data-a="liveOpen" data-lid="${l.id}" style="min-height:38px">加入</button>` + del(l.id, l.name)));
   const note = !LV.lists ? `<div class="note">${LV.listErr ? `未能讀取雲端的在線批次（${esc(LV.listErr)}），請連網後再開這個面板。` : '正在讀取雲端的在線批次…'}</div>` : '';
   const all = [...here, ...cloud];
-  return (all.length ? `<div class="list">${all.join('')}</div>` : LV.lists ? '<div class="note">還沒有在線批次。</div>' : '') + note;
+  return (all.length ? `<div class="list">${all.join('')}</div>` : LV.lists ? '<div class="note">還沒有在線批次。</div>' : '') + note + liveBin();
+}
+/* 回收箱 (管理員 only): deleted lists stay in the cloud until emptied for good */
+function liveBin() {
+  if (!S.settings.livePubOk || !LV.lists) return '';
+  const L = LV.lists.filter(l => l.deleted && (l.set || 'gbp') === curSet()).sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+  if (!L.length) return '';
+  const rows = L.map(l => `<div class="li" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(l.name)}</b><span>${l.deletedAt ? fmtTime(l.deletedAt) + ' ' : ''}${l.deletedBy ? esc(l.deletedBy) + ' ' : ''}刪除</span></span><span class="row" style="flex-wrap:nowrap;gap:6px"><button class="btn" data-a="liveRestore" data-lid="${l.id}" data-name="${esc(l.name)}" style="min-height:38px">還原</button><button class="btn warn" data-a="livePurge" data-lid="${l.id}" data-name="${esc(l.name)}" style="min-height:38px">永久刪除</button></span></div>`).join('');
+  return `<details style="margin-top:10px"><summary>回收箱（${L.length}）</summary><div class="note">刪除的在線批次連同記錄、回復及相片會一直保留在雲端，直至按「永久刪除」。還原後各人在「在線批次」重新加入即可。</div><div class="list">${rows}</div></details>`;
 }
 /* ---- the publisher folds another round into the list: its records join the list and go up ---- */
 function liveMergeForm(r) {
@@ -487,13 +518,18 @@ async function liveAction(a, b) {
     try { await liveInit(); await LV.fb.updateDoc(lref(L.id), { name, date: $('#liveDate').value || '' }); } catch (e) { return toast('未能儲存：' + e.message, 5000); }
     const r = curRound(); r.name = name; r.date = $('#liveDate').value || ''; LV.lists = null; await saveRounds(); updateBar(); roundPanel(); return toast('已儲存，所有人同步更新');
   }
+  if (a === 'liveRestore') return liveRestore(b.dataset.lid, b.dataset.name);
+  if (a === 'livePurge') {
+    if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = '再按：永久刪除，不能復原'; return; }
+    return livePurge(b.dataset.lid, b.dataset.name);
+  }
   if (a === 'liveDel') {
     if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = '再按確認刪除'; return; }
     const lid = b.dataset.lid, rd = S.rounds.find(x => liveOf(x) && x.live.id === lid);
     return liveDeleteList(rd, lid, b.dataset.name);
   }
   if (a === 'liveDelete') {
-    if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = `再按一次確認：從雲端刪除「${curRound().name}」及所有人的回復`; return; }
+    if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = `再按一次確認：把「${curRound().name}」移到回收箱`; return; }
     return liveDeleteList(curRound());
   }
   if (a === 'liveBeAdmin') {

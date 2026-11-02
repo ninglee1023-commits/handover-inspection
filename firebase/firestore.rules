@@ -27,10 +27,10 @@ service cloud.firestore {
       // the 驗收批次 panel lists the locked lists, so they can be joined without a link
       allow list: if signed() && resource.data.locked == true;
       allow create: if signed() && admin() && request.resource.data.owner == request.auth.uid && request.resource.data.locked == false;
-      // the publisher locks it; after that a 管理員 may only rename it, or flag it deleted before deleting it
+      // the publisher locks it; after that a 管理員 may only rename it, or move it to / back from the 回收箱
       allow update: if signed() && ((resource.data.owner == request.auth.uid && resource.data.locked == false)
         || (resource.data.locked == true && mine(lid)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'date', 'deleted'])));
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'date', 'deleted', 'deletedAt', 'deletedBy'])));
       allow delete: if signed() && mine(lid);
 
       match /items/{id} {
