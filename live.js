@@ -182,8 +182,7 @@ async function liveDetach(rd) {
   LV.lists = null; await saveRounds(); renderOverlay(); updateBar(); if (S.panel === 'round') roundPanel();
 }
 /* a 管理員 deletes a whole list from the cloud: flag it first, so the other devices let go before its records go */
-async function liveDeleteList(rd) {
-  const id = rd.live.id, name = rd.name;
+async function liveDeleteList(rd, id = rd.live.id, name = rd.name) {
   try {
     busy('正在刪除在線清單…'); await liveInit(); const F = LV.fb; LV.deleting = id;
     await F.updateDoc(lref(id), { deleted: true }); liveUnwatch(id);
@@ -193,7 +192,7 @@ async function liveDeleteList(rd) {
     const refs = [...its.docs, ...reps.docs].map(d => d.ref);
     for (let i = 0; i < refs.length; i += 400) { const wb = F.writeBatch(LV.db); refs.slice(i, i + 400).forEach(r => wb.delete(r)); await wb.commit(); }
     await F.deleteDoc(lref(id));
-    LV.deleting = null; if (liveOf(rd)) await liveDetach(rd); busy(); toast(`已刪除在線批次「${name}」；本機的記錄保留成本地批次`, 5000);
+    LV.deleting = null; LV.lists = (LV.lists || []).filter(l => l.id !== id); if (rd && liveOf(rd)) await liveDetach(rd); else if (S.panel === 'round') roundPanel(); busy(); toast(`已刪除在線批次「${name}」；本機的記錄保留成本地批次`, 5000);
   } catch (e) { LV.deleting = null; busy(); toast('刪除失敗：' + e.message, 6000); console.error(e); }
 }
 /* the publisher changed, added or deleted a record */
@@ -385,7 +384,7 @@ function liveStatus(r) {
 }
 function liveLogin() {
   if (S.settings.livePubOk) return '';
-  if (!S.liveLogin) return '<button class="btn" data-a="liveLogin" style="background:none;border:none;color:var(--muted);font-size:13px;min-height:0;padding:10px 0 0">管理員登入</button>';
+  if (!S.liveLogin) return '<div class="note" style="margin-top:10px">上傳、修改或刪除在線批次需要管理員登入。</div><button class="btn" data-a="liveLogin" style="background:none;border:none;color:var(--muted);font-size:13px;min-height:0;padding:10px 0 0">管理員登入</button>';
   return '<div class="row"><label class="f" style="flex:2 1 0;min-width:0">管理員密碼<input id="liveAdminPw" type="password" autocomplete="off"></label><button class="btn" data-a="liveBeAdmin" style="align-self:flex-end">登入</button></div>';
 }
 function liveOnlineSection() {
@@ -431,11 +430,13 @@ async function liveLoadLists() {
 function liveListRows() {
   if (!LV.lists && !LV.listErr) liveLoadLists();
   const set = curSet(), cur = curRound().id, mine = setRounds().filter(liveOf), held = new Set(mine.map(r => r.live.id));
-  const row = (main, sub, act) => `<div class="li" style="grid-template-columns:1fr auto"><span class="t"><b>${main}</b><span>${sub}</span></span>${act}</div>`;
+  const del = (lid, name) => S.settings.livePubOk ? `<button class="btn warn" data-a="liveDel" data-lid="${lid}" data-name="${esc(name)}" style="min-height:38px">刪除</button>` : '';
+  const row = (cls, main, sub, act) => `<div class="li ${cls}" style="grid-template-columns:1fr auto"><span class="t"><b>${main}</b><span>${sub}</span></span><span class="row" style="flex-wrap:nowrap;gap:6px">${act}</span></div>`;
   const here = mine.map(r => { const L = S.items.filter(i => roundOf(i) === r.id), d = L.filter(i => fixStatus(i) === 'done').length;
-    return `<button class="li ${r.id === cur ? 'cur' : ''}" data-r="${r.id}" style="grid-template-columns:1fr auto"><span class="t"><b>🔒 ${esc(r.name)}${r.id === cur ? '　（目前）' : ''}</b><span>${esc(r.date || '')}　${L.length} 項・已回復 ${d}${r.live.owner ? '　本機發佈' : r.live.from ? '　' + esc(r.live.from) + ' 發佈' : ''}</span></span><span class="chip">${r.id === cur ? '使用中' : '切換'}</span></button>`; });
+    return row(r.id === cur ? 'cur' : '', `🔒 ${esc(r.name)}${r.id === cur ? '　（目前）' : ''}`, `${esc(r.date || '')}　${L.length} 項・已回復 ${d}${r.live.owner ? '　本機發佈' : r.live.from ? '　' + esc(r.live.from) + ' 發佈' : ''}`,
+      (r.id === cur ? '<span class="chip">使用中</span>' : `<button class="btn" data-r="${r.id}" style="min-height:38px">切換</button>`) + del(r.live.id, r.name)); });
   const cloud = (LV.lists || []).filter(l => (l.set || 'gbp') === set && !l.deleted && !held.has(l.id))
-    .map(l => row(esc(l.name), `${esc(l.date || '')}${l.ownerName ? '　' + esc(l.ownerName) + ' 發佈' : ''}　未加入`, `<button class="btn p" data-a="liveOpen" data-lid="${l.id}" style="min-height:38px">加入</button>`));
+    .map(l => row('', esc(l.name), `${esc(l.date || '')}${l.ownerName ? '　' + esc(l.ownerName) + ' 發佈' : ''}　未加入`, `<button class="btn p" data-a="liveOpen" data-lid="${l.id}" style="min-height:38px">加入</button>` + del(l.id, l.name)));
   const note = !LV.lists ? `<div class="note">${LV.listErr ? `未能讀取雲端的在線批次（${esc(LV.listErr)}），請連網後再開這個面板。` : '正在讀取雲端的在線批次…'}</div>` : '';
   const all = [...here, ...cloud];
   return (all.length ? `<div class="list">${all.join('')}</div>` : LV.lists ? '<div class="note">還沒有在線批次。</div>' : '') + note;
@@ -485,6 +486,11 @@ async function liveAction(a, b) {
     const name = $('#liveName').value.trim(); if (!name) return toast('請輸入名稱');
     try { await liveInit(); await LV.fb.updateDoc(lref(L.id), { name, date: $('#liveDate').value || '' }); } catch (e) { return toast('未能儲存：' + e.message, 5000); }
     const r = curRound(); r.name = name; r.date = $('#liveDate').value || ''; LV.lists = null; await saveRounds(); updateBar(); roundPanel(); return toast('已儲存，所有人同步更新');
+  }
+  if (a === 'liveDel') {
+    if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = '再按確認刪除'; return; }
+    const lid = b.dataset.lid, rd = S.rounds.find(x => liveOf(x) && x.live.id === lid);
+    return liveDeleteList(rd, lid, b.dataset.name);
   }
   if (a === 'liveDelete') {
     if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = `再按一次確認：從雲端刪除「${curRound().name}」及所有人的回復`; return; }
