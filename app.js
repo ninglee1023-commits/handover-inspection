@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.9';
+const VERSION = '0.10.10';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -704,7 +704,7 @@ function itemsPanel() {
   const d = curD();
   const scoped = (S.listScope === 'cur' && d ? roundItems().filter(i => i.drawingId === d.id) : roundItems());
   const subF = subFilter(); const nNone = scoped.filter(i => !subsOf(i).length).length;
-  const inArea = scoped.filter(i => areaMatch(i)), list = inArea.filter(i => subMatch(i)).sort(byOrder);
+  const inArea = scoped.filter(i => areaMatch(i) && repMatch(i)), list = inArea.filter(i => subMatch(i)).sort(byOrder);
   const subOpts = allSubs().map(x => [x, inArea.filter(i => subsOf(i).includes(x)).length]).filter(([, n]) => n);
   const rows = list.map(it => {
     const th = it.photos[0] ? `style="background-image:url('${burl(it.photos[0].out)}')"` : '';
@@ -712,7 +712,7 @@ function itemsPanel() {
   }).join('') || (scoped.length ? '' : '<div class="note">這張圖紙還沒有記錄。在「驗收」模式點選圖上的位置即可開始。</div>');
   openPanel('items', `${esc(roundLabel())}（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
-    ${areaFilter() ? `<div class="note">分區：<b>${esc(areaFilter())}</b>（頂部「篩選」可改）</div>` : ''}
+    ${areaFilter() || repFilter() ? `<div class="note">${[areaFilter() && `分區：<b>${esc(areaFilter())}</b>`, repFilter() && `回復狀態：<b>${FIX_ST[repFilter()]}</b>`].filter(Boolean).join('　')}（頂部「篩選」可改）</div>` : ''}
     <label class="f">分判<select id="lSub"><option value="">全部（${inArea.length}）</option><option value="-" ${subF === '-' ? 'selected' : ''}>未指定分判（${inArea.filter(i => !subsOf(i).length).length}）</option>${subOpts.map(([x, n]) => `<option value="${esc(x)}" ${subF === x ? 'selected' : ''}>${esc(x)}（${n}）</option>`).join('')}</select></label>
     <div class="note">選了分判之後，圖上亦只顯示該分判的點（頂部「篩選」按鈕可隨時改回全部）。圖上：<b style="color:#d42a1e">紅點</b>＝未指定分判，<b style="color:#1f6f9c">藍點</b>＝已指定分判，<b style="color:#2f7d4f">綠點</b>＝已回復。</div>
     <div class="list">${rows || '<div class="note">沒有符合的記錄。</div>'}</div>`);
@@ -730,16 +730,22 @@ function itemsPanel() {
 
 async function setSubFilter(f) { S.settings.subFilter = f; await saveKV(); renderOverlay(); updateBar(); }
 function subPanel() {
-  const R = roundItems(), f = subFilter(), a = areaFilter();
-  // counts of each choice within the other one
-  const L = R.filter(i => areaMatch(i)), n = x => L.filter(i => subMatch(i, x)).length, na = x => R.filter(i => subMatch(i) && areaMatch(i, x)).length;
-  const areas = [['', `全部（${R.filter(i => subMatch(i)).length}）`], ...AREA_ORDER.map(x => [x, `${x}（${na(x)}）`])];
+  const R = roundItems(), f = subFilter(), a = areaFilter(), rp = repFilter();
+  // counts of each choice within the other ones
+  const L = R.filter(i => areaMatch(i) && repMatch(i)), n = x => L.filter(i => subMatch(i, x)).length, na = x => R.filter(i => subMatch(i) && repMatch(i) && areaMatch(i, x)).length;
+  const areas = [['', `全部（${R.filter(i => subMatch(i) && repMatch(i)).length}）`], ...AREA_ORDER.map(x => [x, `${x}（${na(x)}）`])];
+  // reply status within the chosen 分區 and 分判
+  const S2 = R.filter(i => areaMatch(i) && subMatch(i)), nr = x => S2.filter(i => fixStatus(i) === x).length, done = nr('done'), na2 = nr('na'), due = S2.length - na2;
+  const reps = [['', `全部（${S2.length}）`], ['open', `未回復（${nr('open')}）`], ['done', `已完成（${done}）`], ['na', `不跟進（${na2}）`]];
   const opts = [['', `全部（${L.length}）`], ...allSubs().filter(x => n(x)).map(x => [x, `${x}（${n(x)}）`]), ['-', `未指定分判（${n('-')}）`]];
   if (f && !opts.some(([k]) => k === f)) opts.push([f, `${f}（0）`]);
   openPanel('subf', '篩選', `<div class="f-l">分區</div><div class="chips pick">${areas.map(([k, t]) => `<button class="chip ${k === a ? 'on' : ''}" data-area="${esc(k)}">${esc(t)}</button>`).join('')}</div>
     <div class="f-l">分判</div><div class="chips pick">${opts.map(([k, t]) => `<button class="chip ${k === f ? 'on' : ''}" data-f="${esc(k)}">${esc(t)}</button>`).join('')}</div>
-    <div class="note">Podium＝B3–2F；T1、T2、T3、T5＝3F 或以上各座。圖上的點、記錄清單及「上一項／下一項」只包括所選分區及分判，其他點暫時隱藏（不會刪除）。選了之後，「圖紙」清單及「樓層」選擇旁邊會有小圓點：<b style="color:#d42a1e">紅點</b>＝該圖／該層有未回復的項目，<b style="color:#2f7d4f">綠點</b>＝全部已回復。這部機會記住所選篩選。</div>`);
+    <div class="f-l">回復狀態</div><div class="note">${esc([a, f === '-' ? '未指定分判' : f].filter(Boolean).join(' · ') || '全部')}：已完成 <b>${done}</b>／${due} 項${due ? `（${Math.round(done / due * 100)}%）` : ''}，未回復 <b>${nr('open')}</b> 項${na2 ? `，不跟進 ${na2} 項` : ''}</div>
+    <div class="chips pick">${reps.map(([k, t]) => `<button class="chip ${k === rp ? 'on' : ''}" data-rp="${k}">${esc(t)}</button>`).join('')}</div>
+    <div class="note">Podium＝B3–2F；T1、T2、T3、T5＝3F 或以上各座。圖上的點、記錄清單及「上一項／下一項」只包括所選分區及分判，其他點暫時隱藏（不會刪除）。選「未回復」只看還未回復的點。選了之後，「圖紙」清單及「樓層」選擇旁邊會有小圓點：<b style="color:#d42a1e">紅點</b>＝該圖／該層有未回復的項目，<b style="color:#2f7d4f">綠點</b>＝全部已回復。這部機會記住所選篩選。</div>`);
   panel.querySelector('.pb').onclick = async e => {
+    const rb = e.target.closest('[data-rp]'); if (rb) { S.settings.repFilter = rb.dataset.rp; await saveKV(); renderOverlay(); updateBar(); return subPanel(); }
     const ar = e.target.closest('[data-area]'); if (ar) { S.settings.areaFilter = ar.dataset.area; await saveKV(); renderOverlay(); updateBar(); return subPanel(); }
     const b = e.target.closest('[data-f]'); if (!b) return; await setSubFilter(b.dataset.f); closePanel(); toast(filterOn() ? `只顯示 ${subFilterName()}` : '顯示全部');
   };
@@ -1299,12 +1305,15 @@ const inScope = (i, od) => (!od || devOf(i) === od) && (!S.repSub || (S.repSub =
 // 分判 filter of this device: pins on the plan, the record list and stepping through records show only that 分判's
 const subFilter = () => S.settings.subFilter || '';
 const areaFilter = () => S.settings.areaFilter || '';
-const filterOn = () => !!(subFilter() || areaFilter());
+// reply status: '' = all, or a fixStatus (open / done / na)
+const repFilter = () => S.settings.repFilter || '';
+const filterOn = () => !!(subFilter() || areaFilter() || repFilter());
 const subMatch = (i, f = subFilter()) => !f || (f === '-' ? !subsOf(i).length : subsOf(i).includes(f));
 const areaMatch = (i, a = areaFilter()) => !a || areaOf(i) === a;
-// the records shown: those of the chosen 分判 and 分區
-const subOk = i => subMatch(i) && areaMatch(i);
-const subFilterName = () => [areaFilter(), subFilter() === '-' ? '未指定分判' : subFilter()].filter(Boolean).join(' · ');
+const repMatch = (i, r = repFilter()) => !r || fixStatus(i) === r;
+// the records shown: those of the chosen 分判, 分區 and reply status
+const subOk = i => subMatch(i) && areaMatch(i) && repMatch(i);
+const subFilterName = () => [areaFilter(), subFilter() === '-' ? '未指定分判' : subFilter(), repFilter() && FIX_ST[repFilter()]].filter(Boolean).join(' · ');
 /* with a filter on, a dot beside a drawing or floor that has records of it: red = some not replied yet, green = all replied */
 function filterDot(L) { if (!filterOn() || !L.length) return ''; return `<span class="fdot${L.some(i => fixStatus(i) !== 'done') ? '' : ' ok'}" title="${L.length} 項"></span>`; }
 const itemLabel = it => it.code || `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
