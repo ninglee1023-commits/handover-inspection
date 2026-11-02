@@ -341,7 +341,7 @@ function liveSection() {
     const url = liveLink(L.id), done = roundItems().filter(i => fixStatus(i) === 'done').length, up = livePending();
     const qr = qrFor(url);
     h += `<div class="safe ok"><b>🔒 已鎖定，在線中${L.owner ? '（由本機發佈）' : L.from ? `（${esc(L.from)} 發佈）` : ''}</b><span>${done}／${n} 項已回復　·　${up ? `${up} 項回復等待上載${LV.err ? '（' + esc(LV.err) + '）' : ''}` : '全部回復已上載'}</span></div>
-      ${L.owner ? '<div class="note">你是這張清單的發佈人（管理員）：在這部機可以照常修改描述、分判、位置、編號，加點或刪點，改動即時同步給所有人；其他人只可以回復，而且只可改或刪自己的回復（你可以刪任何人的回復照片）。</div>' + liveWho(L) : ''}
+      ${L.owner ? '<div class="note">你是這張清單的發佈人（管理員）：在這部機可以照常修改描述、分判、位置、編號，加點或刪點，改動即時同步給所有人；其他人只可以回復，而且只可改或刪自己的回復（你可以刪任何人的回復照片）。</div>' + liveMergeForm(r) + liveWho(L) : ''}
       <div class="note">把連結發給分判或同事，用 iPad／手機開啟就會載入這張清單（不用安裝，但請在一般分頁開啟，不要用無痕瀏覽）。逐點按「拍回復照片」，相片即時上載，所有人包括你都會即時看到綠點。</div>
       <label class="f">連結<input readonly value="${esc(url)}" onfocus="this.select()"></label>
       <div class="row"><button class="btn p" data-a="liveShare">分享連結</button><button class="btn" data-a="liveCopy">複製連結</button></div>
@@ -351,7 +351,48 @@ function liveSection() {
       ${S.settings.livePubOk ? '' : '<label class="f">發佈密碼（每部機只需輸入一次）<input id="livePw" type="password" autocomplete="off"></label>'}
       <button class="btn p" data-a="livePub">發佈並鎖定此批次</button>`;
   }
-  return h + `<div class="f-l">加入別人發出的在線清單</div><div class="row"><label class="f" style="flex:2 1 0;min-width:0"><input id="liveCode" placeholder="貼上連結"></label><button class="btn" data-a="liveJoin" style="align-self:flex-end">加入</button></div>`;
+  return h + liveListRows() + `<div class="f-l">或者貼上連結加入</div><div class="row"><label class="f" style="flex:2 1 0;min-width:0"><input id="liveCode" placeholder="貼上連結"></label><button class="btn" data-a="liveJoin" style="align-self:flex-end">加入</button></div>`;
+}
+/* ---- published lists anyone can join from the 驗收批次 panel, no link needed ---- */
+async function liveLoadLists() {
+  if (LV.listing || (LV.lists && Date.now() - LV.listsAt < 60000)) return;
+  LV.listing = true;
+  try {
+    await liveInit(); const F = LV.fb;
+    const qs = await F.getDocs(F.query(F.collection(LV.db, 'live'), F.where('locked', '==', true)));
+    LV.lists = qs.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (b.created || 0) - (a.created || 0)); LV.listsAt = Date.now(); LV.listErr = '';
+  } catch (e) { LV.listErr = e.message; }
+  finally { LV.listing = false; }
+  if (S.panel === 'round') roundPanel();
+}
+function liveListRows() {
+  if (!LV.lists && !LV.listErr) { liveLoadLists(); return '<div class="f-l">在線清單</div><div class="note">正在讀取已發佈的在線清單…</div>'; }
+  if (!LV.lists) return `<div class="f-l">在線清單</div><div class="note">未能讀取在線清單（${esc(LV.listErr)}），請連網後再開這個面板。</div>`;
+  const set = curSet(), here = new Map(S.rounds.filter(liveOf).map(r => [r.live.id, r]));
+  const rows = LV.lists.filter(l => (l.set || 'gbp') === set).map(l => { const r = here.get(l.id);
+    return `<div class="li" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(l.name)}</b><span>${esc(l.date || '')}${l.ownerName ? '　' + esc(l.ownerName) + ' 發佈' : ''}</span></span>${r ? (r.id === curRound().id ? '<span class="chip">使用中</span>' : `<button class="btn" data-a="liveOpen" data-lid="${l.id}" style="min-height:38px">切換</button>`) : `<button class="btn p" data-a="liveOpen" data-lid="${l.id}" style="min-height:38px">加入</button>`}</div>`; }).join('');
+  return `<div class="f-l">在線清單（${setName()}）</div>${rows ? `<div class="list">${rows}</div>` : '<div class="note">還沒有已發佈的在線清單。</div>'}`;
+}
+/* ---- the publisher folds another round into the list: its records join the list and go up ---- */
+function liveMergeForm(r) {
+  const L = setRounds().filter(x => x.id !== r.id && !liveOf(x) && S.items.some(i => roundOf(i) === x.id));
+  if (!L.length) return '';
+  return `<div class="f-l">把另一個批次併入這張在線清單</div><div class="row"><label class="f" style="flex:2 1 0;min-width:0"><select id="liveSrc">${L.map(x => `<option value="${x.id}">${esc(x.name)}（${S.items.filter(i => roundOf(i) === x.id).length} 項）</option>`).join('')}</select></label><button class="btn" data-a="liveMerge" style="align-self:flex-end">併入</button></div>
+    <div class="note">併入後，該批次的記錄及相片會上載，所有人即時看到；原批次會合併掉（記錄不會刪除）。編號如有重複，可再按「導出 → 整理編號」。</div>`;
+}
+async function liveMergeInto(rd, src) {
+  busy('正在併入…'); const me = myUid(), now = Date.now();
+  for (const it of S.items.filter(i => roundOf(i) === src.id)) {
+    it.round = rd.id; it.mod = now; it.liveDirty = 1;
+    for (const p of it.photos) delete p.up; // before photos go up with the record
+    if (hasReply(it)) { const X = it.fix; X.dirty = 1; X.mine = X.mine ?? X.reply ?? ''; for (const p of X.photos || []) Object.assign(p, { up: 0, uid: p.uid || me, by: p.by || X.by || S.settings.inspector || '' }); }
+    await saveItem(it);
+  }
+  const al = { ...S.settings.roundAlias, [src.id]: rd.id }; for (const k of Object.keys(al)) if (al[k] === src.id) al[k] = rd.id; S.settings.roundAlias = al;
+  S.rounds = S.rounds.filter(x => x.id !== src.id); await saveRounds(); await saveKV(); busy();
+  renderOverlay(); updateBar(); liveFlush(); if (S.panel === 'round') roundPanel();
+  const L = roundItems().map(itemLabel), dup = L.length - new Set(L).size;
+  toast(`已把「${src.name}」併入「${rd.name}」，正在上載${dup ? `；有 ${dup} 個編號重複，可到「導出 → 整理編號」` : ''}`, dup ? 6000 : 4000);
 }
 /* who has replied to the list: each browser is one uid (even without a login), shown with the name it gave */
 function liveWho(L) {
@@ -372,6 +413,13 @@ async function liveAction(a, b) {
     return livePublish(curRound(), pw);
   }
   if (a === 'liveJoin') return liveJoin($('#liveCode').value);
+  if (a === 'liveOpen') return liveJoin(b.dataset.lid);
+  if (a === 'liveMerge') {
+    const src = S.rounds.find(x => x.id === $('#liveSrc').value); if (!src) return toast('請選擇要併入的批次');
+    const n = S.items.filter(i => roundOf(i) === src.id).length;
+    if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = `再按一次確認：把「${src.name}」（${n} 項）併入「${curRound().name}」並上載`; return; }
+    return liveMergeInto(curRound(), src);
+  }
   if (!L) return;
   const url = liveLink(L.id);
   if (a === 'liveShare' && navigator.share) { try { await navigator.share({ title: `${curRound().name} 在線回復`, url }); } catch (e) { } return; }

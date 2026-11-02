@@ -21,6 +21,8 @@ service cloud.firestore {
 
     match /live/{lid} {
       allow get: if signed();
+      // the 驗收批次 panel lists the locked lists, so they can be joined without a link
+      allow list: if signed() && resource.data.locked == true;
       allow create: if signed() && admin() && request.resource.data.owner == request.auth.uid && request.resource.data.locked == false;
       // the publisher may only lock it; the head of a locked list never changes again
       allow update: if signed() && resource.data.owner == request.auth.uid && resource.data.locked == false;
