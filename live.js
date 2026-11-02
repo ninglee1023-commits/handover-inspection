@@ -11,6 +11,8 @@
      replies/{itemId}_{uid}  one per person and record: item, uid, by, reply, mod, photos: { photoId: { t, w, h, by, v } }
    Every device signs in anonymously, so each person is told apart by the uid of their browser even without a login:
    the rules let people change or remove only their own replies (the publisher may remove anyone's).
+   管理員 = the publisher, or any device that has given the 發佈密碼 (S.settings.livePubOk): they may change, add,
+   delete and merge records of every list.
    Local state: round.live = { id, owner, from, gone: [ids deleted here, waiting to be deleted in the cloud] };
    it.liveDirty = the publisher changed the record, waiting to go up; a before photo has up once uploaded; a reply photo has up = version uploaded (0 = waiting),
    remote = 1 while its image is still to be downloaded, uid = who took it; fix.mine = my reply text, fix.texts = the
@@ -27,8 +29,9 @@ const liveOf = r => (r && r.live) || null;
 const liveRoundOf = it => { const r = it && S.rounds.find(x => x.id === roundOf(it)); return liveOf(r) ? r : null; };
 const liveIn = it => !!liveRoundOf(it);
 // the record can't be changed here: a live list someone else published
-const liveLocked = it => { const r = liveRoundOf(it); return !!r && !r.live.owner; };
-const liveAdmin = (r = curRound()) => !!(liveOf(r) && r.live.owner);
+const liveBoss = r => !!(liveOf(r) && (r.live.owner || S.settings.livePubOk));
+const liveLocked = it => { const r = liveRoundOf(it); return !!r && !liveBoss(r); };
+const liveAdmin = (r = curRound()) => liveBoss(r);
 const liveLink = id => location.origin + location.pathname + '?live=' + id;
 const lref = (id, ...p) => LV.fb.doc(LV.db, 'live', id, ...p);
 const lcol = (id, c) => LV.fb.collection(LV.db, 'live', id, c);
@@ -150,7 +153,7 @@ function liveWatch(rd) {
     for (const iid of hit) liveApply(rd, iid);
     if (S.panel === 'round') roundPanel();
   }, err => { console.warn(err); LV.subs.delete(id); setTimeout(() => liveWatch(rd), 30000); }));
-  if (!rd.live.owner) LV.fb.onSnapshot(lcol(id, 'items'), snap => {
+  LV.fb.onSnapshot(lcol(id, 'items'), snap => {
     for (const ch of snap.docChanges()) liveRecord(rd, ch.type === 'removed' ? null : ch.doc.data(), ch.doc.id);
   }, err => console.warn(err));
 }
@@ -164,6 +167,7 @@ async function liveRecord(rd, c, id) {
     S.items = S.items.filter(i => i !== ex); await DB.del('items', id); renderOverlay(); updateBar(); return;
   }
   toFrame(c);
+  if (ex && ex.liveDirty) return; // changed here, waiting to go up
   if (ex && roundOf(ex) === rd.id && JSON.stringify(liveRec(ex)) === JSON.stringify(c)) return;
   const it = ex || { id, round: rd.id, photos: [], fix: null };
   for (const k of LIVE_KEYS) { if (c[k] === undefined) delete it[k]; else it[k] = c[k]; }
@@ -233,8 +237,8 @@ const liveMinePhoto = ph => !ph.uid || ph.uid === myUid();
 function liveDelPhoto(it, i) { const F = fixOf(it), [ph] = F.photos.splice(i, 1); if (ph.up) F.del = [...(F.del || []), { id: ph.id, uid: ph.uid || myUid() }]; liveTouched(it); }
 function liveSoon() { clearTimeout(LV.t); LV.t = setTimeout(liveFlush, 800); }
 // the publisher edited / deleted a record of the list
-function liveEdited(it) { if (!liveIn(it) || !liveRoundOf(it).live.owner) return; it.liveDirty = 1; liveSoon(); }
-async function liveRemoved(it) { const r = liveRoundOf(it); if (!r || !r.live.owner) return; r.live.gone = [...(r.live.gone || []), it.id]; await saveRounds(); liveSoon(); }
+function liveEdited(it) { if (!liveIn(it) || !liveBoss(liveRoundOf(it))) return; it.liveDirty = 1; liveSoon(); }
+async function liveRemoved(it) { const r = liveRoundOf(it); if (!r || !liveBoss(r)) return; r.live.gone = [...(r.live.gone || []), it.id]; await saveRounds(); liveSoon(); }
 const liveReplyWaiting = i => i.fix && (i.fix.dirty || (i.fix.del || []).length || i.fix.photos.some(p => !p.up && !p.remote));
 const livePending = () => S.items.filter(i => liveIn(i) && (i.liveDirty || liveReplyWaiting(i))).length + S.rounds.reduce((n, r) => n + ((liveOf(r) && r.live.gone) || []).length, 0);
 async function liveFlush() {
@@ -243,7 +247,7 @@ async function liveFlush() {
     if (!livePending()) return;
     await liveInit(); const F = LV.fb;
     // the publisher's changes to the records: new or re-marked before photos first, then the records in batches
-    const recs = S.items.filter(i => i.liveDirty && liveIn(i) && liveRoundOf(i).live.owner);
+    const recs = S.items.filter(i => i.liveDirty && liveIn(i) && liveBoss(liveRoundOf(i)));
     for (const it of recs) { const id = liveRoundOf(it).live.id;
       for (const p of it.photos.filter(p => !p.up && !p.remote)) {
         const b = await livePhotoBytes(await photoOut(it, p));
@@ -254,7 +258,7 @@ async function liveFlush() {
       for (const it of part) wb.set(lref(liveRoundOf(it).live.id, 'items', it.id), liveRec(it));
       await wb.commit(); for (const it of part) { delete it.liveDirty; await saveItem(it, true); }
     }
-    for (const r of S.rounds.filter(r => liveOf(r) && r.live.owner && (r.live.gone || []).length)) {
+    for (const r of S.rounds.filter(r => liveBoss(r) && (r.live.gone || []).length)) {
       for (const iid of [...r.live.gone]) { await F.deleteDoc(lref(r.live.id, 'items', iid)); r.live.gone = r.live.gone.filter(x => x !== iid); }
       await saveRounds();
     }
@@ -298,7 +302,7 @@ function livePanel() {
   const before = it.photos.map((ph, i) => `<div class="ph1">${pic(ph, '', i)}<span class="ed">完成前 ${i + 1}</span></div>`).join('');
   // only your own reply photos can be marked again or removed (the publisher may remove anyone's)
   const after = F.photos.map((ph, i) => { const own = liveMinePhoto(ph);
-    return `<div class="ph1" style="outline:2px solid var(--ok)">${pic(ph, own ? 'edA' : '', i)}${own || rd.live.owner ? `<button class="del" data-a="delA" data-i="${i}" aria-label="刪除照片">✕</button>` : ''}<span class="ed" style="background:${ph.up || ph.remote ? 'var(--ok)' : '#c77700'}">${ph.up || ph.remote ? '已上載' : '等待上載'}・${own ? '我' : esc(ph.by || '其他人')}</span></div>`; }).join('');
+    return `<div class="ph1" style="outline:2px solid var(--ok)">${pic(ph, own ? 'edA' : '', i)}${own || liveBoss(rd) ? `<button class="del" data-a="delA" data-i="${i}" aria-label="刪除照片">✕</button>` : ''}<span class="ed" style="background:${ph.up || ph.remote ? 'var(--ok)' : '#c77700'}">${ph.up || ph.remote ? '已上載' : '等待上載'}・${own ? '我' : esc(ph.by || '其他人')}</span></div>`; }).join('');
   const others = Object.values(F.texts || {}).map(t => `<div class="note" style="color:inherit"><b>${esc(t.by || '其他人')}</b>：${esc(t.text)}</div>`).join('');
   const L = roundItems().filter(subOk).sort(byOrder), pos = L.findIndex(x => x.id === it.id), nd = L.filter(x => fixStatus(x) === 'done').length;
   openPanel('item', esc(v ? v.title : (d ? d.name : '')), `
@@ -341,13 +345,14 @@ function liveSection() {
     const url = liveLink(L.id), done = roundItems().filter(i => fixStatus(i) === 'done').length, up = livePending();
     const qr = qrFor(url);
     h += `<div class="safe ok"><b>🔒 已鎖定，在線中${L.owner ? '（由本機發佈）' : L.from ? `（${esc(L.from)} 發佈）` : ''}</b><span>${done}／${n} 項已回復　·　${up ? `${up} 項回復等待上載${LV.err ? '（' + esc(LV.err) + '）' : ''}` : '全部回復已上載'}</span></div>
-      ${L.owner ? '<div class="note">你是這張清單的發佈人（管理員）：在這部機可以照常修改描述、分判、位置、編號，加點或刪點，改動即時同步給所有人；其他人只可以回復，而且只可改或刪自己的回復（你可以刪任何人的回復照片）。</div>' + liveMergeForm(r) + liveWho(L) : ''}
+      ${liveBoss(r) ? `<div class="note">你是管理員（${L.owner ? '這張清單由本機發佈' : '本機已輸入發佈密碼'}）：可以照常修改描述、分判、位置、編號，加點、刪點或併入其他批次，改動即時同步給所有人；其他人只可以回復，而且只可改或刪自己的回復（你可以刪任何人的回復照片）。</div>` + liveMergeForm(r) + liveWho(L)
+        : `<div class="note">這部機只可以回復。輸入發佈密碼即成為管理員，可以修改這張清單或併入其他批次。</div><div class="row"><label class="f" style="flex:2 1 0;min-width:0">發佈密碼<input id="liveAdminPw" type="password" autocomplete="off"></label><button class="btn" data-a="liveBeAdmin" style="align-self:flex-end">成為管理員</button></div>`}
       <div class="note">把連結發給分判或同事，用 iPad／手機開啟就會載入這張清單（不用安裝，但請在一般分頁開啟，不要用無痕瀏覽）。逐點按「拍回復照片」，相片即時上載，所有人包括你都會即時看到綠點。</div>
       <label class="f">連結<input readonly value="${esc(url)}" onfocus="this.select()"></label>
       <div class="row"><button class="btn p" data-a="liveShare">分享連結</button><button class="btn" data-a="liveCopy">複製連結</button></div>
       ${qr ? `<div style="text-align:center"><img src="${qr.createDataURL(4, 8)}" alt="連結二維碼" style="width:180px;image-rendering:pixelated"></div>` : ''}`;
   } else if (n) {
-    h += `<div class="note">把目前批次（${esc(r.name)}，${n} 項）上載並鎖定成最終清單。鎖定後其他人都不能再加點、刪點，或改描述、分判、編號、位置，只可加回復照片及回覆文字；只有你（發佈人）在這部機可以繼續修改。建議先「導出 → 整理編號」再發佈。</div>
+    h += `<div class="note">把目前批次（${esc(r.name)}，${n} 項）上載並鎖定成最終清單。鎖定後其他人都不能再加點、刪點，或改描述、分判、編號、位置，只可加回復照片及回覆文字；只有管理員（發佈人，或輸入過發佈密碼的機）可以繼續修改。建議先「導出 → 整理編號」再發佈。</div>
       ${S.settings.livePubOk ? '' : '<label class="f">發佈密碼（每部機只需輸入一次）<input id="livePw" type="password" autocomplete="off"></label>'}
       <button class="btn p" data-a="livePub">發佈並鎖定此批次</button>`;
   }
@@ -376,7 +381,7 @@ function liveListRows() {
 /* ---- the publisher folds another round into the list: its records join the list and go up ---- */
 function liveMergeForm(r) {
   const L = setRounds().filter(x => x.id !== r.id && !liveOf(x) && S.items.some(i => roundOf(i) === x.id));
-  if (!L.length) return '';
+  if (!L.length) return `<div class="f-l">把另一個批次併入這張在線清單</div><div class="note">這部機${setName()}圖紙之下沒有其他有記錄的批次可以併入。要併入的批次如果在另一部機：在那部機輸入發佈密碼成為管理員後直接併入；或在那部機「導出 → 按驗收批次備份」，再在這部機「導出 → 匯入備份檔」。</div>`;
   return `<div class="f-l">把另一個批次併入這張在線清單</div><div class="row"><label class="f" style="flex:2 1 0;min-width:0"><select id="liveSrc">${L.map(x => `<option value="${x.id}">${esc(x.name)}（${S.items.filter(i => roundOf(i) === x.id).length} 項）</option>`).join('')}</select></label><button class="btn" data-a="liveMerge" style="align-self:flex-end">併入</button></div>
     <div class="note">併入後，該批次的記錄及相片會上載，所有人即時看到；原批次會合併掉（記錄不會刪除）。編號如有重複，可再按「導出 → 整理編號」。</div>`;
 }
@@ -414,6 +419,11 @@ async function liveAction(a, b) {
   }
   if (a === 'liveJoin') return liveJoin($('#liveCode').value);
   if (a === 'liveOpen') return liveJoin(b.dataset.lid);
+  if (a === 'liveBeAdmin') {
+    const pw = $('#liveAdminPw').value; if (!pw) return toast('請輸入發佈密碼');
+    try { busy('正在核對…'); await liveInit(); await liveAuthorise(pw); busy(); toast('本機已成為管理員', 3500); renderOverlay(); updateBar(); return roundPanel(); }
+    catch (e) { busy(); return toast(e.code === 'permission-denied' ? '發佈密碼不正確' : '未能核對：' + e.message, 4000); }
+  }
   if (a === 'liveMerge') {
     const src = S.rounds.find(x => x.id === $('#liveSrc').value); if (!src) return toast('請選擇要併入的批次');
     const n = S.items.filter(i => roundOf(i) === src.id).length;

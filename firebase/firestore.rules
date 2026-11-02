@@ -1,17 +1,20 @@
 rules_version = '2';
-// 在線回復: a list is written by its publisher (管理員), who may keep changing its records and before photos;
+// 在線回復: a list is written by its publisher; the publisher and any device registered with the 發佈密碼 (管理員)
+// may keep changing its records and before photos;
 // once locked, anyone else signed in (anonymously, from the link) may add replies and reply photos, nothing else,
 // and change or remove only their own (each browser's anonymous uid tells people apart).
 service cloud.firestore {
   match /databases/{db}/documents {
     function signed() { return request.auth != null; }
     function head(lid) { return get(/databases/$(db)/documents/live/$(lid)).data; }
-    function mine(lid) { return head(lid).owner == request.auth.uid; }
+    function owner(lid) { return head(lid).owner == request.auth.uid; }
     function locked(lid) { return head(lid).locked == true; }
     // 發佈密碼: pubkeys/{sha-256 of the password} is made in the console; a device that knows it registers in admins
     function key(k) { return exists(/databases/$(db)/documents/pubkeys/$(k)); }
     function admin() { return exists(/databases/$(db)/documents/admins/$(request.auth.uid))
       && key(get(/databases/$(db)/documents/admins/$(request.auth.uid)).data.key); }
+    // 管理員 of a list: its publisher, or any device registered with the current 發佈密碼
+    function mine(lid) { return owner(lid) || admin(); }
 
     match /pubkeys/{k} { allow read, write: if false; }
     match /admins/{uid} {
