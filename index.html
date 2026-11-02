@@ -60,6 +60,7 @@ label.btn{display:flex;align-items:center;justify-content:center;cursor:pointer}
 .tb{background:transparent;border:1px solid rgba(255,255,255,.18);border-radius:9px;padding:8px 12px;color:var(--board-fg);white-space:nowrap;min-height:40px}
 .tb:active{background:rgba(255,255,255,.12)}
 .tb .n{display:inline-block;min-width:20px;padding:0 6px;margin-left:4px;border-radius:10px;background:var(--red);color:#fff;font:600 12px/20px var(--mono)}
+.tb .n.live{background:var(--ok)}.tb .n.live.wait{background:#c77700}
 .seg{display:flex;border:1px solid rgba(255,255,255,.18);border-radius:9px;overflow:hidden}
 .seg button{background:transparent;border:0;padding:8px 12px;color:var(--board-fg);min-height:40px;white-space:nowrap}
 .seg button[aria-pressed="true"]{background:var(--board-fg);color:var(--board);font-weight:600}
@@ -118,6 +119,7 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 #btnSub.on{background:#1f6f9c;color:#fff;border-color:#1f6f9c}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:3px 9px}
+.fdot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#d42a1e;margin-left:6px;vertical-align:middle;box-shadow:0 0 0 1.5px #fff}.fdot.ok{background:#2f7d4f}
 .chip b{font-weight:600}
 .btn{border:1px solid var(--line);background:var(--surface-2);border-radius:10px;padding:11px 14px;min-height:46px;font-weight:500}
 .btn.p{background:var(--red);border-color:var(--red);color:#fff;font-weight:600}
@@ -194,7 +196,7 @@ details[open]{display:flex;flex-direction:column;gap:8px}
   </div>
   <button class="tb" id="btnRound" title="驗收批次">第1次</button>
   <button class="tb" id="btnFloor" hidden>樓層</button>
-  <button class="tb" id="btnSub" hidden>分判</button>
+  <button class="tb" id="btnSub" hidden>篩選</button>
   <button class="tb" id="btnItems">記錄<span class="n" id="cnt">0</span></button>
   <button class="tb" id="btnExport">導出</button>
 </header>
@@ -245,6 +247,7 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 
 <input type="file" id="camInput" class="vh" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
 <input type="file" id="fixCam" class="vh" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
+<input type="file" id="fixLib" class="vh" accept="image/*" tabindex="-1" aria-hidden="true">
 <input type="file" id="photoRestore" class="vh" accept="image/*" multiple tabindex="-1" aria-hidden="true">
 <input type="file" id="libInput" class="vh" accept="image/*" tabindex="-1" aria-hidden="true">
 <input type="file" id="dwgInput" class="vh" accept="application/pdf,image/*" tabindex="-1" aria-hidden="true">
@@ -263,5 +266,6 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 <script src="lib/jsQR.js"></script>
 <script src="lib/jspdf.umd.min.js"></script>
 <script src="app.js"></script>
+<script src="live.js"></script>
 </body>
 </html>

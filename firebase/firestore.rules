@@ -1,0 +1,57 @@
+rules_version = '2';
+// 在線回復: a list is written by its publisher (管理員), who may keep changing its records and before photos;
+// once locked, anyone else signed in (anonymously, from the link) may add replies and reply photos, nothing else,
+// and change or remove only their own (each browser's anonymous uid tells people apart).
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function signed() { return request.auth != null; }
+    function head(lid) { return get(/databases/$(db)/documents/live/$(lid)).data; }
+    function mine(lid) { return head(lid).owner == request.auth.uid; }
+    function locked(lid) { return head(lid).locked == true; }
+    // 發佈密碼: pubkeys/{sha-256 of the password} is made in the console; a device that knows it registers in admins
+    function key(k) { return exists(/databases/$(db)/documents/pubkeys/$(k)); }
+    function admin() { return exists(/databases/$(db)/documents/admins/$(request.auth.uid))
+      && key(get(/databases/$(db)/documents/admins/$(request.auth.uid)).data.key); }
+
+    match /pubkeys/{k} { allow read, write: if false; }
+    match /admins/{uid} {
+      allow create, update: if signed() && request.auth.uid == uid && key(request.resource.data.key);
+      allow read, delete: if false;
+    }
+
+    match /live/{lid} {
+      allow get: if signed();
+      allow create: if signed() && admin() && request.resource.data.owner == request.auth.uid && request.resource.data.locked == false;
+      // the publisher may only lock it; the head of a locked list never changes again
+      allow update: if signed() && resource.data.owner == request.auth.uid && resource.data.locked == false;
+
+      match /items/{id} {
+        allow read: if signed();
+        allow write: if signed() && mine(lid);
+      }
+      match /photos/{pid} {
+        allow get: if signed();
+        // before photos: the publisher; reply photos: only whoever took them may send or change them,
+        // and remove them (the publisher may remove anyone's)
+        allow create: if signed() && (
+          (mine(lid) && request.resource.data.kind == 'b') ||
+          (locked(lid) && request.resource.data.kind == 'a' && request.resource.data.uid == request.auth.uid));
+        allow update: if signed() && (
+          (mine(lid) && resource.data.kind == 'b' && request.resource.data.kind == 'b') ||
+          (resource.data.kind == 'a' && resource.data.uid == request.auth.uid
+            && request.resource.data.kind == 'a' && request.resource.data.uid == request.auth.uid));
+        allow delete: if signed() && resource.data.kind == 'a' && (resource.data.uid == request.auth.uid || mine(lid));
+      }
+      // one reply per person and record, named {itemId}_{uid}: each person writes only their own
+      match /replies/{rid} {
+        allow read: if signed();
+        allow create: if signed() && locked(lid) && request.resource.data.uid == request.auth.uid
+          && rid == request.resource.data.item + '_' + request.auth.uid
+          && exists(/databases/$(db)/documents/live/$(lid)/items/$(request.resource.data.item));
+        allow update: if signed() && locked(lid) && (mine(lid) || (resource.data.uid == request.auth.uid
+          && request.resource.data.uid == request.auth.uid && request.resource.data.item == resource.data.item));
+        allow delete: if signed() && (resource.data.uid == request.auth.uid || mine(lid));
+      }
+    }
+  }
+}
