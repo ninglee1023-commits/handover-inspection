@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.7';
+const VERSION = '0.10.8';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1033,8 +1033,8 @@ function exportPanel() {
     <label class="btn" for="photoRestore">從相片還原記錄</label>
     <div class="note">本程式存的每張相片都帶有圖紙坐標（相片資料內及底部二維碼）。即使只剩下相片，在這裏一次揀選多張，就可以把記錄放回原來的圖紙位置及驗收批次。</div>
     <div class="note">匯入後所有記錄會在同一張圖上顯示，連同圖上位置、照片標註及檢查人員；同一記錄以較新的版本為準。</div>
-    <button class="btn" data-a="renum">整理編號（按樓層、位置）</button>
-    <div class="note">全部記錄匯入後按這裏，編號會改為按樓層排列，例如 B1-001、B1-002、G-001；3F 或以上按單位 A–Z 分開編號，例如 T1-3F-A-001、T1-3F-B-001，公共位置排在各單位之後（T1-3F-001）。同一單位或區域的記錄排在一起，就像一個人做了全部記錄。原來的編號會保留在記錄內。之後再匯入或新增記錄，可再按一次重新整理。</div>
+    <button class="btn" data-a="renum">整理「${esc(curRound().name)}」的編號（${roundItems().length} 項）</button>
+    <div class="note">只整理目前批次的記錄，其他批次的編號不變；要整理另一個批次，先在「驗收批次」切換過去。全部記錄匯入後按這裏，編號會改為按樓層排列，例如 B1-001、B1-002、G-001；3F 或以上按單位 A–Z 分開編號，例如 T1-3F-A-001、T1-3F-B-001，公共位置排在各單位之後（T1-3F-001）。同一單位或區域的記錄排在一起，就像一個人做了全部記錄。原來的編號會保留在記錄內。之後再匯入或新增記錄，可再按一次重新整理。</div>
     <div class="sec">本機</div>
     <div class="row"><button class="btn" data-a="setup">檢查人員：${esc(S.settings.inspector || '—')}</button></div>
     <label class="toggle">點選位置後直接開相機<input type="checkbox" id="sCam" ${S.settings.autoCam ? 'checked' : ''}></label>
@@ -1067,7 +1067,7 @@ function exportPanel() {
     if (a === 'album') albumPanel();
     if (a === 'setup') setupPanel();
     if (a === 'imp') $('#jsonInput').click();
-    if (a === 'renum') { if (!S.items.length) return toast('還沒有任何記錄'); if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = `再按一次確認整理 ${S.items.length} 項記錄的編號`; return; } await renumberAll(); exportPanel(); }
+    if (a === 'renum') { const n = roundItems().length; if (!n) return toast('目前批次還沒有任何記錄'); if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = `再按一次確認：整理「${curRound().name}」${n} 項記錄的編號`; return; } await renumberAll(); exportPanel(); }
   };
 }
 async function deliver(blob, filename) {
@@ -1347,7 +1347,7 @@ async function renumberAll() {
     it.code = `${k}-${String(n).padStart(3, '0')}`; it.ord = i; it.mod = now;
     await saveItem(it); liveEdited(it);
   }
-  renderOverlay(); updateBar(); toast(`已整理 ${list.length} 項記錄的編號（${cnt.size} 個樓層）`, 4000);
+  renderOverlay(); updateBar(); toast(`已整理「${curRound().name}」${list.length} 項記錄的編號（${cnt.size} 個樓層）`, 4000);
 }
 const fmtTime = t => { const d = new Date(t || Date.now()); const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 // a record counts as backed up by a full / new-records backup, or by a backup of its own round
