@@ -495,16 +495,23 @@ async function liveLoadLists() {
 function liveListRows() {
   if (!LV.lists && !LV.listErr) liveLoadLists();
   const set = curSet(), cur = curRound().id, mine = setRounds().filter(liveOf), held = new Set(mine.map(r => r.live.id));
-  const del = (lid, name) => S.settings.livePubOk ? `<button class="btn warn" data-a="liveDel" data-lid="${lid}" data-name="${esc(name)}" style="min-height:38px">刪除</button>` : '';
   const row = (cls, main, sub, act) => `<div class="li ${cls}" style="grid-template-columns:1fr auto"><span class="t"><b>${main}</b><span>${sub}</span></span><span class="row" style="flex-wrap:nowrap;gap:6px">${act}</span></div>`;
   const here = mine.map(r => { const L = S.items.filter(i => roundOf(i) === r.id), d = L.filter(i => fixStatus(i) === 'done').length;
     return row(r.id === cur ? 'cur' : '', `🔒 ${esc(r.name)}${r.id === cur ? '　（目前）' : ''}`, `${esc(r.date || '')}　${L.length} 項・已回復 ${d}${r.live.owner ? '　本機發佈' : r.live.from ? '　' + esc(r.live.from) + ' 發佈' : ''}`,
-      (r.id === cur ? '<span class="chip">使用中</span>' : `<button class="btn" data-r="${r.id}" style="min-height:38px">切換</button>`) + del(r.live.id, r.name)); });
+      (r.id === cur ? '<span class="chip">使用中</span>' : `<button class="btn" data-r="${r.id}" style="min-height:38px">切換</button>`)); });
   const cloud = (LV.lists || []).filter(l => (l.set || 'gbp') === set && !l.deleted && !held.has(l.id))
-    .map(l => row('', esc(l.name), `${esc(l.date || '')}${l.ownerName ? '　' + esc(l.ownerName) + ' 發佈' : ''}　未加入`, `<button class="btn p" data-a="liveOpen" data-lid="${l.id}" style="min-height:38px">加入</button>` + del(l.id, l.name)));
+    .map(l => row('', esc(l.name), `${esc(l.date || '')}${l.ownerName ? '　' + esc(l.ownerName) + ' 發佈' : ''}　未加入`, `<button class="btn p" data-a="liveOpen" data-lid="${l.id}" style="min-height:38px">加入</button>`));
   const note = !LV.lists ? `<div class="note">${LV.listErr ? `未能讀取雲端的在線批次（${esc(LV.listErr)}），請連網後再開這個面板。` : '正在讀取雲端的在線批次…'}</div>` : '';
   const all = [...here, ...cloud];
-  return (all.length ? `<div class="list">${all.join('')}</div>` : LV.lists ? '<div class="note">還沒有在線批次。</div>' : '') + note + liveBin();
+  return (all.length ? `<div class="list">${all.join('')}</div>` : LV.lists ? '<div class="note">還沒有在線批次。</div>' : '') + note + liveDelList() + liveBin();
+}
+/* 刪除 sits apart from the list, folded away, so a tap on a row can't hit it (管理員 only) */
+function liveDelList() {
+  if (!S.settings.livePubOk || !LV.lists) return '';
+  const L = LV.lists.filter(l => !l.deleted && (l.set || 'gbp') === curSet());
+  if (!L.length) return '';
+  const rows = L.map(l => `<div class="li" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(l.name)}</b><span>${esc(l.date || '')}</span></span><button class="btn warn" data-a="liveDel" data-lid="${l.id}" data-name="${esc(l.name)}" style="min-height:38px">刪除</button></div>`).join('');
+  return `<details style="margin-top:10px"><summary>刪除在線批次</summary><div class="note">刪除後移到回收箱，所有人不再看到；雲端的記錄、回復及相片保留，可在回收箱還原。按「刪除」後要再按一次確認。</div><div class="list">${rows}</div></details>`;
 }
 /* 回收箱 (管理員 only): deleted lists stay in the cloud until emptied for good */
 function liveBin() {
