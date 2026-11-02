@@ -362,10 +362,10 @@ function livePanel() {
   freeURLs();
   const it = S.editing, rd = liveRoundOf(it), d = S.drawings.find(x => x.id === it.drawingId), v = d ? viewById(d, it.loc.viewId) : null, F = fixOf(it);
   const pic = (ph, a, i) => ph.out ? `<img src="${burl(ph.out)}" data-a="${a}" data-i="${i}" alt="">` : `<span class="ed" style="position:static;display:block;padding:40% 8px 0;text-align:center">${ph.missing ? '相片未能下載' : '相片下載中…'}</span>`;
-  const before = it.photos.map((ph, i) => `<div class="ph1">${pic(ph, '', i)}<span class="ed">完成前 ${i + 1}</span></div>`).join('');
+  const before = it.photos.map((ph, i) => `<div class="ph1">${pic(ph, 'viewB', i)}<span class="ed">完成前 ${i + 1}</span></div>`).join('');
   // only your own reply photos can be marked again or removed (the publisher may remove anyone's)
   const after = F.photos.map((ph, i) => { const own = liveMinePhoto(ph);
-    return `<div class="ph1" style="outline:2px solid var(--ok)">${pic(ph, own ? 'edA' : '', i)}${own || liveBoss(rd) ? `<button class="del" data-a="delA" data-i="${i}" aria-label="刪除照片">✕</button>` : ''}<span class="ed" style="background:${ph.up || ph.remote ? 'var(--ok)' : '#c77700'}">${ph.up || ph.remote ? '已上載' : '等待上載'}・${own ? '我' : esc(ph.by || '其他人')}</span></div>`; }).join('');
+    return `<div class="ph1" style="outline:2px solid var(--ok)">${pic(ph, 'viewA', i)}${own || liveBoss(rd) ? `<button class="del" data-a="delA" data-i="${i}" aria-label="刪除照片">✕</button>` : ''}<span class="ed" style="background:${ph.up || ph.remote ? 'var(--ok)' : '#c77700'}">${ph.up || ph.remote ? '已上載' : '等待上載'}・${own ? '我' : esc(ph.by || '其他人')}</span></div>`; }).join('');
   const others = Object.values(F.texts || {}).map(t => `<div class="note" style="color:inherit"><b>${esc(t.by || '其他人')}</b>：${esc(t.text)}</div>`).join('');
   const L = roundItems().filter(subOk).sort(byOrder), pos = L.findIndex(x => x.id === it.id), nd = L.filter(x => fixStatus(x) === 'done').length;
   openPanel('item', esc(v ? v.title : (d ? d.name : '')), `
@@ -386,6 +386,11 @@ function livePanel() {
   panel.querySelector('.pb').onclick = async e => {
     if (e.target.closest('[data-a="reply"]')) { S.fixItem = it; return; }
     const a = e.target.dataset.a; if (!a) return;
+    if (a === 'viewB' || a === 'viewA') {
+      const after = a === 'viewA', L = after ? F.photos : it.photos;
+      const list = L.map((p, k) => ({ blob: p.out, label: after ? `回復 ${k + 1}・${liveMinePhoto(p) ? '我' : p.by || '其他人'}` : `完成前 ${k + 1}`, edit: after && liveMinePhoto(p) && p.out ? k : null }));
+      return photoViewer(list, +e.target.dataset.i, k => { const img = panel.querySelector(`[data-a="viewA"][data-i="${k}"]`); if (img) { img.dataset.a = 'edA'; img.click(); } });
+    }
     if (a === 'edA') { const i = +e.target.dataset.i, ph = F.photos[i]; if (!liveMinePhoto(ph)) return; if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r, up: 0 }; await persistItem(true); liveTouched(it); itemPanel(); } }
     if (a === 'delA') {
       if (!e.target.dataset.armed) { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; return; }
@@ -396,6 +401,43 @@ function livePanel() {
     if (a === 'done') closePanel();
   };
   updateBar();
+}
+/* full-screen photo viewer: pinch, double-tap or wheel to zoom, drag to pan, ‹ › between the photos of a set;
+   onEdit(i) for photos the viewer may mark again (their own replies) */
+function photoViewer(list, start, onEdit) {
+  list = list.filter(x => x.blob); if (!list.length) return toast('相片仍在下載');
+  let el = $('#pv'); if (!el) { el = document.createElement('div'); el.id = 'pv'; document.body.appendChild(el); }
+  let idx = Math.min(start, list.length - 1), url = '', img, k = 1, tx = 0, ty = 0, fit = null, lastTap = 0;
+  const ptr = new Map(); let g = null;
+  const apply = () => { img.style.transform = `translate(${tx}px,${ty}px) scale(${k})`; };
+  const reset = () => { const W = el.clientWidth, H = el.clientHeight, s = Math.min(W / img.naturalWidth, H / img.naturalHeight);
+    fit = { w: img.naturalWidth * s, h: img.naturalHeight * s }; img.style.width = fit.w + 'px'; img.style.height = fit.h + 'px';
+    k = 1; tx = (W - fit.w) / 2; ty = (H - fit.h) / 2; apply(); };
+  const zoom = (k2, px, py) => { k2 = clamp(k2, 1, 8); tx = px - (px - tx) * k2 / k; ty = py - (py - ty) * k2 / k; k = k2; if (k === 1) reset(); else apply(); };
+  const show = () => {
+    if (url) URL.revokeObjectURL(url); url = URL.createObjectURL(list[idx].blob); const x = list[idx];
+    el.innerHTML = `<img alt="" draggable="false"><div class="pvbar"><span>${esc(x.label)}${list.length > 1 ? `　${idx + 1}／${list.length}` : ''}</span>${x.edit != null && onEdit ? '<button data-v="edit">修改標記</button>' : ''}<button data-v="x" aria-label="關閉">✕</button></div>${list.length > 1 ? '<button class="pvnav" data-v="prev" aria-label="上一張">‹</button><button class="pvnav r" data-v="next" aria-label="下一張">›</button>' : ''}`;
+    img = el.querySelector('img'); img.onload = reset; img.src = url;
+  };
+  const close = () => { el.hidden = true; el.innerHTML = ''; if (url) URL.revokeObjectURL(url); removeEventListener('resize', onRes); };
+  const onRes = () => img && img.naturalWidth && reset(); addEventListener('resize', onRes);
+  el.onclick = e => { const v = e.target.closest('[data-v]'); if (!v) return; const a = v.dataset.v;
+    if (a === 'x') close(); if (a === 'prev' || a === 'next') { idx = (idx + (a === 'next' ? 1 : list.length - 1)) % list.length; show(); }
+    if (a === 'edit') { const i = list[idx].edit; close(); onEdit(i); } };
+  el.onpointerdown = e => { if (e.target.closest('[data-v]')) return; try { el.setPointerCapture(e.pointerId); } catch (err) { } ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptr.size === 1) g = { t: 'pan', x: e.clientX, y: e.clientY, tx, ty, moved: false };
+    else if (ptr.size === 2) { const [p, q] = [...ptr.values()]; g = { t: 'pinch', d: Math.hypot(p.x - q.x, p.y - q.y), k }; } };
+  el.onpointermove = e => { if (!ptr.has(e.pointerId) || !g) return; ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (g.t === 'pan') { const dx = e.clientX - g.x, dy = e.clientY - g.y; if (Math.hypot(dx, dy) > 6) g.moved = true; if (k > 1) { tx = g.tx + dx; ty = g.ty + dy; apply(); } }
+    else if (ptr.size >= 2) { const [p, q] = [...ptr.values()], r = el.getBoundingClientRect(); zoom(g.k * Math.hypot(p.x - q.x, p.y - q.y) / g.d, (p.x + q.x) / 2 - r.left, (p.y + q.y) / 2 - r.top); } };
+  el.onpointerup = el.onpointercancel = e => { if (!ptr.has(e.pointerId)) return; ptr.delete(e.pointerId);
+    if (g && g.t === 'pan' && !g.moved && e.type === 'pointerup') { const r = el.getBoundingClientRect(), now = Date.now();
+      if (now - lastTap < 320) { zoom(k > 1 ? 1 : 2.5, e.clientX - r.left, e.clientY - r.top); lastTap = 0; } else lastTap = now;
+      // a swipe left / right at normal size goes to the next photo
+    } else if (g && g.t === 'pan' && k === 1 && list.length > 1 && Math.abs(e.clientX - g.x) > 60) { idx = (idx + (e.clientX < g.x ? 1 : list.length - 1)) % list.length; show(); }
+    g = ptr.size ? { t: 'dead' } : null; };
+  el.onwheel = e => { e.preventDefault(); const r = el.getBoundingClientRect(); zoom(k * Math.exp(-e.deltaY * 0.002), e.clientX - r.left, e.clientY - r.top); };
+  el.hidden = false; show();
 }
 $('#fixLib').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
 

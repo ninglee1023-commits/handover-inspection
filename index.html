@@ -162,6 +162,13 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 .edgrp{display:flex;gap:6px}
 
 #preview{position:fixed;inset:0;z-index:55;background:#3a4244;display:flex;flex-direction:column}
+#pv{position:fixed;inset:0;z-index:60;background:#0d1112;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+#pv img{position:absolute;left:0;top:0;transform-origin:0 0;max-width:none}
+#pv .pvbar{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:8px;padding:calc(env(safe-area-inset-top) + 8px) 12px 8px;background:linear-gradient(#000a,#0000);color:#fff;font-size:15px}
+#pv .pvbar span{flex:1}
+#pv .pvbar button{background:#ffffff26;color:#fff;border:0;border-radius:8px;min-height:40px;min-width:44px;padding:0 12px;font-size:15px}
+#pv .pvnav{position:absolute;top:50%;left:6px;transform:translateY(-50%);background:#0007;color:#fff;border:0;border-radius:50%;width:44px;height:44px;font-size:26px}
+#pv .pvnav.r{left:auto;right:6px}
 .pvbar{display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top,0px) + 8px) max(12px,env(safe-area-inset-right,0px)) 8px max(12px,env(safe-area-inset-left,0px));background:var(--board);color:var(--board-fg);flex-wrap:wrap;touch-action:manipulation}
 .pvbar .pvinfo{flex:1;font-size:13px;opacity:.85;min-width:0}
 .pvbar button{background:transparent;border:1px solid rgba(255,255,255,.25);color:var(--board-fg);border-radius:9px;padding:8px 14px;min-height:42px}
