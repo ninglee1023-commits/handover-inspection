@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.2';
+const VERSION = '0.10.4';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1856,26 +1856,31 @@ const roundName = id => (S.rounds.find(r => r.id === id) || {}).name || '';
 async function saveRounds() { await DB.kset('rounds', S.rounds); }
 function shortRound(r) { const m = (r.name || '').match(/第\s*(\d+)\s*次/); return m ? `第${m[1]}次` : (r.name || '').slice(0, 6); }
 function roundPanel() {
-  const rows = setRounds().map(r => {
+  // 本地批次 only: the online ones are listed in their own half (liveOnlineSection)
+  const local = setRounds().filter(r => !liveOf(r));
+  const rows = local.map(r => {
     const n = S.items.filter(i => roundOf(i) === r.id).length, on = r.id === curRound().id;
     return `<button class="li ${on ? 'cur' : ''}" data-r="${r.id}" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(r.name)}${on ? '　（目前）' : ''}</b><span>${esc(r.date || '')}　${n} 項記錄</span></span><span class="chip">${on ? '使用中' : '切換'}</span></button>`;
   }).join('');
-  const nx = setRounds().length + 1;
+  const nx = local.length + 1;
   openPanel('round', curSet() === 'gbp' ? '驗收批次' : `驗收批次 · ${setName()}`, `
     <div class="note">每一次驗收的記錄分開存放。圖上紅點、記錄清單、編號和報告都只包括目前這一次；以前各次的記錄保留不刪，隨時可以切換回去查看或導出。</div>
-    <div class="list">${rows}</div>
+    ${liveOnlineSection()}
+    <div class="sec">本地批次（只在這部機）</div>
+    <div class="list">${rows || '<div class="note">沒有本地批次。</div>'}</div>
+    ${livePublishBlock()}
     <div class="sec">開始新一次驗收</div>
     <div class="grid2"><label class="f">名稱<input id="rnName" value="第${nx}次驗收"></label><label class="f">日期<input id="rnDate" type="date" value="${today()}"></label></div>
     <button class="btn p" data-a="new">開始新一次驗收</button>
-    <div class="sec">修改目前批次名稱</div>
+    ${liveOf(curRound()) ? '' : `<div class="sec">修改目前批次名稱</div>
     <div class="grid2"><label class="f">名稱<input id="rcName" value="${esc(curRound().name)}"></label><label class="f">日期<input id="rcDate" type="date" value="${esc(curRound().date || '')}"></label></div>
-    <button class="btn" data-a="ren">儲存名稱</button>
-    ${setRounds().length > 1 ? `<div class="sec">合併批次</div>
+    <button class="btn" data-a="ren">儲存名稱</button>`}
+    ${local.length > 1 ? `<div class="sec">合併本地批次</div>
     <div class="note">勾選兩個或以上的批次（例如同事匯入、名稱不同的批次），輸入新名稱後合併成一個批次，之後圖上、記錄清單和報告會一次包括全部記錄。記錄、相片及檢查人員不變；之後再匯入這些批次的備份檔，記錄會自動放入合併後的批次。</div>
-    ${setRounds().map(r => `<label class="toggle">${esc(r.name)}${r.date ? '　' + esc(r.date) : ''}（${S.items.filter(i => roundOf(i) === r.id).length} 項）<input type="checkbox" data-m="${r.id}"></label>`).join('')}
+    ${local.map(r => `<label class="toggle">${esc(r.name)}${r.date ? '　' + esc(r.date) : ''}（${S.items.filter(i => roundOf(i) === r.id).length} 項）<input type="checkbox" data-m="${r.id}"></label>`).join('')}
     <label class="f">合併後名稱<input id="mgName" placeholder="例如：第1次驗收（全部）"></label>
     <button class="btn" data-a="merge">合併所選批次</button>` : ''}
-    ${liveSection()}`);
+    ${liveLogin()}`);
   panel.querySelector('.pb').onclick = async e => {
     const b = e.target.closest('[data-r]');
     if (b) { setCurRound(b.dataset.r); await saveKV(); closePanel(); renderOverlay(); updateBar(); return toast(`已切換到「${roundLabel()}」`); }

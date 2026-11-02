@@ -27,8 +27,11 @@ service cloud.firestore {
       // the 驗收批次 panel lists the locked lists, so they can be joined without a link
       allow list: if signed() && resource.data.locked == true;
       allow create: if signed() && admin() && request.resource.data.owner == request.auth.uid && request.resource.data.locked == false;
-      // the publisher may only lock it; the head of a locked list never changes again
-      allow update: if signed() && resource.data.owner == request.auth.uid && resource.data.locked == false;
+      // the publisher locks it; after that a 管理員 may only rename it, or flag it deleted before deleting it
+      allow update: if signed() && ((resource.data.owner == request.auth.uid && resource.data.locked == false)
+        || (resource.data.locked == true && mine(lid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'date', 'deleted'])));
+      allow delete: if signed() && mine(lid);
 
       match /items/{id} {
         allow read: if signed();
@@ -45,7 +48,7 @@ service cloud.firestore {
           (mine(lid) && resource.data.kind == 'b' && request.resource.data.kind == 'b') ||
           (resource.data.kind == 'a' && resource.data.uid == request.auth.uid
             && request.resource.data.kind == 'a' && request.resource.data.uid == request.auth.uid));
-        allow delete: if signed() && resource.data.kind == 'a' && (resource.data.uid == request.auth.uid || mine(lid));
+        allow delete: if signed() && (mine(lid) || (resource.data.kind == 'a' && resource.data.uid == request.auth.uid));
       }
       // one reply per person and record, named {itemId}_{uid}: each person writes only their own
       match /replies/{rid} {

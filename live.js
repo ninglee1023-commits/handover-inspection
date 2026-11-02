@@ -86,7 +86,7 @@ async function livePublish(rd, pw) {
     if (pw) try { await liveAuthorise(pw); } catch (e) { if (e.code === 'permission-denied') { busy(); return toast('發佈密碼不正確', 4000); } throw e; }
     const id = (uid() + uid()).replace(/[^a-z0-9]/g, '');
     try { await F.setDoc(lref(id), { name: rd.name, date: rd.date || '', set: setOfRound(rd), project: S.project.name || '', owner: LV.uid, ownerName: S.settings.inspector || '', created: Date.now(), n: items.length, locked: false }); }
-    catch (e) { if (e.code !== 'permission-denied') throw e; S.settings.livePubOk = false; await saveKV(); busy(); if (S.panel === 'round') roundPanel(); return toast('這部機未獲准發佈，請輸入發佈密碼', 5000); }
+    catch (e) { if (e.code !== 'permission-denied') throw e; S.settings.livePubOk = false; await saveKV(); busy(); if (S.panel === 'round') roundPanel(); return toast('這部機未獲准發佈，請先按「管理員登入」', 5000); }
     const tot = items.reduce((s, i) => s + i.photos.length, 0); let n = 0;
     for (const it of items) for (const p of it.photos) {
       busy(`正在上載完成前相片 ${++n}／${tot}`);
@@ -101,7 +101,7 @@ async function livePublish(rd, pw) {
     // replies already on this iPad (e.g. from reply packs) go up as well
     for (const it of items) { if (hasReply(it)) { const X = it.fix; X.dirty = 1; X.mine = X.reply || ''; for (const p of X.photos || []) Object.assign(p, { up: 0, uid: LV.uid, by: p.by || X.by || S.settings.inspector || '' }); } await saveItem(it, true); }
     busy(); liveWatch(rd); liveFlush(); updateBar(); if (S.panel === 'round') roundPanel();
-    toast(`已發佈並鎖定「${rd.name}」（${items.length} 項），可以把連結發出`, 4500);
+    LV.lists = null; toast(`已上傳「${rd.name}」（${items.length} 項），已移到「在線批次」，可以發給分判`, 4500);
   } catch (e) { busy(); toast('發佈失敗：' + e.message, 6000); console.error(e); }
 }
 
@@ -140,10 +140,13 @@ async function liveJoin(code) {
   } catch (e) { busy(); toast('加入失敗：' + e.message, 6000); console.error(e); }
 }
 
-/* ---- replies from the cloud, live ---- */
+/* ---- the list from the cloud, live: its head (name, deleted), the replies and the records ---- */
 function liveWatch(rd) {
   const id = rd.live.id; if (LV.subs.has(id) || !LV.fb) return;
-  LV.subs.set(id, LV.fb.onSnapshot(lcol(id, 'replies'), snap => {
+  const F = LV.fb, un = []; LV.subs.set(id, un);
+  const again = err => { console.warn(err); liveUnwatch(id); setTimeout(() => { if (liveOf(rd)) liveWatch(rd); }, 30000); };
+  un.push(F.onSnapshot(lref(id), s => { if (s.exists() || !s.metadata.fromCache) liveHead(rd, s.exists() ? s.data() : null); }, again));
+  un.push(F.onSnapshot(lcol(id, 'replies'), snap => {
     const R = LV.rep.get(id) || new Map(), hit = new Set(); LV.rep.set(id, R);
     for (const ch of snap.docChanges()) {
       const d = ch.doc.data(); if (!d.item || !d.uid) continue;
@@ -152,14 +155,51 @@ function liveWatch(rd) {
     }
     for (const iid of hit) liveApply(rd, iid);
     if (S.panel === 'round') roundPanel();
-  }, err => { console.warn(err); LV.subs.delete(id); setTimeout(() => liveWatch(rd), 30000); }));
-  LV.fb.onSnapshot(lcol(id, 'items'), snap => {
+  }, again));
+  un.push(F.onSnapshot(lcol(id, 'items'), snap => {
     for (const ch of snap.docChanges()) liveRecord(rd, ch.type === 'removed' ? null : ch.doc.data(), ch.doc.id);
-  }, err => console.warn(err));
+  }, again));
+}
+function liveUnwatch(id) { for (const u of LV.subs.get(id) || []) u(); LV.subs.delete(id); }
+// a 管理員 renamed the list, or deleted it: then the records here stay, as an ordinary round
+async function liveHead(rd, h) {
+  if (!liveOf(rd) || LV.deleting === rd.live.id) return; // deleting it here: liveDeleteList lets go itself
+  if (!h || h.deleted) {
+    const name = rd.name; await liveDetach(rd);
+    return toast(`在線批次「${name}」已被管理員刪除，本機的記錄保留成本地批次`, 6000);
+  }
+  if ((h.name && h.name !== rd.name) || (h.date || '') !== (rd.date || '')) {
+    rd.name = h.name || rd.name; rd.date = h.date || ''; await saveRounds(); updateBar(); if (S.panel === 'round') roundPanel();
+  }
+}
+async function liveDetach(rd) {
+  liveUnwatch(rd.live.id); LV.rep.delete(rd.live.id); delete rd.live;
+  for (const it of S.items.filter(i => roundOf(i) === rd.id)) {
+    delete it.liveDirty; if (it.fix) { delete it.fix.dirty; delete it.fix.del; }
+    for (const p of allPhotos(it)) delete p.remote;
+    await saveItem(it, true);
+  }
+  LV.lists = null; await saveRounds(); renderOverlay(); updateBar(); if (S.panel === 'round') roundPanel();
+}
+/* a 管理員 deletes a whole list from the cloud: flag it first, so the other devices let go before its records go */
+async function liveDeleteList(rd) {
+  const id = rd.live.id, name = rd.name;
+  try {
+    busy('正在刪除在線清單…'); await liveInit(); const F = LV.fb; LV.deleting = id;
+    await F.updateDoc(lref(id), { deleted: true }); liveUnwatch(id);
+    const [its, reps] = await Promise.all([F.getDocs(lcol(id, 'items')), F.getDocs(lcol(id, 'replies'))]);
+    const pids = new Set(); its.docs.forEach(d => (d.data().photos || []).forEach(p => pids.add(p.id))); reps.docs.forEach(d => Object.keys(d.data().photos || {}).forEach(p => pids.add(p)));
+    let n = 0; for (const p of pids) { busy(`正在刪除相片 ${++n}／${pids.size}`); await F.deleteDoc(lref(id, 'photos', p)).catch(() => { }); }
+    const refs = [...its.docs, ...reps.docs].map(d => d.ref);
+    for (let i = 0; i < refs.length; i += 400) { const wb = F.writeBatch(LV.db); refs.slice(i, i + 400).forEach(r => wb.delete(r)); await wb.commit(); }
+    await F.deleteDoc(lref(id));
+    LV.deleting = null; if (liveOf(rd)) await liveDetach(rd); busy(); toast(`已刪除在線批次「${name}」；本機的記錄保留成本地批次`, 5000);
+  } catch (e) { LV.deleting = null; busy(); toast('刪除失敗：' + e.message, 6000); console.error(e); }
 }
 /* the publisher changed, added or deleted a record */
 const LIVE_KEYS = ['code', 'no', 'dev', 'by', 'ord', 'origLabel', 'note', 'sub', 'subs', 'drawingId', 'pf', 'x', 'y', 'loc', 'locText', 'locEdited', 'created'];
 async function liveRecord(rd, c, id) {
+  if (!liveOf(rd)) return;
   const ex = S.items.find(i => i.id === id);
   if (!c) {
     if (!ex || roundOf(ex) !== rd.id) return;
@@ -180,6 +220,7 @@ async function liveRecord(rd, c, id) {
   liveDownload();
 }
 async function liveApply(rd, id) {
+  if (!liveOf(rd)) return;
   const it = S.items.find(i => i.id === id && roundOf(i) === rd.id); if (!it) return;
   const docs = [...(((LV.rep.get(rd.live.id) || new Map()).get(id)) || new Map()).values()];
   const F = fixOf(it), me = myUid(), del = (F.del || []).map(d => d.id);
@@ -306,18 +347,18 @@ function livePanel() {
   const others = Object.values(F.texts || {}).map(t => `<div class="note" style="color:inherit"><b>${esc(t.by || '其他人')}</b>：${esc(t.text)}</div>`).join('');
   const L = roundItems().filter(subOk).sort(byOrder), pos = L.findIndex(x => x.id === it.id), nd = L.filter(x => fixStatus(x) === 'done').length;
   openPanel('item', esc(v ? v.title : (d ? d.name : '')), `
-    <div class="note">🔒 「${esc(rd.name)}」是已鎖定的最終清單：記錄不能修改，只可加回復照片及回覆文字；每人只可改或刪自己的回復。回復即時上載，所有人同步看到。</div>
     <div class="idx">${esc(it.locText || '未設定位置')}</div>
     <div class="f-l">問題描述</div><div class="note" style="font-size:15px;color:inherit">${esc(it.note || '（未填描述）')}</div>
     <div class="chips">${subsOf(it).map(x => `<span class="chip on">${esc(x)}</span>`).join('') || '<span class="chip">未指定分判</span>'}</div>
     ${before ? `<div class="photos">${before}</div>` : ''}
-    <div class="row"><label class="btn g" for="fixCam" data-a="reply">拍回復照片</label><label class="btn" for="fixLib" data-a="reply">從相簿加入回復</label></div>
+    <div class="row"><label class="btn g" for="fixCam" data-a="reply">拍回復照片</label><label class="btn" for="fixLib" data-a="reply">從相簿加入</label></div>
     ${after ? `<div class="f-l">回復照片（完成後）</div><div class="photos">${after}</div>` : ''}
     ${others ? `<div class="f-l">其他人的回覆</div>${others}` : ''}
-    <label class="f">我的回覆文字（${esc(S.settings.inspector || '未設定名字')}，可留空）<input id="fxReply" value="${esc(F.mine || '')}" placeholder="例如：已更換門鉸"></label>
+    <label class="f">回覆文字（可留空）<input id="fxReply" value="${esc(F.mine || '')}" placeholder="例如：已更換門鉸"></label>
     <div class="row nav"><button class="btn" data-a="prev">‹ 上一個</button><button class="btn" data-a="next">下一個 ›</button></div>
     <div class="note navpos">${pos < 0 ? '' : `第 ${pos + 1}／${L.length} 項　·　已回復 ${nd} 項　·　未回復 ${L.length - nd} 項`}</div>
-    <button class="btn dk" data-a="done">完成</button>`, { badge: `<span class="no">${itemLabel(it)}</span>` });
+    <button class="btn dk" data-a="done">完成</button>
+    <div class="note">🔒 記錄由管理員鎖定，只可加回復；每人只可改或刪自己的回復（${esc(S.settings.inspector || '未設定名字')}）。</div>`, { badge: `<span class="no">${itemLabel(it)}</span>` });
   const q = s => panel.querySelector(s);
   q('#fxReply').oninput = e => { F.mine = e.target.value; liveTouched(it); persistItem(); };
   panel.querySelector('.pb').onclick = async e => {
@@ -336,27 +377,44 @@ function livePanel() {
 }
 $('#fixLib').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFixPhoto(f); };
 
-/* ---- 驗收批次 panel: publish, share, join ---- */
-function liveSection() {
-  const r = curRound(), L = liveOf(r), n = roundItems().length;
-  let h = '<div class="sec">在線回復</div>';
+/* ---- 驗收批次 panel: publish, share, join. Publishing and managing the lists are for 管理員 only
+   (管理員登入 = the 發佈密碼); everything else stays as it is for everyone ---- */
+function liveStatus(r) {
+  const L = liveOf(r), n = roundItems().length, done = roundItems().filter(i => fixStatus(i) === 'done').length, up = livePending();
+  return `<div class="safe ok"><b>🔒 ${esc(r.name)}${L.owner ? '（由本機發佈）' : L.from ? `（${esc(L.from)} 發佈）` : ''}</b><span>${done}／${n} 項已回復　·　${up ? `${up} 項等待上載${LV.err ? '（' + esc(LV.err) + '）' : ''}` : '全部已上載'}</span></div>`;
+}
+function liveLogin() {
+  if (S.settings.livePubOk) return '';
+  if (!S.liveLogin) return '<button class="btn" data-a="liveLogin" style="background:none;border:none;color:var(--muted);font-size:13px;min-height:0;padding:10px 0 0">管理員登入</button>';
+  return '<div class="row"><label class="f" style="flex:2 1 0;min-width:0">管理員密碼<input id="liveAdminPw" type="password" autocomplete="off"></label><button class="btn" data-a="liveBeAdmin" style="align-self:flex-end">登入</button></div>';
+}
+function liveOnlineSection() {
+  const r = curRound(), L = liveOf(r);
+  let h = '<div class="sec">在線批次（雲端，所有人同步）</div>';
   if (!LIVE_CFG) return h + '<div class="note">未設定在線伺服器（Firebase）。設定方法見 README「在線回復」。</div>';
+  h += liveListRows();
   if (L) {
-    const url = liveLink(L.id), done = roundItems().filter(i => fixStatus(i) === 'done').length, up = livePending();
-    const qr = qrFor(url);
-    h += `<div class="safe ok"><b>🔒 已鎖定，在線中${L.owner ? '（由本機發佈）' : L.from ? `（${esc(L.from)} 發佈）` : ''}</b><span>${done}／${n} 項已回復　·　${up ? `${up} 項回復等待上載${LV.err ? '（' + esc(LV.err) + '）' : ''}` : '全部回復已上載'}</span></div>
-      ${liveBoss(r) ? `<div class="note">你是管理員（${L.owner ? '這張清單由本機發佈' : '本機已輸入發佈密碼'}）：可以照常修改描述、分判、位置、編號，加點、刪點或併入其他批次，改動即時同步給所有人；其他人只可以回復，而且只可改或刪自己的回復（你可以刪任何人的回復照片）。</div>` + liveMergeForm(r) + liveWho(L)
-        : `<div class="note">這部機只可以回復。輸入發佈密碼即成為管理員，可以修改這張清單或併入其他批次。</div><div class="row"><label class="f" style="flex:2 1 0;min-width:0">發佈密碼<input id="liveAdminPw" type="password" autocomplete="off"></label><button class="btn" data-a="liveBeAdmin" style="align-self:flex-end">成為管理員</button></div>`}
-      <div class="note">把連結發給分判或同事，用 iPad／手機開啟就會載入這張清單（不用安裝，但請在一般分頁開啟，不要用無痕瀏覽）。逐點按「拍回復照片」，相片即時上載，所有人包括你都會即時看到綠點。</div>
+    h += `<div class="f-l">目前在線批次</div>` + liveStatus(r);
+    if (liveBoss(r)) {
+      const url = liveLink(L.id), qr = qrFor(url);
+      h += `<div class="note">你是管理員（${L.owner ? '這張清單由本機發佈' : '本機已登入'}）：可以照常修改描述、分判、位置、編號，加點、刪點或併入其他批次，改動即時同步給所有人；其他人只可以回復，而且只可改或刪自己的回復（你可以刪任何人的回復照片）。</div>` + liveMergeForm(r) + liveWho(L) + `
+      <div class="f-l">名稱</div><div class="grid2"><label class="f">名稱<input id="liveName" value="${esc(r.name)}"></label><label class="f">日期<input id="liveDate" type="date" value="${esc(r.date || '')}"></label></div><button class="btn" data-a="liveRename">儲存名稱（所有人同步）</button>
+      <div class="f-l">發給分判</div><div class="note">分判開程式後在「驗收批次 → 在線批次」按「加入」即可；亦可發連結或讓他們掃二維碼（請在一般分頁開啟，不要用無痕瀏覽）。</div>
       <label class="f">連結<input readonly value="${esc(url)}" onfocus="this.select()"></label>
       <div class="row"><button class="btn p" data-a="liveShare">分享連結</button><button class="btn" data-a="liveCopy">複製連結</button></div>
-      ${qr ? `<div style="text-align:center"><img src="${qr.createDataURL(4, 8)}" alt="連結二維碼" style="width:180px;image-rendering:pixelated"></div>` : ''}`;
-  } else if (n) {
-    h += `<div class="note">把目前批次（${esc(r.name)}，${n} 項）上載並鎖定成最終清單。鎖定後其他人都不能再加點、刪點，或改描述、分判、編號、位置，只可加回復照片及回覆文字；只有管理員（發佈人，或輸入過發佈密碼的機）可以繼續修改。建議先「導出 → 整理編號」再發佈。</div>
-      ${S.settings.livePubOk ? '' : '<label class="f">發佈密碼（每部機只需輸入一次）<input id="livePw" type="password" autocomplete="off"></label>'}
-      <button class="btn p" data-a="livePub">發佈並鎖定此批次</button>`;
+      ${qr ? `<div style="text-align:center"><img src="${qr.createDataURL(4, 8)}" alt="連結二維碼" style="width:180px;image-rendering:pixelated"></div>` : ''}
+      <div class="f-l">刪除</div><div class="note">從雲端刪除這個在線批次、所有記錄及所有人的回復和相片；各部機已有的記錄會變回本地批次（不再同步）。</div>
+      <button class="btn warn" data-a="liveDelete">刪除這個在線批次</button>`;
+    }
   }
-  return h + liveListRows() + `<div class="f-l">或者貼上連結加入</div><div class="row"><label class="f" style="flex:2 1 0;min-width:0"><input id="liveCode" placeholder="貼上連結"></label><button class="btn" data-a="liveJoin" style="align-self:flex-end">加入</button></div>`;
+  return h + `<div class="f-l">貼上連結加入</div><div class="row"><label class="f" style="flex:2 1 0;min-width:0"><input id="liveCode" placeholder="貼上連結"></label><button class="btn" data-a="liveJoin" style="align-self:flex-end">加入</button></div>`;
+}
+// under 本地批次: a 管理員 uploads the current local round; it then moves up to 在線批次
+function livePublishBlock() {
+  const r = curRound(), n = roundItems().length;
+  if (!LIVE_CFG || liveOf(r) || !n || !S.settings.livePubOk) return '';
+  return `<div class="f-l">上傳目前批次</div><div class="note">把「${esc(r.name)}」（${n} 項）上傳並鎖定，之後它會移到上面的「在線批次」。鎖定後只有管理員可以加點、刪點，或改描述、分判、編號、位置；其他人只可加回復照片及回覆文字。建議先「導出 → 整理編號」再上傳。</div>
+    <button class="btn p" data-a="livePub">上傳為在線批次</button>`;
 }
 /* ---- published lists anyone can join from the 驗收批次 panel, no link needed ---- */
 async function liveLoadLists() {
@@ -371,12 +429,16 @@ async function liveLoadLists() {
   if (S.panel === 'round') roundPanel();
 }
 function liveListRows() {
-  if (!LV.lists && !LV.listErr) { liveLoadLists(); return '<div class="f-l">在線清單</div><div class="note">正在讀取已發佈的在線清單…</div>'; }
-  if (!LV.lists) return `<div class="f-l">在線清單</div><div class="note">未能讀取在線清單（${esc(LV.listErr)}），請連網後再開這個面板。</div>`;
-  const set = curSet(), here = new Map(S.rounds.filter(liveOf).map(r => [r.live.id, r]));
-  const rows = LV.lists.filter(l => (l.set || 'gbp') === set).map(l => { const r = here.get(l.id);
-    return `<div class="li" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(l.name)}</b><span>${esc(l.date || '')}${l.ownerName ? '　' + esc(l.ownerName) + ' 發佈' : ''}</span></span>${r ? (r.id === curRound().id ? '<span class="chip">使用中</span>' : `<button class="btn" data-a="liveOpen" data-lid="${l.id}" style="min-height:38px">切換</button>`) : `<button class="btn p" data-a="liveOpen" data-lid="${l.id}" style="min-height:38px">加入</button>`}</div>`; }).join('');
-  return `<div class="f-l">在線清單（${setName()}）</div>${rows ? `<div class="list">${rows}</div>` : '<div class="note">還沒有已發佈的在線清單。</div>'}`;
+  if (!LV.lists && !LV.listErr) liveLoadLists();
+  const set = curSet(), cur = curRound().id, mine = setRounds().filter(liveOf), held = new Set(mine.map(r => r.live.id));
+  const row = (main, sub, act) => `<div class="li" style="grid-template-columns:1fr auto"><span class="t"><b>${main}</b><span>${sub}</span></span>${act}</div>`;
+  const here = mine.map(r => { const L = S.items.filter(i => roundOf(i) === r.id), d = L.filter(i => fixStatus(i) === 'done').length;
+    return `<button class="li ${r.id === cur ? 'cur' : ''}" data-r="${r.id}" style="grid-template-columns:1fr auto"><span class="t"><b>🔒 ${esc(r.name)}${r.id === cur ? '　（目前）' : ''}</b><span>${esc(r.date || '')}　${L.length} 項・已回復 ${d}${r.live.owner ? '　本機發佈' : r.live.from ? '　' + esc(r.live.from) + ' 發佈' : ''}</span></span><span class="chip">${r.id === cur ? '使用中' : '切換'}</span></button>`; });
+  const cloud = (LV.lists || []).filter(l => (l.set || 'gbp') === set && !l.deleted && !held.has(l.id))
+    .map(l => row(esc(l.name), `${esc(l.date || '')}${l.ownerName ? '　' + esc(l.ownerName) + ' 發佈' : ''}　未加入`, `<button class="btn p" data-a="liveOpen" data-lid="${l.id}" style="min-height:38px">加入</button>`));
+  const note = !LV.lists ? `<div class="note">${LV.listErr ? `未能讀取雲端的在線批次（${esc(LV.listErr)}），請連網後再開這個面板。` : '正在讀取雲端的在線批次…'}</div>` : '';
+  const all = [...here, ...cloud];
+  return (all.length ? `<div class="list">${all.join('')}</div>` : LV.lists ? '<div class="note">還沒有在線批次。</div>' : '') + note;
 }
 /* ---- the publisher folds another round into the list: its records join the list and go up ---- */
 function liveMergeForm(r) {
@@ -413,15 +475,24 @@ function liveWho(L) {
 async function liveAction(a, b) {
   const L = liveOf(curRound());
   if (a === 'livePub') {
-    const pw = $('#livePw') ? $('#livePw').value : ''; if ($('#livePw') && !pw) return toast('請輸入發佈密碼');
-    if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = `再按一次確認：上載並永久鎖定「${curRound().name}」（${roundItems().length} 項）`; return; }
-    return livePublish(curRound(), pw);
+    if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = `再按一次確認：上傳並鎖定「${curRound().name}」（${roundItems().length} 項）`; return; }
+    return livePublish(curRound());
   }
   if (a === 'liveJoin') return liveJoin($('#liveCode').value);
   if (a === 'liveOpen') return liveJoin(b.dataset.lid);
+  if (a === 'liveLogin') { S.liveLogin = true; roundPanel(); const f = $('#liveAdminPw'); if (f) f.focus(); return; }
+  if (a === 'liveRename') {
+    const name = $('#liveName').value.trim(); if (!name) return toast('請輸入名稱');
+    try { await liveInit(); await LV.fb.updateDoc(lref(L.id), { name, date: $('#liveDate').value || '' }); } catch (e) { return toast('未能儲存：' + e.message, 5000); }
+    const r = curRound(); r.name = name; r.date = $('#liveDate').value || ''; LV.lists = null; await saveRounds(); updateBar(); roundPanel(); return toast('已儲存，所有人同步更新');
+  }
+  if (a === 'liveDelete') {
+    if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = `再按一次確認：從雲端刪除「${curRound().name}」及所有人的回復`; return; }
+    return liveDeleteList(curRound());
+  }
   if (a === 'liveBeAdmin') {
     const pw = $('#liveAdminPw').value; if (!pw) return toast('請輸入發佈密碼');
-    try { busy('正在核對…'); await liveInit(); await liveAuthorise(pw); busy(); toast('本機已成為管理員', 3500); renderOverlay(); updateBar(); return roundPanel(); }
+    try { busy('正在核對…'); await liveInit(); await liveAuthorise(pw); busy(); S.liveLogin = false; toast('已登入管理員', 3500); renderOverlay(); updateBar(); return roundPanel(); }
     catch (e) { busy(); return toast(e.code === 'permission-denied' ? '發佈密碼不正確' : '未能核對：' + e.message, 4000); }
   }
   if (a === 'liveMerge') {
