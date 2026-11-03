@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.10';
+const VERSION = '0.10.11';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -601,6 +601,8 @@ function stepItem(it, how) {
   if (S.cur !== nx.drawingId) showDrawing(nx.drawingId).then(go); else go();
 }
 function openItem(it) { if (S.editing && S.editing.id !== it.id) finishItem(); S.editing = it; showFloorOf(it); if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { centerOn(it.x, it.y, 1); itemPanel(); }); else { itemPanel(); renderOverlay(); } }
+// who took a reply photo, for its label: 我 on their own device, their name on everyone else's
+const replier = (it, ph) => liveIn(it) ? `・${liveMinePhoto(ph) ? '我' : esc(ph.by || '其他人')}` : ph.by ? `・${esc(ph.by)}` : '';
 function relocate(it) { if (!it.locEdited) it.locText = fmtLoc(it.loc); }
 function itemPanel() {
   if (liveLocked(S.editing)) return livePanel();
@@ -613,7 +615,7 @@ function itemPanel() {
   const roomOpts = [...new Set([...(v ? (v.zones || []).filter(z => z.kind === 'room' && (!L.flat || z.flat === L.flat) && (!z.tower || z.tower === L.tower)).map(z => z.name) : []), ...ROOMS])];
   const sel = (id, opts, val, blank) => `<select id="${id}">${blank !== undefined ? `<option value="">${blank}</option>` : ''}${opts.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}${val && !opts.includes(val) ? `<option selected>${esc(val)}</option>` : ''}</select>`;
   const photos = it.photos.map((ph, i) => `<div class="ph1"><img src="${burl(ph.out)}" data-a="ed" data-i="${i}" alt="照片 ${i + 1}"><button class="del" data-a="delph" data-i="${i}" aria-label="刪除照片">✕</button><span class="ed">點擊修改標記</span></div>`).join('');
-  const after = ((it.fix && it.fix.photos) || []).map((ph, i) => `<div class="ph1" style="outline:2px solid var(--ok)"><img src="${burl(ph.out)}" data-a="edA" data-i="${i}" alt="回復 ${i + 1}"><button class="del" data-a="delA" data-i="${i}" aria-label="刪除照片">✕</button><span class="ed" style="background:var(--ok)">回復 ${i + 1}</span></div>`).join('');
+  const after = ((it.fix && it.fix.photos) || []).map((ph, i) => `<div class="ph1" style="outline:2px solid var(--ok)"><img src="${burl(ph.out)}" data-a="edA" data-i="${i}" alt="回復 ${i + 1}"><button class="del" data-a="delA" data-i="${i}" aria-label="刪除照片">✕</button><span class="ed" style="background:var(--ok)">回復 ${i + 1}${replier(it, ph)}</span></div>`).join('');
   openPanel('item', esc(v ? v.title : (d ? d.name : '')), `
     <div class="idx">${esc(it.locText || '未設定位置')}</div>
     <div class="grid3">
@@ -662,7 +664,11 @@ function itemPanel() {
     const rb = e.target.closest('[data-room]'); if (rb) { L.room = L.room === rb.dataset.room ? '' : rb.dataset.room; upd(true); return; }
     if (e.target.closest('[data-a="reply"]')) { S.fixItem = it; return; }
     const a = e.target.dataset.a; if (!a) return;
-    if (a === 'edA') { const i = +e.target.dataset.i; const F = fixOf(it); const ph = F.photos[i]; if (liveIn(it) && !liveMinePhoto(ph)) return toast('只可修改自己的回復照片'); if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistItem(true); itemPanel(); } }
+    if (a === 'edA') { const i = +e.target.dataset.i; const F = fixOf(it); const ph = F.photos[i]; if (liveIn(it) && !liveMinePhoto(ph)) {
+      // someone else's reply: view it full screen (marking stays with whoever took it)
+      const list = F.photos.map((p, k) => ({ blob: p.out, label: `回復 ${k + 1}・${liveMinePhoto(p) ? '我' : p.by || '其他人'}`, edit: liveMinePhoto(p) && p.out ? k : null }));
+      return photoViewer(list, i, k => { const img = panel.querySelector(`[data-a="edA"][data-i="${k}"]`); if (img) img.click(); });
+    } if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistItem(true); itemPanel(); } }
     if (a === 'delA') { if (e.target.dataset.armed) { const F = fixOf(it); if (liveIn(it)) liveDelPhoto(it, +e.target.dataset.i); else { F.photos.splice(+e.target.dataset.i, 1); if (!F.photos.length) { F.status = 'open'; F.done = null; } } await persistItem(true); renderOverlay(); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
     if (a === 'cam') $('#camInput').click();
     if (a === 'lib') $('#libInput').click();

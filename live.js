@@ -405,9 +405,9 @@ function livePanel() {
 /* full-screen photo viewer: pinch, double-tap or wheel to zoom, drag to pan, ‹ › between the photos of a set;
    onEdit(i) for photos the viewer may mark again (their own replies) */
 function photoViewer(list, start, onEdit) {
-  list = list.filter(x => x.blob); if (!list.length) return toast('相片仍在下載');
+  const pick = list[start]; list = list.filter(x => x.blob); if (!list.length || (pick && !pick.blob)) return toast('相片仍在下載');
   let el = $('#pv'); if (!el) { el = document.createElement('div'); el.id = 'pv'; document.body.appendChild(el); }
-  let idx = Math.min(start, list.length - 1), url = '', img, k = 1, tx = 0, ty = 0, fit = null, lastTap = 0;
+  let idx = Math.max(0, list.indexOf(pick)), url = '', img, k = 1, tx = 0, ty = 0, fit = null, lastTap = 0;
   const ptr = new Map(); let g = null;
   const apply = () => { img.style.transform = `translate(${tx}px,${ty}px) scale(${k})`; };
   const reset = () => { const W = el.clientWidth, H = el.clientHeight, s = Math.min(W / img.naturalWidth, H / img.naturalHeight);
