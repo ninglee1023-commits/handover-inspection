@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.11';
+const VERSION = '0.10.12';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -424,6 +424,8 @@ function renderOverlay() {
 function onFloor(d, it) { const v = viewById(d, it.loc && it.loc.viewId); return !v || !v.floors || v.floors.length <= 1 || !it.loc.floor || it.loc.floor === floorFor(v); }
 function showFloorOf(it) { const d = S.drawings.find(x => x.id === it.drawingId); const v = d && viewById(d, it.loc && it.loc.viewId); if (v && v.floors && v.floors.length > 1 && it.loc.floor && v.floors.includes(it.loc.floor)) { S.floorSel[v.id] = it.loc.floor; DB.kset('floorSel', S.floorSel); } }
 function multiFloorViews(d) { return d ? (d.views || []).filter(v => v.floors && v.floors.length > 1) : []; }
+// the bar's height (two rows on a narrow phone), for what sits under it
+if (window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty('--barh', $('#bar').offsetHeight + 'px')).observe($('#bar'));
 function updateBar() {
   const d = curD();
   $('#curName').textContent = d ? d.name : (S.project.name || '竣工驗收記錄');
