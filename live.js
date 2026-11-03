@@ -530,7 +530,7 @@ function liveMergeForm(r) {
   const L = setRounds().filter(x => x.id !== r.id && !liveOf(x) && S.items.some(i => roundOf(i) === x.id));
   if (!L.length) return `<div class="f-l">把另一個批次併入這張在線清單</div><div class="note">這部機${setName()}圖紙之下沒有其他有記錄的批次可以併入。要併入的批次如果在另一部機：在那部機輸入發佈密碼成為管理員後直接併入；或在那部機「導出 → 按驗收批次備份」，再在這部機「導出 → 匯入備份檔」。</div>`;
   return `<div class="f-l">把另一個批次併入這張在線清單</div><div class="row"><label class="f" style="flex:2 1 0;min-width:0"><select id="liveSrc">${L.map(x => `<option value="${x.id}">${esc(x.name)}（${S.items.filter(i => roundOf(i) === x.id).length} 項）</option>`).join('')}</select></label><button class="btn" data-a="liveMerge" style="align-self:flex-end">併入</button></div>
-    <div class="note">併入後，該批次的記錄及相片會上載，所有人即時看到；原批次會合併掉（記錄不會刪除）。編號如有重複，可再按「導出 → 整理編號」。</div>`;
+    <div class="note">併入後，該批次的記錄及相片會上載，所有人即時看到；原批次會合併掉（記錄不會刪除）。編號如有重複，併入的記錄會自動改用該樓層／單位的下一個號碼，原有編號不變。</div>`;
 }
 async function liveMergeInto(rd, src) {
   busy('正在併入…'); const me = myUid(), now = Date.now();
@@ -543,8 +543,8 @@ async function liveMergeInto(rd, src) {
   const al = { ...S.settings.roundAlias, [src.id]: rd.id }; for (const k of Object.keys(al)) if (al[k] === src.id) al[k] = rd.id; S.settings.roundAlias = al;
   S.rounds = S.rounds.filter(x => x.id !== src.id); await saveRounds(); await saveKV(); busy();
   renderOverlay(); updateBar(); liveFlush(); if (S.panel === 'round') roundPanel();
-  const L = roundItems().map(itemLabel), dup = L.length - new Set(L).size;
-  toast(`已把「${src.name}」併入「${rd.name}」，正在上載${dup ? `；有 ${dup} 個編號重複，可到「導出 → 整理編號」` : ''}`, dup ? 6000 : 4000);
+  const fixed = await fixDupCodes();
+  toast(`已把「${src.name}」併入「${rd.name}」，正在上載${fixed ? `；${fixed} 個重複編號已改用下一個號碼` : ''}`, fixed ? 6000 : 4000);
 }
 /* who has replied to the list: each browser is one uid (even without a login), shown with the name it gave */
 function liveWho(L) {
