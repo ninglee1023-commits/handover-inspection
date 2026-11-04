@@ -246,7 +246,7 @@ async function liveApply(rd, id) {
   const it = S.items.find(i => i.id === id && roundOf(i) === rd.id); if (!it) return;
   const docs = [...(((LV.rep.get(rd.live.id) || new Map()).get(id)) || new Map()).values()];
   const F = fixOf(it), me = myUid(), del = (F.del || []).map(d => d.id);
-  const sig = () => JSON.stringify([F.photos.map(p => [p.id, p.up, p.remote]), F.texts, F.mine, F.reply, F.status]), was = sig();
+  const sig = () => JSON.stringify([F.photos.map(p => [p.id, p.up, p.remote]), F.texts, F.mine, F.reply, F.status, F.olog, F.mylog]), was = sig();
   const cp = {}; for (const d of docs) for (const [pid, m] of Object.entries(d.photos || {})) cp[pid] = { ...m, uid: d.uid };
   for (const [pid, m] of Object.entries(cp)) {
     if (del.includes(pid)) continue;
@@ -259,7 +259,9 @@ async function liveApply(rd, id) {
   F.photos.sort((a, b) => (a.t || 0) - (b.t || 0));
   // the others' texts; mine stays as typed here while it waits to go up
   const T = {}; for (const d of docs) if ((d.reply || '').trim() && d.uid !== me) T[d.uid] = { by: d.by || '', text: d.reply };
-  F.texts = T; if (!F.dirty) { const m = docs.find(d => d.uid === me); F.mine = m ? m.reply || '' : F.mine || ''; }
+  F.texts = T; if (!F.dirty) { const m = docs.find(d => d.uid === me); F.mine = m ? m.reply || '' : F.mine || ''; F.mylog = (m && m.log) || F.mylog || []; }
+  // the 不需執修 steps of the others (the 分判's reasons, the 管理員's accept / reject)
+  F.olog = docs.filter(d => d.uid !== me).flatMap(d => d.log || []);
   liveSum(it); if (sig() === was) return;
   await saveItem(it, true); renderOverlay(); updateBar();
   if (S.panel === 'item' && S.editing === it) itemPanel();
@@ -292,7 +294,8 @@ function liveSum(it) {
   if ((F.mine || '').trim()) parts.push([S.settings.inspector || '', F.mine.trim()]);
   for (const t of Object.values(F.texts || {})) parts.push([t.by, t.text.trim()]);
   F.reply = parts.length > 1 ? parts.map(([b, t]) => (b ? b + '：' : '') + t).join('；') : parts.length ? parts[0][1] : '';
-  F.status = F.photos.length ? 'done' : 'open'; F.done = F.photos.length ? Math.max(...F.photos.map(p => p.t || 0)) : 0;
+  // 不需執修 waiting for review or accepted (the latest step of its log); a reply photo still makes it 已完成
+  const nf = nfState(it); F.status = F.photos.length ? 'done' : nf === 'pend' || nf === 'ok' ? 'nf' : 'open'; F.done = F.photos.length ? Math.max(...F.photos.map(p => p.t || 0)) : 0;
   F.by = [...new Set(F.photos.map(p => p.by).filter(Boolean))].join('、');
 }
 // a reply photo this device may change or remove: its own (the publisher may also remove anyone's)
@@ -337,7 +340,7 @@ async function liveFlush() {
       // removed photos: from my own reply, or (the publisher) from someone else's
       const del = [...(X.del || [])], theirs = del.filter(d => d.uid && d.uid !== me);
       for (const d of del) if (!theirs.includes(d)) P[d.id] = F.deleteField();
-      if (X.dirty || Object.keys(P).length) await F.setDoc(lref(id, 'replies', it.id + '_' + me), { item: it.id, uid: me, by: S.settings.inspector || '', reply: X.mine || '', mod: Date.now(), photos: P }, { merge: true });
+      if (X.dirty || Object.keys(P).length) await F.setDoc(lref(id, 'replies', it.id + '_' + me), { item: it.id, uid: me, by: S.settings.inspector || '', reply: X.mine || '', log: X.mylog || [], mod: Date.now(), photos: P }, { merge: true });
       for (const d of theirs) await F.setDoc(lref(id, 'replies', it.id + '_' + d.uid), { photos: { [d.id]: F.deleteField() } }, { merge: true });
       for (const d of del) await F.deleteDoc(lref(id, 'photos', d.id)).catch(() => { });
       for (const p of X.photos) if (p._v) { p.up = p._v; delete p._v; }
@@ -367,7 +370,7 @@ function livePanel() {
   const after = F.photos.map((ph, i) => { const own = liveMinePhoto(ph);
     return `<div class="ph1" style="outline:2px solid var(--ok)">${pic(ph, 'viewA', i)}${own || liveBoss(rd) ? `<button class="del" data-a="delA" data-i="${i}" aria-label="刪除照片">✕</button>` : ''}<span class="ed" style="background:${ph.up || ph.remote ? 'var(--ok)' : '#c77700'}">${ph.up || ph.remote ? '已上載' : '等待上載'}・${own ? '我' : esc(ph.by || '其他人')}</span></div>`; }).join('');
   const others = Object.values(F.texts || {}).map(t => `<div class="note" style="color:inherit"><b>${esc(t.by || '其他人')}</b>：${esc(t.text)}</div>`).join('');
-  const L = roundItems().filter(subOk).sort(byOrder), pos = L.findIndex(x => x.id === it.id), nd = L.filter(x => fixStatus(x) === 'done').length;
+  const L = roundItems().filter(subOk).sort(byOrder), pos = L.findIndex(x => x.id === it.id), nd = L.filter(x => fixStatus(x) !== 'open').length;
   openPanel('item', esc(v ? v.title : (d ? d.name : '')), `
     <div class="idx">${esc(it.locText || '未設定位置')}</div>
     <div class="f-l">問題描述</div><div class="note" style="font-size:15px;color:inherit">${esc(it.note || '（未填描述）')}</div>
@@ -376,13 +379,13 @@ function livePanel() {
     <div class="row"><label class="btn g" for="fixCam" data-a="reply">拍回復照片</label><label class="btn" for="fixLib" data-a="reply">從相簿加入</label></div>
     ${after ? `<div class="f-l">回復照片（完成後）</div><div class="photos">${after}</div>` : ''}
     ${others ? `<div class="f-l">其他人的回覆</div>${others}` : ''}
-    <label class="f">回覆文字（可留空）<input id="fxReply" value="${esc(F.mine || '')}" placeholder="例如：已更換門鉸"></label>
+    ${noFixBlock(it, '回覆文字', F.mine || '')}
     <div class="row nav"><button class="btn" data-a="prev">‹ 上一個</button><button class="btn" data-a="next">下一個 ›</button></div>
     <div class="note navpos">${pos < 0 ? '' : `第 ${pos + 1}／${L.length} 項　·　已回復 ${nd} 項　·　未回復 ${L.length - nd} 項`}</div>
     <button class="btn dk" data-a="done">完成</button>
     <div class="note">🔒 記錄由管理員鎖定，只可加回復；每人只可改或刪自己的回復（${esc(S.settings.inspector || '未設定名字')}）。</div>`, { badge: `<span class="no">${itemLabel(it)}</span>` });
   const q = s => panel.querySelector(s);
-  q('#fxReply').oninput = e => { F.mine = e.target.value; liveTouched(it); persistItem(); };
+  noFixWire(it, q);
   panel.querySelector('.pb').onclick = async e => {
     if (e.target.closest('[data-a="reply"]')) { S.fixItem = it; return; }
     const a = e.target.dataset.a; if (!a) return;
@@ -444,7 +447,7 @@ $('#fixLib').onchange = e => { const f = e.target.files[0]; e.target.value = '';
 /* ---- 驗收批次 panel: publish, share, join. Publishing and managing the lists are for 管理員 only
    (管理員登入 = the 發佈密碼); everything else stays as it is for everyone ---- */
 function liveStatus(r) {
-  const L = liveOf(r), n = roundItems().length, done = roundItems().filter(i => fixStatus(i) === 'done').length, up = livePending();
+  const L = liveOf(r), n = roundItems().length, done = roundItems().filter(i => fixStatus(i) !== 'open').length, up = livePending();
   return `<div class="safe ok"><b>🔒 ${esc(r.name)}${L.owner ? '（由本機發佈）' : L.from ? `（${esc(L.from)} 發佈）` : ''}</b><span>${done}／${n} 項已回復　·　${up ? `${up} 項等待上載${LV.err ? '（' + esc(LV.err) + '）' : ''}` : '全部已上載'}</span></div>`;
 }
 function liveLogin() {
@@ -499,7 +502,7 @@ function liveListRows() {
   const mine = S.rounds.filter(liveOf).sort((a, b) => first(setOfRound(a), setOfRound(b))), held = new Set(mine.map(r => r.live.id));
   const tag = k => k === set ? '' : `<span class="chip" style="margin-right:6px">${esc(setName(k))}</span>`;
   const row = (cls, main, sub, act) => `<div class="li ${cls}" style="grid-template-columns:1fr auto"><span class="t"><b>${main}</b><span>${sub}</span></span><span class="row" style="flex-wrap:nowrap;gap:6px">${act}</span></div>`;
-  const here = mine.map(r => { const L = S.items.filter(i => roundOf(i) === r.id), d = L.filter(i => fixStatus(i) === 'done').length;
+  const here = mine.map(r => { const L = S.items.filter(i => roundOf(i) === r.id), d = L.filter(i => fixStatus(i) !== 'open').length;
     const other = setOfRound(r) !== set;
     return row(r.id === cur ? 'cur' : '', `${tag(setOfRound(r))}🔒 ${esc(r.name)}${r.id === cur ? '　（目前）' : ''}`, `${esc(r.date || '')}　${L.length} 項・已回復 ${d}${r.live.owner ? '　本機發佈' : r.live.from ? '　' + esc(r.live.from) + ' 發佈' : ''}`,
       (r.id === cur ? '<span class="chip">使用中</span>' : other ? `<button class="btn" data-a="liveOpen" data-lid="${r.live.id}" style="min-height:38px">切換</button>` : `<button class="btn" data-r="${r.id}" style="min-height:38px">切換</button>`)); });

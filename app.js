@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.14';
+const VERSION = '0.10.17';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -118,7 +118,7 @@ async function refreshPhotos(it) {
    fs = signature of each field group as last saved, fm = time a group was last really edited */
 const FG = { note: it => it.note || '', sub: it => subText(it), code: it => [it.code, it.ord, it.origLabel],
   loc: it => [it.drawingId, it.x, it.y, it.loc, it.locText, it.locEdited], round: it => it.round || '',
-  fix: it => it.fix ? [it.fix.status, it.fix.reply || '', it.fix.done || 0, it.fix.by || '', (it.fix.photos || []).map(p => [p.id, p.shapes])] : null };
+  fix: it => it.fix ? [it.fix.status, it.fix.reply || '', (it.fix.log || []).map(e => e.t), it.fix.done || 0, it.fix.by || '', (it.fix.photos || []).map(p => [p.id, p.shapes])] : null };
 // the record fields each group stands for (a group not listed is the field of the same name)
 const FG_KEYS = { sub: ['sub', 'subs'], code: ['code', 'ord', 'origLabel'], loc: ['drawingId', 'pf', 'x', 'y', 'loc', 'locText', 'locEdited'] };
 const sigOf = (it, g) => { const t = JSON.stringify(FG[g](it)) || ''; let h = 5381; for (let i = 0; i < t.length; i++) h = (h * 33 + t.charCodeAt(i)) | 0; return h.toString(36) + t.length; };
@@ -410,7 +410,7 @@ function renderOverlay() {
     for (const it of all) {
       const act = !!(S.editing && S.editing.id === it.id); const r = (act ? 17 : 14) * u;
       // green = 已回復, grey = 不跟進; open records: blue once a 分判 is set, red otherwise
-      const st = fixStatus(it), pf = st === 'done' ? '#2f7d4f' : st === 'na' ? '#8a9391' : subsOf(it).length ? '#1f6f9c' : '#d42a1e';
+      const st = fixStatus(it), pf = st === 'done' ? '#2f7d4f' : st === 'nf' ? '#c77700' : st === 'na' ? '#8a9391' : subsOf(it).length ? '#1f6f9c' : '#d42a1e';
       h += `<circle cx="${it.x}" cy="${it.y}" r="${r}" fill="${pf}" stroke="${act ? '#f2c230' : '#fff'}" stroke-width="${act ? 4 : 2.5}" vector-effect="non-scaling-stroke"/><text x="${it.x}" y="${it.y}" font-size="${(String(it.code ? pinLabel(it, true) : it.no).length > 2 ? 10 : 12.5) * u}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-weight="700" font-family="ui-monospace,Menlo,monospace">${it.code ? pinLabel(it, true) : devOf(it) === (S.settings.dev || 'A') ? it.no : devShort(it) + it.no}</text>`;
     }
   }
@@ -630,8 +630,8 @@ function itemPanel() {
     ${L.grid ? `<div class="chips"><span class="chip">Grid <b>${esc(L.grid)}</b></span></div>` : ''}
     <div class="photos">${photos}</div>
     <div class="row"><label class="btn p" for="camInput">拍照</label><label class="btn" for="libInput">從相簿加入</label><label class="btn g" for="fixCam" data-a="reply">回復</label></div>
-    ${after ? `<div class="f-l">回復照片（完成後）</div><div class="photos">${after}</div>
-    <label class="f">${liveIn(it) ? '我的回覆文字' : '回覆文字'}（可留空）<input id="fxReply" value="${esc((it.fix && (liveIn(it) ? it.fix.mine : it.fix.reply)) || '')}" placeholder="例如：已更換門鉸"></label>` : ''}
+    ${after ? `<div class="f-l">回復照片（完成後）</div><div class="photos">${after}</div>` : ''}
+    ${noFixBlock(it, liveIn(it) ? '我的回覆文字' : '回覆文字', (it.fix && (liveIn(it) ? it.fix.mine : it.fix.reply)) || '')}
     <label class="f">問題描述（可回辦公室再填）<textarea id="fNote" rows="3" placeholder="例如：門鉸鬆脫">${esc(it.note)}</textarea></label>
     <div class="f-l">分判（可選多個）</div>
     <div class="chips pick subs">${subsOf(it).map(x => `<button class="chip on" data-rmsub="${esc(x)}">${esc(x)}　✕</button>`).join('') || '<span class="chip">未指定</span>'}</div>
@@ -660,7 +660,7 @@ function itemPanel() {
     }
     setSubs(it, [...subsOf(it), n]); persistItem(); renderOverlay(); itemPanel();
   };
-  const fr = q('#fxReply'); if (fr) fr.oninput = e => { if (liveIn(it)) { fixOf(it).mine = e.target.value; liveTouched(it); } else fixOf(it).reply = e.target.value; persistItem(); };
+  noFixWire(it, q);
   panel.querySelector('.pb').onclick = async e => {
     const rs = e.target.closest('[data-rmsub]'); if (rs) { setSubs(it, subsOf(it).filter(x => x !== rs.dataset.rmsub)); persistItem(); renderOverlay(); return itemPanel(); }
     const rb = e.target.closest('[data-room]'); if (rb) { L.room = L.room === rb.dataset.room ? '' : rb.dataset.room; upd(true); return; }
@@ -671,7 +671,7 @@ function itemPanel() {
       const list = F.photos.map((p, k) => ({ blob: p.out, label: `回復 ${k + 1}・${liveMinePhoto(p) ? '我' : p.by || '其他人'}`, edit: liveMinePhoto(p) && p.out ? k : null }));
       return photoViewer(list, i, k => { const img = panel.querySelector(`[data-a="edA"][data-i="${k}"]`); if (img) img.click(); });
     } if (!(await canRead(ph.orig))) await refreshPhotos(it); const r = await openEditor(ph.orig, ph); if (r) { F.photos[i] = { ...ph, ...r }; await persistItem(true); itemPanel(); } }
-    if (a === 'delA') { if (e.target.dataset.armed) { const F = fixOf(it); if (liveIn(it)) liveDelPhoto(it, +e.target.dataset.i); else { F.photos.splice(+e.target.dataset.i, 1); if (!F.photos.length) { F.status = 'open'; F.done = null; } } await persistItem(true); renderOverlay(); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
+    if (a === 'delA') { if (e.target.dataset.armed) { const F = fixOf(it); if (liveIn(it)) liveDelPhoto(it, +e.target.dataset.i); else { F.photos.splice(+e.target.dataset.i, 1); fixRecalc(it); } await persistItem(true); renderOverlay(); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
     if (a === 'cam') $('#camInput').click();
     if (a === 'lib') $('#libInput').click();
     if (a === 'done') closePanel();
@@ -743,15 +743,15 @@ function subPanel() {
   const L = R.filter(i => areaMatch(i) && repMatch(i)), n = x => L.filter(i => subMatch(i, x)).length, na = x => R.filter(i => subMatch(i) && repMatch(i) && areaMatch(i, x)).length;
   const areas = [['', `全部（${R.filter(i => subMatch(i) && repMatch(i)).length}）`], ...AREA_ORDER.map(x => [x, `${x}（${na(x)}）`])];
   // reply status within the chosen 分區 and 分判
-  const S2 = R.filter(i => areaMatch(i) && subMatch(i)), nr = x => S2.filter(i => fixStatus(i) === x).length, done = nr('done'), na2 = nr('na'), due = S2.length - na2;
-  const reps = [['', `全部（${S2.length}）`], ['open', `未回復（${nr('open')}）`], ['done', `已完成（${done}）`], ['na', `不跟進（${na2}）`]];
+  const S2 = R.filter(i => areaMatch(i) && subMatch(i)), nr = x => S2.filter(i => fixStatus(i) === x).length, done = nr('done'), nf = nr('nf'), na2 = nr('na'), due = S2.length - na2;
+  const reps = [['', `全部（${S2.length}）`], ['open', `未回復（${nr('open')}）`], ['done', `已完成（${done}）`], ['nf', `不需執修（${nf}）`], ['nfp', `不需執修・待審查（${S2.filter(i => repMatch(i, 'nfp')).length}）`], ...(na2 ? [['na', `不跟進（${na2}）`]] : [])];
   const opts = [['', `全部（${L.length}）`], ...allSubs().filter(x => n(x)).map(x => [x, `${x}（${n(x)}）`]), ['-', `未指定分判（${n('-')}）`]];
   if (f && !opts.some(([k]) => k === f)) opts.push([f, `${f}（0）`]);
   openPanel('subf', '篩選', `<div class="f-l">分區</div><div class="chips pick">${areas.map(([k, t]) => `<button class="chip ${k === a ? 'on' : ''}" data-area="${esc(k)}">${esc(t)}</button>`).join('')}</div>
     <div class="f-l">分判</div><div class="chips pick">${opts.map(([k, t]) => `<button class="chip ${k === f ? 'on' : ''}" data-f="${esc(k)}">${esc(t)}</button>`).join('')}</div>
-    <div class="f-l">回復狀態</div><div class="note">${esc([a, f === '-' ? '未指定分判' : f].filter(Boolean).join(' · ') || '全部')}：已完成 <b>${done}</b>／${due} 項${due ? `（${Math.round(done / due * 100)}%）` : ''}，未回復 <b>${nr('open')}</b> 項${na2 ? `，不跟進 ${na2} 項` : ''}</div>
+    <div class="f-l">回復狀態</div><div class="note">${esc([a, f === '-' ? '未指定分判' : f].filter(Boolean).join(' · ') || '全部')}：已完成 <b>${done}</b>／${due} 項${due ? `（${Math.round(done / due * 100)}%）` : ''}${nf ? `，不需執修 <b>${nf}</b> 項` : ''}，未回復 <b>${nr('open')}</b> 項${na2 ? `，不跟進 ${na2} 項` : ''}</div>
     <div class="chips pick">${reps.map(([k, t]) => `<button class="chip ${k === rp ? 'on' : ''}" data-rp="${k}">${esc(t)}</button>`).join('')}</div>
-    <div class="note">Podium＝B3–2F；T1、T2、T3、T5＝3F 或以上各座。圖上的點、記錄清單及「上一項／下一項」只包括所選分區及分判，其他點暫時隱藏（不會刪除）。選「未回復」只看還未回復的點。選了之後，「圖紙」清單及「樓層」選擇旁邊會有小圓點：<b style="color:#d42a1e">紅點</b>＝該圖／該層有未回復的項目，<b style="color:#2f7d4f">綠點</b>＝全部已回復。這部機會記住所選篩選。</div>`);
+    <div class="note">Podium＝B3–2F；T1、T2、T3、T5＝3F 或以上各座。圖上的點、記錄清單及「上一項／下一項」只包括所選分區及分判，其他點暫時隱藏（不會刪除）。選「未回復」只看還未回復的點。「圖紙」清單及「樓層」選擇旁邊有小圓點（沒有篩選時按整個批次計）：<b style="color:#d42a1e">紅點</b>＝該圖／該層有未回復的項目，<b style="color:#2f7d4f">綠點</b>＝全部已回復。這部機會記住所選篩選。</div>`);
   panel.querySelector('.pb').onclick = async e => {
     const rb = e.target.closest('[data-rp]'); if (rb) { S.settings.repFilter = rb.dataset.rp; await saveKV(); renderOverlay(); updateBar(); return subPanel(); }
     const ar = e.target.closest('[data-area]'); if (ar) { S.settings.areaFilter = ar.dataset.area; await saveKV(); renderOverlay(); updateBar(); return subPanel(); }
@@ -768,10 +768,10 @@ function floorPanel() {
 function drawingsPanel() {
   freeURLs();
   const row = d => {
-    const n = S.items.filter(i => i.drawingId === d.id).length, F = filterOn() ? roundItems().filter(i => i.drawingId === d.id && subOk(i)) : [];
+    const n = S.items.filter(i => i.drawingId === d.id).length, F = roundItems().filter(i => i.drawingId === d.id && subOk(i));
     const th = d.thumb ? `background-image:url('${burl(d.thumb)}');` : '';
     return `<div class="li ${d.id === S.cur ? 'cur' : ''}" style="grid-template-columns:64px 1fr auto"><span class="th" style="${th}background-color:#fff"></span>
-      <span class="t" data-open="${d.id}"><b>${esc(d.name)}${filterDot(F)}</b><span>${esc(d.no || '')}${d.base || d.kind !== 'pdf' ? '' : '　·　未準備'}　·　${n} 記錄${F.length ? `　·　<b>${esc(subFilterName())} ${F.length} 項${F.some(i => fixStatus(i) !== 'done') ? `（未回復 ${F.filter(i => fixStatus(i) !== 'done').length}）` : '（全部已回復）'}</b>` : ''}</span></span>
+      <span class="t" data-open="${d.id}"><b>${esc(d.name)}${filterDot(F)}</b><span>${esc(d.no || '')}${d.base || d.kind !== 'pdf' ? '' : '　·　未準備'}　·　${n} 記錄${F.length ? `　·　<b>${esc(subFilterName() || '本批次')} ${F.length} 項${F.some(i => fixStatus(i) === 'open') ? `（未回復 ${F.filter(i => fixStatus(i) === 'open').length}）` : '（全部已回復）'}</b>` : ''}</span></span>
       <button class="btn" data-edit="${d.id}" style="min-height:38px;padding:6px 10px">設定</button></div>`;
   };
   const all = setDrawings(), el = all.filter(d => d.cat === 'elev');
@@ -1242,7 +1242,7 @@ async function exportDocx(onlyDev) {
         try { afParas.push(await pic(await shrink(ph.out, 1000), ph.w / ph.h)); } catch (e) { fails.push(`${itemLabel(it)} 回復照片${i + 1}：${e.message}`); }
         afParas.push(Pg(T(fmtTime(ph.t).slice(0, 10), { size: 13, color: '2F7D4F' }), { align: D.AlignmentType.CENTER, after: 60 }));
       }
-      if (it.fix && it.fix.reply) afParas.push(Pg([T('Reply: ', { bold: true, size: 15, color: '2F7D4F' }), T(it.fix.reply, { size: 15, color: '2F7D4F' })]));
+      if (fixReplyText(it)) afParas.push(Pg([T('Reply: ', { bold: true, size: 15, color: '2F7D4F' }), T(fixReplyText(it).replace(/\n/g, '；'), { size: 15, color: '2F7D4F' })]));
       const defParas = [];
       for (const [a, b] of [['Location', it.locText || '—'], ['Description', it.note || '—'], ['Action by', subText(it) || '—']]) {
         defParas.push(Pg(TS(a, { bold: true, size: 18 }), { after: 0 }));
@@ -1320,12 +1320,12 @@ const repFilter = () => S.settings.repFilter || '';
 const filterOn = () => !!(subFilter() || areaFilter() || repFilter());
 const subMatch = (i, f = subFilter()) => !f || (f === '-' ? !subsOf(i).length : subsOf(i).includes(f));
 const areaMatch = (i, a = areaFilter()) => !a || areaOf(i) === a;
-const repMatch = (i, r = repFilter()) => !r || fixStatus(i) === r;
+const repMatch = (i, r = repFilter()) => !r || (r === 'nfp' ? fixStatus(i) === 'nf' && nfState(i) === 'pend' : fixStatus(i) === r);
 // the records shown: those of the chosen 分判, 分區 and reply status
 const subOk = i => subMatch(i) && areaMatch(i) && repMatch(i);
 const subFilterName = () => [areaFilter(), subFilter() === '-' ? '未指定分判' : subFilter(), repFilter() && FIX_ST[repFilter()]].filter(Boolean).join(' · ');
 /* with a filter on, a dot beside a drawing or floor that has records of it: red = some not replied yet, green = all replied */
-function filterDot(L) { if (!filterOn() || !L.length) return ''; return `<span class="fdot${L.some(i => fixStatus(i) !== 'done') ? '' : ' ok'}" title="${L.length} 項"></span>`; }
+function filterDot(L) { if (!L.length) return ''; return `<span class="fdot${L.some(i => fixStatus(i) === 'open') ? '' : ' ok'}" title="${L.length} 項"></span>`; }
 const itemLabel = it => it.code || `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
 const byOrder = (a, b) => (a.ord ?? 1e9) - (b.ord ?? 1e9) || devOf(a).localeCompare(devOf(b)) || a.no - b.no;
 // pins have little room: number only, or floor + number where one plan stands for several floors
@@ -1411,7 +1411,7 @@ async function captioned(it, ph, i, after) {
   const lines = [`${itemLabel(it)}${after ? '　完成後' : ''}${cntN > 1 ? ` (${i + 1}/${cntN})` : ''}　${it.locText || ''}`,
     `${fmtTime(ph.t)}　${after ? '執修' : '檢查'}：${(after ? it.fix && it.fix.by : it.by) || S.settings.inspector || devOf(it)}　${roundName(roundOf(it))}　${S.project.name || ''}`,
     `坐標：${d.no || it.drawingId}　x ${Math.round(it.x)}　y ${Math.round(it.y)}`];
-  const note = after ? (it.fix && it.fix.reply ? '回覆：' + it.fix.reply : '') : it.note;
+  const note = after ? (fixReplyText(it) ? '回覆：' + fixReplyText(it) : '') : it.note;
   if (note) lines.push(note.replace(/\s+/g, ' ').slice(0, 80));
   const qr = qrFor(asciiJSON(photoMeta(it, ph, i, after, false)));
   const cell = qr ? Math.max(3, Math.round(fs / 6)) : 0, qpx = qr ? (qr.getModuleCount() + 8) * cell : 0;
@@ -1536,7 +1536,7 @@ async function exportBackup(onlyNew, roundId, reply) {
    with ask, a copy that carries a reply (分判回復) has only its reply merged straight away:
    any other change it would make (描述, 分判, 編號, 位置) is put in ask for the user to confirm */
 async function mergeRecord(ex, inc, conv, ask) {
-  const tm = r => r.mod || r.created || 0, incNewer = tm(inc) > tm(ex);
+  const tm = r => r.mod || r.created || 0, incNewer = tm(inc) > tm(ex), exLog = (ex.fix && ex.fix.log) || [];
   const empty = (r, g) => g === 'note' ? !(r.note || '').trim() : g === 'sub' ? !subsOf(r).length : g === 'code' ? !r.code
     : g === 'fix' ? !hasReply(r) : false;
   const keys = FG_KEYS; let changed = false; const fm = { ...(ex.fm || {}) };
@@ -1566,6 +1566,10 @@ async function mergeRecord(ex, inc, conv, ask) {
   };
   await mergeList(ex.photos, inc.photos);
   if (inc.fix && inc.fix.photos && inc.fix.photos.length) { fixOf(ex); await mergeList(ex.fix.photos, inc.fix.photos); }
+  { const a = exLog, b = (inc.fix && inc.fix.log) || [], key = e => e.t + '|' + e.by + '|' + e.k;
+    const m = [...a, ...b.filter(e => !a.some(x => key(x) === key(e)))].sort((x, y) => x.t - y.t);
+    if (m.length !== a.length || (ex.fix && JSON.stringify(ex.fix.log || []) !== JSON.stringify(m))) { fixOf(ex).log = m; changed = true; }
+    if (ex.fix && !liveIn(ex)) { const was = ex.fix.status; fixRecalc(ex); if (ex.fix.status !== was) changed = true; } }
   for (const k of ['by', 'dev', 'no', 'created', 'restored']) if (ex[k] == null && inc[k] != null) { ex[k] = inc[k]; changed = true; }
   if (changed) { ex.fm = fm; ex.mod = Math.max(tm(ex), tm(inc)); }
   return changed;
@@ -1745,7 +1749,7 @@ async function buildReportPages(items, progress) {
     if (rd.crErr) fails.push(`${itemLabel(it)} 圖紙截取：${rd.crErr.message}`);
     let lp = null; try { lp = await locPlanImage(rd, d, it); } catch (e) { fails.push(`${itemLabel(it)} 圖紙位置：${e.message}`); }
     const rps = (it.fix && it.fix.photos) || [], np = Math.max(1, it.photos.length, rps.length);
-    const reply = it.fix && it.fix.reply ? 'Reply: ' + it.fix.reply : '';
+    const reply = fixReplyText(it) ? 'Reply: ' + fixReplyText(it) : '';
     // text column height, measured with the same fonts
     const L = it.loc || {}; const tW = cw[2] - 2 * pad;
     const parts = [['Location', it.locText || '—'], ['Description', it.note || '—'], ['Action by', subText(it) || '—']];
@@ -1983,10 +1987,58 @@ function importRound(r, from) {
 }
 
 /* ================= v0.6: 執修 (repair follow-up) ================= */
-const FIX_ST = { open: '未回復', done: '已完成', na: '不跟進' };
+const FIX_ST = { open: '未回復', done: '已完成', nf: '不需執修', nfp: '不需執修・待審查', na: '不跟進' };
+/* 不需執修 with review: a 分判 submits a reason (k 'nf'), a 管理員 accepts it ('ok') or rejects it ('no', with a comment);
+   every step stays in the record's log { t, by, k, text }. The latest step decides: 'nf' = 不需執修・待審查,
+   'ok' = 不需執修 (認可), 'no' = back to 未回復 until the 分判 repairs it (a reply photo = 已完成) or explains again.
+   Online: each person's steps go up in their own reply document (log), F.mylog mine, F.olog the others'; offline: F.log */
+const NF_K = { nf: '不需執修', ok: '認可', no: '駁回' };
+const fixLog = it => { const F = it.fix || {}; return [...(F.log || []), ...(F.mylog || []), ...(F.olog || [])].sort((a, b) => a.t - b.t); };
+const nfState = it => { const L = fixLog(it), e = L[L.length - 1]; return !e ? '' : e.k === 'nf' ? 'pend' : e.k; };
+function fixRecalc(it) {
+  const F = fixOf(it); if (liveIn(it)) return liveSum(it);
+  if (F.photos.length) { if (F.status !== 'done') { F.status = 'done'; F.done = F.done || Date.now(); } return; }
+  const s = nfState(it); F.done = null; F.status = s === 'pend' || s === 'ok' ? 'nf' : F.status === 'na' ? 'na' : 'open';
+}
+// who may accept / reject: the 管理員 of an online list; offline, anyone but whoever made the latest 不需執修
+function nfCanReview(it) {
+  if (liveIn(it)) return liveBoss(liveRoundOf(it));
+  const c = fixLog(it).filter(e => e.k === 'nf').pop(); return !!c && c.by !== (S.settings.inspector || '');
+}
+function nfAdd(it, k, text) {
+  const F = fixOf(it), e = { t: Date.now(), by: S.settings.inspector || '', k, text: text.trim() };
+  if (liveIn(it)) { F.mylog = [...(F.mylog || []), e]; liveTouched(it); } else { F.log = [...(F.log || []), e]; fixRecalc(it); }
+  it.mod = Date.now(); persistItem(true); renderOverlay(); updateBar(); itemPanel();
+  toast(k === 'nf' ? '已提交「不需執修」，等待管理員審查' : k === 'ok' ? '已認可「不需執修」' : '已駁回，該項彈回「未回復」', 3500);
+}
+const nfLine = e => `${fmtTime(e.t).slice(5, 16)} ${e.by || ''}：${NF_K[e.k]}${e.text ? '　' + e.text : ''}`;
+// the reply text plus the 不需執修 conversation, for reports
+const fixReplyText = it => { const F = it.fix || {}, L = fixLog(it); return [(F.reply || '').trim(), ...L.map(nfLine)].filter(Boolean).join('\n'); };
+function noFixBlock(it, label, text) {
+  const L = fixLog(it), s = nfState(it), rev = nfCanReview(it), col = { nf: '#c77700', ok: '#2f7d4f', no: '#d42a1e' };
+  const head = { pend: '不需執修・待管理員審查', ok: '不需執修・已認可', no: '已駁回：請執修並拍回復照片，或再說明' }[s];
+  return `<label class="f">${label}（可留空）<input id="fxReply" value="${esc(text)}" placeholder="例如：已更換門鉸"></label>
+    ${L.length ? `<div class="f-l">不需執修・溝通記錄</div><div class="note"><b style="color:${s === 'no' ? '#d42a1e' : s === 'ok' ? '#2f7d4f' : '#c77700'}">${head}</b></div>
+    ${L.map(e => `<div class="note" style="color:inherit;border-left:3px solid ${col[e.k]};padding-left:8px"><b style="color:${col[e.k]}">${NF_K[e.k]}</b>　${esc(e.by || '')}　<span style="color:var(--muted)">${esc(fmtTime(e.t).slice(5, 16))}</span><br>${esc(e.text || '')}</div>`).join('')}` : ''}
+    ${rev && (s === 'pend' || s === 'ok') ? `<label class="f">審查意見（駁回必須填寫）<textarea id="nfRv" rows="2" placeholder="例如：仍需執修，請按圖紙處理"></textarea></label>
+    <div class="row">${s === 'pend' ? '<button class="btn g" data-nf="ok">認可不需執修</button>' : ''}<button class="btn warn" data-nf="no">駁回（彈回未回復）</button></div>` : ''}
+    ${s === 'pend' || s === 'ok' ? '' : `<details${s === 'no' ? ' open' : ''}><summary>${s === 'no' ? '再說明不需執修' : '此項不需執修？'}</summary>
+    <label class="f">原因（必須填寫，管理員會審查）<textarea id="nfWhy" rows="2" placeholder="例如：屬原設計，非執修項目"></textarea></label>
+    <button class="btn" data-nf="nf">提交不需執修</button></details>`}`;
+}
+function noFixWire(it, q) {
+  const live = liveIn(it), fr = q('#fxReply'); if (!fr) return;
+  fr.oninput = e => { const F = fixOf(it); if (live) { F.mine = e.target.value; liveTouched(it); } else F.reply = e.target.value; persistItem(); };
+  panel.querySelectorAll('[data-nf]').forEach(b => b.onclick = e => {
+    e.stopPropagation(); const k = b.dataset.nf, why = q('#nfWhy'), rv = q('#nfRv');
+    if (k === 'nf') { if (!why.value.trim()) { why.focus(); return toast('請寫上不需執修的原因'); } return nfAdd(it, 'nf', why.value); }
+    if (k === 'no' && !rv.value.trim()) { rv.focus(); return toast('駁回請寫上意見，分判會看到'); }
+    nfAdd(it, k, rv ? rv.value : '');
+  });
+}
 const fixOf = it => it.fix || (it.fix = { status: 'open', reply: '', photos: [] });
 const fixStatus = it => (it.fix && it.fix.status) || 'open';
-const hasReply = it => !!it.fix && (fixStatus(it) !== 'open' || !!(it.fix.reply || '').trim() || !!(it.fix.photos || []).length);
+const hasReply = it => !!it.fix && (fixStatus(it) !== 'open' || !!(it.fix.reply || '').trim() || !!(it.fix.photos || []).length || !!fixLog(it).length);
 async function persistFix(it) { it.mod = Date.now(); await saveItem(it); updateBar(); }
 async function addFixPhoto(file) {
   const it = S.fixItem || S.editing; if (!file || !it) return;
@@ -2156,8 +2208,8 @@ async function buildFixPages(items, progress, kind) {
       }
     }
     let qy = y0 + pad; if (it.note) qy += drawText(x, '問題：' + it.note, cx[5] + pad, qy, cw[5] - 2 * pad, 7.5) + 6;
-    if (it.fix && it.fix.reply) drawText(x, '回覆：' + it.fix.reply, cx[5] + pad, qy, cw[5] - 2 * pad, 7.5, { color: '#2f7d4f' });
-    const s = fixStatus(it); drawText(x, fixStatusText(it), cx[6] + 2, y0 + rowH / 2 - 8, cw[6] - 4, 7.5, { bold: true, center: true, color: s === 'done' ? '#2f7d4f' : s === 'na' ? '#5f6b69' : '#d42a1e' });
+    if (fixReplyText(it)) drawText(x, '回覆：' + fixReplyText(it), cx[5] + pad, qy, cw[5] - 2 * pad, 7.5, { color: '#2f7d4f' });
+    const s = fixStatus(it); drawText(x, fixStatusText(it), cx[6] + 2, y0 + rowH / 2 - 8, cw[6] - 4, 7.5, { bold: true, center: true, color: s === 'done' ? '#2f7d4f' : s === 'nf' ? '#c77700' : s === 'na' ? '#5f6b69' : '#d42a1e' });
     y += rowH;
   }
   pages.push(await pageBlob(c));
@@ -2193,12 +2245,12 @@ async function exportFixDocx(items, kind) {
       const s = fixStatus(it), F = it.fix || {};
       const L = it.loc || {}; const v = viewById(d, L.viewId);
       const loc = [Pg(T(it.locText || '—', { bold: true, size: 16 }), { after: 80 })]; for (const [a, b] of [['軸線', L.grid], ['圖紙', [d.no, v ? v.title : ''].filter(Boolean).join(' ')]]) if (b) loc.push(Pg([T(a + '：', { color: '5F6B69', size: 14 }), T(b, { size: 14 })], { after: 20 }));
-      const qa = []; if (it.note) qa.push(Pg([T('問題：', { bold: true, size: 15 }), T(it.note, { size: 15 })], { after: 80 })); if (F.reply) qa.push(Pg([T('回覆：', { bold: true, size: 15, color: '2F7D4F' }), T(F.reply, { size: 15, color: '2F7D4F' })]));
+      const qa = []; if (it.note) qa.push(Pg([T('問題：', { bold: true, size: 15 }), T(it.note, { size: 15 })], { after: 80 })); if (fixReplyText(it)) qa.push(Pg([T('回覆：', { bold: true, size: 15, color: '2F7D4F' }), T(fixReplyText(it).replace(/\n/g, '；'), { size: 15, color: '2F7D4F' })]));
       rows.push(new D.TableRow({ cantSplit: true, children: [
         cell([Pg(T(itemLabel(it), { bold: true, size: 15, color: 'D42A1E' }), { align: D.AlignmentType.CENTER }), Pg(T(fmtTime(it.created).slice(5, 10), { size: 12, color: '5F6B69' }), { align: D.AlignmentType.CENTER })], 0, { v: D.VerticalAlign.CENTER }),
         cell(loc, 1), cell(dw.length ? dw : [Pg(T(''))], 2), cell(await phs(it.photos, '完成前'), 3), cell(await phs(F.photos || [], '完成後'), 4),
         cell(qa.length ? qa : [Pg(T(''))], 5),
-        cell([Pg(T(FIX_ST[s], { bold: true, size: 15, color: s === 'done' ? '2F7D4F' : s === 'na' ? '5F6B69' : 'D42A1E' }), { align: D.AlignmentType.CENTER }), ...(s === 'done' && F.done ? [Pg(T(fmtTime(F.done).slice(0, 10), { size: 12 }), { align: D.AlignmentType.CENTER })] : [])], 6, { v: D.VerticalAlign.CENTER }),
+        cell([Pg(T(FIX_ST[s], { bold: true, size: 15, color: s === 'done' ? '2F7D4F' : s === 'nf' ? 'C77700' : s === 'na' ? '5F6B69' : 'D42A1E' }), { align: D.AlignmentType.CENTER }), ...(s === 'done' && F.done ? [Pg(T(fmtTime(F.done).slice(0, 10), { size: 12 }), { align: D.AlignmentType.CENTER })] : [])], 6, { v: D.VerticalAlign.CENTER }),
       ] }));
     }
     const nb = { top: { style: D.BorderStyle.NONE }, bottom: { style: D.BorderStyle.NONE }, left: { style: D.BorderStyle.NONE }, right: { style: D.BorderStyle.NONE } };
