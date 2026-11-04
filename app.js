@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.18';
+const VERSION = '0.10.19';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1955,7 +1955,13 @@ function roundPanel() {
     ${local.map(r => `<label class="toggle">${esc(r.name)}${r.date ? '　' + esc(r.date) : ''}（${S.items.filter(i => roundOf(i) === r.id).length} 項）<input type="checkbox" data-m="${r.id}"></label>`).join('')}
     <label class="f">合併後名稱<input id="mgName" placeholder="例如：第1次驗收（全部）"></label>
     <button class="btn" data-a="merge">合併所選批次</button>` : ''}
+    ${local.length + others.length ? `<div class="sec">刪除本地批次</div>
+    <div class="note">連同批次內全部記錄及相片從這部機刪除，不能復原。刪除前請先「導出 → 按驗收批次備份」。在線批次不在此刪除。</div>
+    <label class="f">要刪除的批次<select id="rdSel"><option value="">請選擇…</option>${[...local, ...others].map(r => `<option value="${r.id}">${setOfRound(r) === set ? '' : esc(setName(setOfRound(r))) + '：'}${esc(r.name)}${r.date ? '　' + esc(r.date) : ''}（${S.items.filter(i => roundOf(i) === r.id).length} 項）</option>`).join('')}</select></label>
+    <button class="btn warn" data-a="rdel">刪除所選批次</button>` : ''}
     ${liveLogin()}`);
+  const rdSel = panel.querySelector('#rdSel');
+  if (rdSel) rdSel.onchange = () => { const b = panel.querySelector('[data-a="rdel"]'); b.classList.remove('armed'); b.textContent = '刪除所選批次'; };
   panel.querySelector('.pb').onclick = async e => {
     const b = e.target.closest('[data-r]');
     if (b) { const r = S.rounds.find(x => x.id === b.dataset.r); if (r && setOfRound(r) !== curSet()) { await switchSet(setOfRound(r)); if (curSet() !== setOfRound(r)) return; } setCurRound(b.dataset.r); await saveKV(); closePanel(); renderOverlay(); updateBar(); return toast(`已切換到「${roundLabel()}」`); }
@@ -1978,6 +1984,14 @@ function roundPanel() {
       const keep = setRounds().find(r => r.id === curRound().id && ids.includes(r.id)) || setRounds().find(r => ids.includes(r.id));
       keep.name = name; setCurRound(keep.id); await mergeRounds(ids.filter(id => id !== keep.id), keep.id); return roundPanel();
     }
+    if (a === 'rdel') {
+      const r = S.rounds.find(x => x.id === $('#rdSel').value); if (!r) return toast('請選擇要刪除的批次');
+      if (liveOf(r)) return toast('在線批次不能在此刪除');
+      const L = S.items.filter(i => roundOf(i) === r.id), np = L.reduce((n, i) => n + allPhotos(i).length, 0);
+      const ub = L.filter(i => (i.mod || i.created || 0) > backedAt(i)).length;
+      if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = `再按一次確認刪除「${r.name}」（${L.length} 項記錄、${np} 張相片${ub ? `，其中 ${ub} 項未備份` : ''}）`; return; }
+      await deleteRound(r); return roundPanel();
+    }
     if (a === 'ren') { const r = curRound(); r.name = $('#rcName').value.trim() || r.name; r.date = $('#rcDate').value; if (!S.rounds.includes(r)) S.rounds.push(r); await saveRounds(); updateBar(); toast('已儲存'); roundPanel(); }
   };
 }
@@ -1992,6 +2006,22 @@ async function mergeRounds(ids, target) {
   await saveRounds(); await saveKV(); busy(); renderOverlay(); updateBar();
   const fixed = await fixDupCodes(), L = roundItems();
   toast(`已合併，「${curRound().name}」共 ${L.length} 項記錄${fixed ? `；${fixed} 個重複編號已改用下一個號碼` : ''}`, fixed ? 6000 : 3500);
+}
+// delete a local round with all its records and photos; a set left with no round gets an empty 第1次驗收
+async function deleteRound(r) {
+  busy('正在刪除…');
+  const L = S.items.filter(i => roundOf(i) === r.id);
+  try {
+    for (const it of L) { await DB.del('items', it.id); DB.del('kv', 'rc:' + it.id).catch(() => { }); }
+    S.items = S.items.filter(i => roundOf(i) !== r.id);
+    S.rounds = S.rounds.filter(x => x !== r);
+    const al = { ...S.settings.roundAlias }; for (const k of Object.keys(al)) if (al[k] === r.id || k === r.id) delete al[k]; S.settings.roundAlias = al;
+    if (S.settings.roundBackup) delete S.settings.roundBackup[r.id];
+    if (S.editing && roundOf(S.editing) === r.id) S.editing = null;
+    ensureSetRounds(); await saveRounds(); await saveKV();
+  } finally { busy(); }
+  renderOverlay(); updateBar();
+  toast(`已刪除「${r.name}」（${L.length} 項記錄）`, 3500);
 }
 /* an incoming round always gets a local round of its own, named after the person who made it
    (陳大文-第1次驗收, with （2） etc. if the name is taken); the same round from the same person
