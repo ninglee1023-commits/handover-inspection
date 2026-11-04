@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.13';
+const VERSION = '0.10.14';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1605,7 +1605,10 @@ async function importBackup(file) {
       if (await mergeRecord(ex, it, conv, ask)) { await saveItem(ex, true); upd++; } else if (ask.length === na) skip++;
     }
     await saveKV(); await saveRounds(); busy();
-    toast(`匯入完成：${data.reply ? '' : `新增 ${add}、`}更新 ${upd}、略過 ${skip}${miss ? `；${miss} 項回復找不到原記錄` : ''}${ask.length ? `；${ask.length} 項修改待確認` : ''}`, miss ? 6000 : 4000);
+    // name where the records went: a round of the other drawing set, or an online one, is not under this set's 本地批次
+    const into = [...new Set(Object.values(rmap))].map(id => S.rounds.find(r => r.id === id)).filter(Boolean)
+      .map(r => `${setOfRound(r) !== curSet() ? setName(setOfRound(r)) + ' ' : ''}${liveOf(r) ? '在線批次' : ''}「${r.name}」`).join('、');
+    toast(`匯入完成：${data.reply ? '' : `新增 ${add}、`}更新 ${upd}、略過 ${skip}${into ? `，放入${into}` : ''}${miss ? `；${miss} 項回復找不到原記錄` : ''}${ask.length ? `；${ask.length} 項修改待確認` : ''}`, miss || into.includes('」、') ? 7000 : 5000);
     await showDrawing(S.cur || S.drawings[0]?.id); closePanel();
     if (ask.length) askPanel(ask, data.inspector || data.dev || '對方');
   } catch (err) { busy(); toast('匯入失敗：' + err.message, 6000); console.error(err); }
@@ -1899,9 +1902,11 @@ function shortRound(r) { const m = (r.name || '').match(/第\s*(\d+)\s*次/); re
 function roundPanel() {
   // 本地批次 only: the online ones are listed in their own half (liveOnlineSection)
   const local = setRounds().filter(r => !liveOf(r));
-  const rows = local.map(r => {
-    const n = S.items.filter(i => roundOf(i) === r.id).length, on = r.id === curRound().id;
-    return `<button class="li ${on ? 'cur' : ''}" data-r="${r.id}" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(r.name)}${on ? '　（目前）' : ''}</b><span>${esc(r.date || '')}　${n} 項記錄</span></span><span class="chip">${on ? '使用中' : '切換'}</span></button>`;
+  // every drawing set's local rounds (an import may land in the other set), the current set first
+  const set = curSet(), others = S.rounds.filter(r => !liveOf(r) && setOfRound(r) !== set && (S.items.some(i => roundOf(i) === r.id) || r.src));
+  const rows = [...local, ...others].map(r => {
+    const n = S.items.filter(i => roundOf(i) === r.id).length, on = r.id === curRound().id, k = setOfRound(r), tag = k === set ? '' : `<span class="chip" style="margin-right:6px">${esc(setName(k))}</span>`;
+    return `<button class="li ${on ? 'cur' : ''}" data-r="${r.id}" style="grid-template-columns:1fr auto"><span class="t"><b>${tag}${esc(r.name)}${on ? '　（目前）' : ''}</b><span>${esc(r.date || '')}　${n} 項記錄</span></span><span class="chip">${on ? '使用中' : '切換'}</span></button>`;
   }).join('');
   const nx = local.length + 1;
   openPanel('round', curSet() === 'gbp' ? '驗收批次' : `驗收批次 · ${setName()}`, `
@@ -1924,7 +1929,7 @@ function roundPanel() {
     ${liveLogin()}`);
   panel.querySelector('.pb').onclick = async e => {
     const b = e.target.closest('[data-r]');
-    if (b) { setCurRound(b.dataset.r); await saveKV(); closePanel(); renderOverlay(); updateBar(); return toast(`已切換到「${roundLabel()}」`); }
+    if (b) { const r = S.rounds.find(x => x.id === b.dataset.r); if (r && setOfRound(r) !== curSet()) { await switchSet(setOfRound(r)); if (curSet() !== setOfRound(r)) return; } setCurRound(b.dataset.r); await saveKV(); closePanel(); renderOverlay(); updateBar(); return toast(`已切換到「${roundLabel()}」`); }
     const a = e.target.dataset.a; if (!a) return;
     if (a.startsWith('live')) return liveAction(a, e.target);
     if (a === 'new') {
