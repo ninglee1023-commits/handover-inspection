@@ -22,6 +22,34 @@ service cloud.firestore {
       allow read, delete: if false;
     }
 
+    // 傳送碼: a backup ZIP left for a short while under a 6-digit code, in chunks of under 1 MiB.
+    // Only whoever knows the code can read it (no listing); it can't be read once expireAt has passed
+    // (TTL on the drops and chunks collection groups, field expireAt, removes it for good).
+    match /drops/{code} {
+      allow get: if signed() && resource.data.expireAt > request.time;
+      allow list: if false;
+      allow create: if signed() && code.matches('[0-9]{6}') && request.resource.data.uid == request.auth.uid
+        && request.resource.data.ready == false && request.resource.data.got == 0
+        && request.resource.data.n is int && request.resource.data.n > 0 && request.resource.data.n <= 400
+        && request.resource.data.expireAt is timestamp && request.resource.data.expireAt < request.time + duration.value(25, 'h');
+      // the sender marks it ready; a receiver only counts itself in
+      allow update: if signed() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready']))
+        || (resource.data.ready == true && resource.data.expireAt > request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['got']) && request.resource.data.got == resource.data.got + 1));
+      allow delete: if signed() && resource.data.uid == request.auth.uid;
+      match /chunks/{i} {
+        function drop() { return get(/databases/$(db)/documents/drops/$(code)).data; }
+        allow get: if signed() && resource.data.expireAt > request.time;
+        allow list: if false;
+        allow create: if signed() && drop().uid == request.auth.uid && drop().ready == false
+          && i.matches('[0-9]{1,3}') && int(i) < drop().n
+          && request.resource.data.data is bytes && request.resource.data.data.size() <= 950000
+          && request.resource.data.expireAt == drop().expireAt;
+        allow delete: if signed() && drop().uid == request.auth.uid;
+      }
+    }
+
     match /live/{lid} {
       allow get: if signed();
       // the 驗收批次 panel lists the locked lists, so they can be joined without a link

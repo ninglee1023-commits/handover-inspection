@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.20';
+const VERSION = '0.10.21';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1051,6 +1051,9 @@ function exportPanel() {
     <button class="btn" data-a="bk">完整備份（全部 ${S.items.length} 項）</button>
     <div class="row"><label class="f" style="flex:2 1 0;min-width:0">按驗收批次備份（整次驗收一個檔案）<select id="bkRound">${S.rounds.filter(r => S.items.some(i => roundOf(i) === r.id)).map(r => { const n = S.items.filter(i => roundOf(i) === r.id).length, t = (S.settings.roundBackup || {})[r.id]; return `<option value="${r.id}" ${r.id === curRound().id ? 'selected' : ''}>${esc(setName(setOfRound(r)) + ' ' + r.name)}（${n} 項）${t ? '　已備份 ' + fmtTime(t) : ''}</option>`; }).join('') || '<option value="">還沒有任何記錄</option>'}</select></label><button class="btn" data-a="bkround" style="align-self:flex-end">備份此批次</button></div>
     <button class="btn" data-a="bkreply">導出此批次的回復包（只含已回復項目）</button>
+    <div class="f-l">用傳送碼傳送此批次（不用存檔）</div>
+    <div class="row"><button class="btn" data-a="dropround">全部記錄</button><button class="btn" data-a="dropnew">只傳新增</button><button class="btn" data-a="dropreply">回復包</button></div>
+    <div class="note">傳送碼：不用存檔，直接經雲端交給另一部機（iPad、iPhone、Android 都可以）。畫面會顯示 6 位數字及二維碼，24 小時內有效，可讓多部機接收；對方在「接收傳送碼」輸入即可。「新增」只送這個批次上次用傳送碼傳送後新增或修改過的記錄（從未傳送過就按上次備份計），對方要先收過之前的部分。傳送碼只是交收，不是備份。</div>
     <div class="note">分判用：匯入你發出的批次備份，按頂部「篩選」只顯示自己的點，逐點按「回復」拍完成照後，導出回復包發回。回復包只有回復內容及完成照，不含完成前照片，檔案細很多；匯入後按記錄自動對回原本的項目。</div>
     <div class="note">備份檔是 ZIP，可用分享選單存到「檔案」、iCloud Drive、Google Drive 或 WhatsApp。ZIP 內的「相片」資料夾在電腦上可直接開啟，每張相底部印有編號、位置、時間及檢查人員。</div>
     <div class="sec">報告（${esc(roundLabel())}，${roundItems().length} 項）</div>
@@ -1069,7 +1072,7 @@ function exportPanel() {
     <div class="row"><button class="btn" data-a="set:sub">按分判</button><button class="btn" data-a="set:area">按區域</button><button class="btn" data-a="set:both">按區域＋分判</button></div>
     <div class="note">區域：Podium（B3–2F）、T1、T2、T3、T5，即各管工負責的範圍。按上面選的報告類型及本機範圍導出；未指定分判的記錄自成一個檔案。</div>
     <div class="sec">合併其他 iPad 的記錄</div>
-    <button class="btn" data-a="imp">匯入備份檔（ZIP）</button>
+    <div class="row"><button class="btn" data-a="imp">匯入備份檔（ZIP）</button><button class="btn" data-a="droprecv">接收傳送碼</button></div>
     <label class="btn" for="photoRestore">從相片還原記錄</label>
     <div class="note">本程式存的每張相片都帶有圖紙坐標（相片資料內及底部二維碼）。即使只剩下相片，在這裏一次揀選多張，就可以把記錄放回原來的圖紙位置及驗收批次。</div>
     <div class="note">匯入後所有記錄會在同一張圖上顯示，連同圖上位置、照片標註及檢查人員；同一記錄以較新的版本為準。</div>
@@ -1104,6 +1107,8 @@ function exportPanel() {
     if (a === 'bknew') exportBackup(true);
     if (a === 'bkround') { const id = $('#bkRound').value; if (!id) return toast('還沒有任何記錄'); exportBackup(false, id); }
     if (a === 'bkreply') { const id = $('#bkRound').value; if (!id) return toast('還沒有任何記錄'); exportBackup(false, id, true); }
+    if (a === 'dropround' || a === 'dropreply' || a === 'dropnew') { const id = $('#bkRound').value; if (!id) return toast('還沒有任何記錄'); exportBackup(a === 'dropnew', id, a === 'dropreply', true); }
+    if (a === 'droprecv') dropRecvPanel();
     if (a === 'repair') repairPhotos();
     if (a === 'album') albumPanel();
     if (a === 'setup') setupPanel();
@@ -1520,12 +1525,14 @@ function reportFails(fails) {
 }
 /* reply = 回復包: only the records of the round that carry a reply, without their before-photos,
    so a subcontractor's answer is small enough to send back over WhatsApp */
-async function exportBackup(onlyNew, roundId, reply) {
+async function exportBackup(onlyNew, roundId, reply, drop) {
   if (!window.JSZip) return toast('備份元件未載入，請連網後重新開啟');
   try {
     const rd = roundId && S.rounds.find(r => r.id === roundId);
-    const items = S.items.filter(i => rd ? roundOf(i) === rd.id : !onlyNew || (i.mod || i.created || 0) > backedAt(i)).filter(i => !reply || hasReply(i)).sort(byOrder);
-    if (!items.length) return toast(reply ? '這個批次還沒有任何回復' : rd ? '這個批次沒有記錄' : '沒有新的記錄需要備份');
+    // 傳送碼「新增」: the records of the round changed since it was last sent by 傳送碼 (or else since the last backup)
+    const sentAt = drop && onlyNew && rd ? (S.settings.roundDrop || {})[rd.id] : 0, t0 = Date.now();
+    const items = S.items.filter(i => rd ? roundOf(i) === rd.id && (!(drop && onlyNew) || (i.mod || i.created || 0) > (sentAt || backedAt(i))) : !onlyNew || (i.mod || i.created || 0) > backedAt(i)).filter(i => !reply || hasReply(i)).sort(byOrder);
+    if (!items.length) return toast(reply ? '這個批次還沒有任何回復' : rd && drop && onlyNew ? '這個批次上次傳送後沒有新增或修改的記錄' : rd ? '這個批次沒有記錄' : '沒有新的記錄需要備份');
     busy('正在打包…'); const zip = new JSZip(); const out = [], bad = [];
     let n = 0, tot = items.reduce((s, i) => s + (reply ? 0 : i.photos.length) + ((i.fix && i.fix.photos) || []).length, 0);
     /* the photo handles held in memory can point at a file iOS has already replaced ("object can not be found"),
@@ -1539,7 +1546,7 @@ async function exportBackup(onlyNew, roundId, reply) {
       if (!bytes) { const x = await readAll(p.out); if (x) { bytes = x; p = { ...p, shapes: [] }; } } // markings baked in
       if (!bytes) { bad.push(`${lbl}：原相及標記版都未能讀取`); return null; }
       const o = `data/${p.id}.jpg`; zip.file(o, bytes, { compression: 'STORE' });
-      if (!reply) { try { zip.file(`相片/${photoName(it, i, af)}`, new Uint8Array(await (await captioned(it, p, i, af)).arrayBuffer()), { compression: 'STORE' }); } catch (e) { bad.push(`${lbl}（附說明的相片）：${e.message}`); } }
+      if (!reply && !drop) { try { zip.file(`相片/${photoName(it, i, af)}`, new Uint8Array(await (await captioned(it, p, i, af)).arrayBuffer()), { compression: 'STORE' }); } catch (e) { bad.push(`${lbl}（附說明的相片）：${e.message}`); } }
       const { orig, out: _o, ...meta } = p; return { ...meta, orig: o };
     };
     for (const it of items) {
@@ -1559,7 +1566,10 @@ async function exportBackup(onlyNew, roundId, reply) {
     busy();
     const stamp = fmtTime().replace(/[-: ]/g, '').slice(0, 12);
     const tag = rd ? `${setName(setOfRound(rd))}_${rd.name}`.replace(/[\\/:*?"<>|\s]+/g, '') : onlyNew ? '新增' : '完整';
-    await deliver(blob, `${reply ? '回復包' : '驗收備份'}_${S.settings.dev || 'A'}_${tag}_${stamp}.zip`);
+    const fname = `${reply ? '回復包' : '驗收備份'}_${S.settings.dev || 'A'}_${tag}_${stamp}.zip`;
+    // 傳送碼: the ZIP goes up to the cloud for another device, without the captioned 相片 copies; not counted as a backup
+    if (drop) { const ok = await dropSend(blob, fname, `${reply ? '回復包' : onlyNew ? '批次新增' : '批次'}：${rd ? setName(setOfRound(rd)) + ' ' + rd.name : ''}（${items.length} 項${reply ? '回復' : onlyNew ? '新增或修改的記錄' : '記錄'}）　來自 ${S.settings.inspector || S.settings.dev || ''}`); if (ok && !reply) { S.settings.roundDrop = { ...S.settings.roundDrop, [rd.id]: t0 }; await saveKV(); } if (bad.length) badPhotos(bad); return; }
+    await deliver(blob, fname);
     if (reply) { toast(`回復包已導出：${items.length} 項回復`, 3500); if (bad.length) badPhotos(bad); return; }
     if (rd) S.settings.roundBackup = { ...S.settings.roundBackup, [rd.id]: Date.now() }; else S.settings.lastBackup = Date.now();
     await saveKV(); updateBar(); if (S.panel === 'export') exportPanel();
@@ -2396,6 +2406,7 @@ async function boot() {
     for (const it of S.items) { if (!it.dev && S.settings.dev) { it.dev = S.settings.dev; await saveItem(it, true); } }
     if (!S.settings.devId) { S.settings.devId = uid(); if (S.settings.inspector) S.settings.dev = devName(S.settings.inspector); await saveKV(); }
     await liveBoot();
+    await dropBoot();
     if (!S.settings.dev || !S.settings.inspector) setupPanel(true);
     warmLater(15000);
   } catch (err) { console.error(err); busy(); toast('啟動失敗：' + err.message, 8000); }
