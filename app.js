@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.17';
+const VERSION = '0.10.18';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -743,20 +743,45 @@ function subPanel() {
   const L = R.filter(i => areaMatch(i) && repMatch(i)), n = x => L.filter(i => subMatch(i, x)).length, na = x => R.filter(i => subMatch(i) && repMatch(i) && areaMatch(i, x)).length;
   const areas = [['', `全部（${R.filter(i => subMatch(i) && repMatch(i)).length}）`], ...AREA_ORDER.map(x => [x, `${x}（${na(x)}）`])];
   // reply status within the chosen 分區 and 分判
-  const S2 = R.filter(i => areaMatch(i) && subMatch(i)), nr = x => S2.filter(i => fixStatus(i) === x).length, done = nr('done'), nf = nr('nf'), na2 = nr('na'), due = S2.length - na2;
-  const reps = [['', `全部（${S2.length}）`], ['open', `未回復（${nr('open')}）`], ['done', `已完成（${done}）`], ['nf', `不需執修（${nf}）`], ['nfp', `不需執修・待審查（${S2.filter(i => repMatch(i, 'nfp')).length}）`], ...(na2 ? [['na', `不跟進（${na2}）`]] : [])];
+  const S2 = R.filter(i => areaMatch(i) && subMatch(i)), nr = x => S2.filter(i => fixStatus(i) === x).length, done = S2.filter(fixDoneOk).length, nfOk = S2.filter(i => fixStatus(i) === 'nf' && nfState(i) === 'ok').length, nf = nr('nf'), na2 = nr('na'), due = S2.length - na2;
+  const reps = [['', `全部（${S2.length}）`], ['open', `未回復（${nr('open')}）`], ['done', `已完成（${nr('done')}）`], ['nf', `不需執修（${nf}）`], ['nfp', `不需執修・待審查（${S2.filter(i => repMatch(i, 'nfp')).length}）`], ...(na2 ? [['na', `不跟進（${na2}）`]] : [])];
   const opts = [['', `全部（${L.length}）`], ...allSubs().filter(x => n(x)).map(x => [x, `${x}（${n(x)}）`]), ['-', `未指定分判（${n('-')}）`]];
   if (f && !opts.some(([k]) => k === f)) opts.push([f, `${f}（0）`]);
   openPanel('subf', '篩選', `<div class="f-l">分區</div><div class="chips pick">${areas.map(([k, t]) => `<button class="chip ${k === a ? 'on' : ''}" data-area="${esc(k)}">${esc(t)}</button>`).join('')}</div>
     <div class="f-l">分判</div><div class="chips pick">${opts.map(([k, t]) => `<button class="chip ${k === f ? 'on' : ''}" data-f="${esc(k)}">${esc(t)}</button>`).join('')}</div>
-    <div class="f-l">回復狀態</div><div class="note">${esc([a, f === '-' ? '未指定分判' : f].filter(Boolean).join(' · ') || '全部')}：已完成 <b>${done}</b>／${due} 項${due ? `（${Math.round(done / due * 100)}%）` : ''}${nf ? `，不需執修 <b>${nf}</b> 項` : ''}，未回復 <b>${nr('open')}</b> 項${na2 ? `，不跟進 ${na2} 項` : ''}</div>
+    <div class="f-l">回復狀態</div><div class="note">${esc([a, f === '-' ? '未指定分判' : f].filter(Boolean).join(' · ') || '全部')}：已完成 <b>${done}</b>／${due} 項${due ? `（${Math.round(done / due * 100)}%）` : ''}${nfOk ? `（含認可不需執修 ${nfOk} 項）` : ''}${nf - nfOk ? `，不需執修待審查 <b>${nf - nfOk}</b> 項` : ''}，未回復 <b>${nr('open')}</b> 項${na2 ? `，不跟進 ${na2} 項` : ''}</div>
     <div class="chips pick">${reps.map(([k, t]) => `<button class="chip ${k === rp ? 'on' : ''}" data-rp="${k}">${esc(t)}</button>`).join('')}</div>
-    <div class="note">Podium＝B3–2F；T1、T2、T3、T5＝3F 或以上各座。圖上的點、記錄清單及「上一項／下一項」只包括所選分區及分判，其他點暫時隱藏（不會刪除）。選「未回復」只看還未回復的點。「圖紙」清單及「樓層」選擇旁邊有小圓點（沒有篩選時按整個批次計）：<b style="color:#d42a1e">紅點</b>＝該圖／該層有未回復的項目，<b style="color:#2f7d4f">綠點</b>＝全部已回復。這部機會記住所選篩選。</div>`);
+    <div class="note">Podium＝B3–2F；T1、T2、T3、T5＝3F 或以上各座。圖上的點、記錄清單及「上一項／下一項」只包括所選分區及分判，其他點暫時隱藏（不會刪除）。選「未回復」只看還未回復的點。「圖紙」清單及「樓層」選擇旁邊有小圓點（沒有篩選時按整個批次計）：<b style="color:#d42a1e">紅點</b>＝該圖／該層有未回復的項目，<b style="color:#2f7d4f">綠點</b>＝全部已回復。這部機會記住所選篩選。</div>
+    ${subSummaryBlock()}`);
   panel.querySelector('.pb').onclick = async e => {
+    if (e.target.dataset.a === 'sumCopy') return copyText($('#subSum').value, '已複製完成情況，可以貼上發出');
     const rb = e.target.closest('[data-rp]'); if (rb) { S.settings.repFilter = rb.dataset.rp; await saveKV(); renderOverlay(); updateBar(); return subPanel(); }
     const ar = e.target.closest('[data-area]'); if (ar) { S.settings.areaFilter = ar.dataset.area; await saveKV(); renderOverlay(); updateBar(); return subPanel(); }
     const b = e.target.closest('[data-f]'); if (!b) return; await setSubFilter(b.dataset.f); closePanel(); toast(filterOn() ? `只顯示 ${subFilterName()}` : '顯示全部');
   };
+}
+/* 各分判完成情況, to copy and send: every 分判 of the batch (within the chosen 分區), 已完成／總數 (不跟進 left out) */
+function subSummary() {
+  const a = areaFilter(), R = roundItems().filter(i => areaMatch(i)), m = new Map();
+  const add = (k, i) => { const e = m.get(k) || { n: 0, done: 0, nf: 0, nfp: 0 }, s = fixStatus(i); if (s === 'na') return; e.n++;
+    if (fixDoneOk(i)) e.done++; if (s === 'nf' && nfState(i) === 'ok') e.nf++; if (s === 'nf' && nfState(i) === 'pend') e.nfp++; m.set(k, e); };
+  for (const i of R) { const L = subsOf(i); for (const k of L.length ? L : ['未指定分判']) add(k, i); }
+  const tot = { n: 0, done: 0 }; for (const i of R) { const s = fixStatus(i); if (s === 'na') continue; tot.n++; if (fixDoneOk(i)) tot.done++; }
+  const nfT = e => { const t = [e.nf && `含認可不需執修 ${e.nf}`, e.nfp && `不需執修待審查 ${e.nfp}`].filter(Boolean).join('，'); return t ? `（${t}）` : ''; };
+  const rows = [...m].sort((x, y) => (x[0] === '未指定分判') - (y[0] === '未指定分判') || y[1].n - x[1].n).map(([k, e]) => `${k}：${e.done}/${e.n}${nfT(e)}`);
+  return [`${roundLabel()}${a ? ' · ' + a : ''}（${today()}）`, '各分判完成情況（已完成／總數）：', ...rows, `總數：${tot.done}/${tot.n}`].join('\n');
+}
+function subSummaryBlock() {
+  if (!roundItems().length) return '';
+  const t = subSummary(), h = Math.min(t.split('\n').length, 18);
+  return `<div class="f-l">各分判完成情況（可複製發出）</div><textarea id="subSum" readonly rows="${h}" style="flex:none;height:${h * 21 + 20}px;width:100%;font-size:14px;line-height:1.5;padding:8px;border:1px solid #d9dedd;border-radius:10px;background:#fff">${esc(t)}</textarea>
+    <button class="btn p" data-a="sumCopy">複製</button>
+    <div class="note">一項有多個分判時，每個分判各計一次；管理員認可的「不需執修」計入已完成，待審查的不計；不跟進的項目不計。${areaFilter() ? '只包括所選分區。' : ''}</div>`;
+}
+async function copyText(t, msg) {
+  try { await navigator.clipboard.writeText(t); return toast(msg); } catch (e) { }
+  const f = $('#subSum'); if (f) { f.removeAttribute('readonly'); f.focus(); f.select(); f.setSelectionRange(0, t.length); const ok = document.execCommand && document.execCommand('copy'); f.setAttribute('readonly', ''); if (ok) return toast(msg); }
+  toast('未能自動複製，請長按文字框全選後複製', 5000);
 }
 function floorPanel() {
   const d = curD(); const mv = multiFloorViews(d);
@@ -1987,6 +2012,7 @@ function importRound(r, from) {
 }
 
 /* ================= v0.6: 執修 (repair follow-up) ================= */
+const fixDoneOk = i => fixStatus(i) === 'done' || (fixStatus(i) === 'nf' && nfState(i) === 'ok');
 const FIX_ST = { open: '未回復', done: '已完成', nf: '不需執修', nfp: '不需執修・待審查', na: '不跟進' };
 /* 不需執修 with review: a 分判 submits a reason (k 'nf'), a 管理員 accepts it ('ok') or rejects it ('no', with a comment);
    every step stays in the record's log { t, by, k, text }. The latest step decides: 'nf' = 不需執修・待審查,
