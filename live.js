@@ -282,7 +282,7 @@ async function liveDownload() {
       delete p.remote; await saveItem(it, true); updateBar();
       if (S.panel === 'item' && S.editing === it) itemPanel();
     }
-  } catch (e) { console.warn(e); LV.err = e.message; LV.down = false; updateBar(); return void setTimeout(liveDownload, 20000); }
+  } catch (e) { console.warn(e); LV.err = e.message; LV.down = false; updateBar(); clearTimeout(LV.downT); LV.downT = setTimeout(liveDownload, 20000); return; }
   LV.down = false; updateBar();
 }
 
@@ -306,30 +306,63 @@ function liveSoon() { clearTimeout(LV.t); LV.t = setTimeout(liveFlush, 800); }
 function liveEdited(it) { if (!liveIn(it) || !liveBoss(liveRoundOf(it))) return; it.liveDirty = 1; liveSoon(); }
 async function liveRemoved(it) { const r = liveRoundOf(it); if (!r || !liveBoss(r)) return; r.live.gone = [...(r.live.gone || []), it.id]; await saveRounds(); liveSoon(); }
 const liveReplyWaiting = i => i.fix && (i.fix.dirty || (i.fix.del || []).length || i.fix.photos.some(p => !p.up && !p.remote));
-const livePending = () => S.items.filter(i => liveIn(i) && (i.liveDirty || liveReplyWaiting(i))).length + S.rounds.reduce((n, r) => n + ((liveOf(r) && r.live.gone) || []).length, 0);
+/* v0.10.22: a write the rules refuse is refused again on every retry, and each refusal still costs the daily quota.
+   So a refused record or reply is set aside in LV.deny for this session (tried again when the app is next opened)
+   instead of blocking the rest and being retried forever; other failures (offline) retry on ONE timer that backs off
+   from 30 s to 30 min. Before, every failure added another 30 s timer, so a single refused reply multiplied into
+   dozens of refusals a minute on a device that stayed open. */
+const liveDenied = e => e && e.code === 'permission-denied';
+const liveDeny = key => { (LV.deny || (LV.deny = new Set())).add(key); console.warn('在線上載被拒絕：', key); };
+const liveSkip = key => !!(LV.deny && LV.deny.has(key));
+const livePending = () => S.items.filter(i => liveIn(i) && !liveSkip(i.id) && (i.liveDirty || liveReplyWaiting(i))).length + S.rounds.reduce((n, r) => n + ((liveOf(r) && r.live.gone) || []).filter(x => !liveSkip('gone:' + x)).length, 0);
 async function liveFlush() {
-  if (LV.flushing) { LV.again = true; return; } LV.flushing = true;
+  if (LV.flushing) { LV.again = true; return; } LV.flushing = true; let failed = false;
   try {
     if (!livePending()) return;
     await liveInit(); const F = LV.fb;
     // the publisher's changes to the records: new or re-marked before photos first, then the records in batches
-    const recs = S.items.filter(i => i.liveDirty && liveIn(i) && liveBoss(liveRoundOf(i)));
+    let recs = S.items.filter(i => i.liveDirty && liveIn(i) && liveBoss(liveRoundOf(i)) && !liveSkip(i.id));
     for (const it of recs) { const id = liveRoundOf(it).live.id;
-      for (const p of it.photos.filter(p => !p.up && !p.remote)) {
-        const b = await livePhotoBytes(await photoOut(it, p));
-        await F.setDoc(lref(id, 'photos', p.id), { kind: 'b', item: it.id, data: F.Bytes.fromUint8Array(b.bytes), w: b.w, h: b.h, t: p.t || 0 }); p.up = Date.now();
-      } }
+      try {
+        for (const p of it.photos.filter(p => !p.up && !p.remote)) {
+          const b = await livePhotoBytes(await photoOut(it, p));
+          await F.setDoc(lref(id, 'photos', p.id), { kind: 'b', item: it.id, data: F.Bytes.fromUint8Array(b.bytes), w: b.w, h: b.h, t: p.t || 0 }); p.up = Date.now();
+        }
+      } catch (e) { if (!liveDenied(e)) throw e; liveDeny(it.id); } }
+    recs = recs.filter(i => !liveSkip(i.id));
     for (let i = 0; i < recs.length; i += 400) {
       const part = recs.slice(i, i + 400), wb = F.writeBatch(LV.db);
       for (const it of part) wb.set(lref(liveRoundOf(it).live.id, 'items', it.id), liveRec(it));
-      await wb.commit(); for (const it of part) { delete it.liveDirty; await saveItem(it, true); }
+      try { await wb.commit(); } catch (e) { if (!liveDenied(e)) throw e; part.forEach(it => liveDeny(it.id)); continue; }
+      for (const it of part) { delete it.liveDirty; await saveItem(it, true); }
     }
     for (const r of S.rounds.filter(r => liveBoss(r) && (r.live.gone || []).length)) {
-      for (const iid of [...r.live.gone]) { await F.deleteDoc(lref(r.live.id, 'items', iid)); r.live.gone = r.live.gone.filter(x => x !== iid); }
+      for (const iid of [...r.live.gone]) {
+        if (liveSkip('gone:' + iid)) continue;
+        try { await F.deleteDoc(lref(r.live.id, 'items', iid)); } catch (e) { if (!liveDenied(e)) throw e; liveDeny('gone:' + iid); continue; }
+        r.live.gone = r.live.gone.filter(x => x !== iid);
+      }
       await saveRounds();
     }
-    for (const it of S.items.filter(i => liveIn(i) && i.fix)) {
-      const X = it.fix, id = liveRoundOf(it).live.id, me = LV.uid, P = {}; if (!liveReplyWaiting(it)) continue;
+    for (const it of S.items.filter(i => liveIn(i) && i.fix && !liveSkip(i.id))) {
+      try { await liveSendReply(it, F); } catch (e) { if (!liveDenied(e)) throw e; liveDeny(it.id); }
+    }
+    LV.fails = 0; LV.err = LV.deny && LV.deny.size ? `${LV.deny.size} 項未獲伺服器准許上載，重新開啟程式會再試` : '';
+  } catch (e) {
+    console.warn(e); LV.err = e.message; failed = true;
+    LV.fails = (LV.fails || 0) + 1; clearTimeout(LV.retry);
+    LV.retry = setTimeout(liveFlush, Math.min(30e3 * 2 ** (LV.fails - 1), 30 * 60e3));
+  }
+  finally {
+    LV.flushing = false; updateBar();
+    // after a failure the retry timer is already set: running again straight away would only fail again
+    if (LV.again) { LV.again = false; if (!failed) liveFlush(); }
+  }
+}
+// my reply to one record: new reply photos, then the reply itself, then photos removed
+async function liveSendReply(it, F) {
+  {
+      const X = it.fix, id = liveRoundOf(it).live.id, me = LV.uid, P = {}; if (!liveReplyWaiting(it)) return;
       for (const p of X.photos.filter(p => !p.up && !p.remote)) {
         if (!p.uid) p.uid = me;
         if (p.uid !== me) { p.up = Date.now(); continue; } // someone else's photo can't be sent again from here
@@ -347,16 +380,16 @@ async function liveFlush() {
       X.del = (X.del || []).filter(d => !del.includes(d)); if (!X.del.length) delete X.del;
       delete X.dirty; await saveItem(it, true); updateBar();
       if (S.panel === 'item' && S.editing === it) itemPanel();
-    }
-    LV.err = '';
-  } catch (e) { console.warn(e); LV.err = e.message; setTimeout(liveFlush, 30000); }
-  finally { LV.flushing = false; updateBar(); if (LV.again) { LV.again = false; liveFlush(); } }
+  }
 }
 
 /* ---- top bar: ↑ waiting to upload, ↓ downloading ---- */
 function liveBadge() {
   if (!liveOf(curRound())) return '';
   const up = livePending(), dn = roundItems().reduce((n, i) => n + allPhotos(i).filter(p => p.remote).length, 0);
+  // refused by the server (set aside until the app is opened again)
+  const no = LV.deny ? roundItems().filter(i => liveSkip(i.id)).length : 0;
+  if (!up && no) return ` <span class="n live wait" title="${esc(LV.err)}">✕${no}</span>`;
   return ` <span class="n live${up ? ' wait' : ''}" title="${up ? `${up} 項回復等待上載${LV.err ? '：' + esc(LV.err) : ''}` : '在線'}">${up ? '↑' + up : dn ? '↓' + dn : '在線'}</span>`;
 }
 

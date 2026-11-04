@@ -23,11 +23,11 @@ service cloud.firestore {
     }
 
     // 傳送碼: a backup ZIP left for a short while under a 6-digit code, in chunks of under 1 MiB.
-    // Only whoever knows the code can read it (no listing); it can't be read once expireAt has passed
-    // (TTL on the drops and chunks collection groups, field expireAt, removes it for good).
+    // Only whoever knows the code can read it; it can't be read once expireAt has passed. TTL needs billing,
+    // so instead any device lists the expired codes (their heads only, never the data) and deletes them.
     match /drops/{code} {
       allow get: if signed() && resource.data.expireAt > request.time;
-      allow list: if false;
+      allow list: if signed() && resource.data.expireAt < request.time;
       allow create: if signed() && code.matches('[0-9]{6}') && request.resource.data.uid == request.auth.uid
         && request.resource.data.ready == false && request.resource.data.got == 0
         && request.resource.data.n is int && request.resource.data.n > 0 && request.resource.data.n <= 400
@@ -37,7 +37,7 @@ service cloud.firestore {
         (resource.data.uid == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready']))
         || (resource.data.ready == true && resource.data.expireAt > request.time
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['got']) && request.resource.data.got == resource.data.got + 1));
-      allow delete: if signed() && resource.data.uid == request.auth.uid;
+      allow delete: if signed() && (resource.data.expireAt < request.time || resource.data.uid == request.auth.uid);
       match /chunks/{i} {
         function drop() { return get(/databases/$(db)/documents/drops/$(code)).data; }
         allow get: if signed() && resource.data.expireAt > request.time;
@@ -46,7 +46,7 @@ service cloud.firestore {
           && i.matches('[0-9]{1,3}') && int(i) < drop().n
           && request.resource.data.data is bytes && request.resource.data.data.size() <= 950000
           && request.resource.data.expireAt == drop().expireAt;
-        allow delete: if signed() && drop().uid == request.auth.uid;
+        allow delete: if signed() && (resource.data.expireAt < request.time || drop().uid == request.auth.uid);
       }
     }
 

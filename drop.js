@@ -5,8 +5,8 @@
    (data = up to 900 KB of the ZIP, expireAt). The other device types the code, or scans its QR code inside the
    app, downloads the chunks and imports them exactly like a ZIP file. Any number of devices may receive it until
    it expires (24 h) or the sender presses 結束傳送. Nothing is saved as a file on either device.
-   Cleaning up: the rules refuse to serve an expired code; a TTL policy on the drops and chunks collection groups
-   (field expireAt) deletes it in the cloud, and the sending device also deletes its own expired codes on start. */
+   Cleaning up: the rules refuse to serve an expired code. TTL needs a billing account, so every device, on start,
+   lists the expired codes (the rules let anyone list and delete those, never read their chunks) and deletes them. */
 const DROP_CH = 900000, DROP_TTL = 24 * 3600e3, DROP_MAX = 300 * 1048576;
 const dropRef = (code, ...p) => LV.fb.doc(LV.db, 'drops', code, ...p);
 const dropLink = code => location.origin + location.pathname + '?drop=' + code;
@@ -130,10 +130,22 @@ async function dropScan() {
   tick();
 }
 
-/* ---- start: a ?drop= link receives; this device's expired codes are deleted ---- */
+/* every device sweeps the expired codes, anyone's: the chunks first, then the head that says how many there are.
+   The query stays 5 min behind this device's clock, so a clock running fast never asks for one still valid */
+async function dropSweep() {
+  await liveInit(); const F = LV.fb;
+  const qs = await F.getDocs(F.query(F.collection(LV.db, 'drops'), F.where('expireAt', '<', F.Timestamp.fromMillis(Date.now() - 300e3)), F.limit(20)));
+  for (const s of qs.docs) {
+    await dropPool(s.data().n || 0, 4, i => F.deleteDoc(dropRef(s.id, 'chunks', String(i))).catch(() => { }));
+    await F.deleteDoc(s.ref).catch(() => { });
+  }
+  return qs.size;
+}
+
+/* ---- start: a ?drop= link receives; expired codes are swept ---- */
 async function dropBoot() {
   const m = location.search.match(/[?&]drop=(\d{6})/);
   if (m) { history.replaceState(null, '', location.pathname); if (LIVE_CFG) await dropReceive(m[1]); }
-  const old = (S.settings.drops || []).filter(d => d.exp <= Date.now());
-  if (old.length && navigator.onLine) liveInit().then(async () => { for (const d of old) await dropEnd(d, true); }).catch(() => { });
+  if ((S.settings.drops || []).some(d => d.exp <= Date.now())) { S.settings.drops = S.settings.drops.filter(d => d.exp > Date.now()); saveKV(); }
+  if (LIVE_CFG && navigator.onLine) setTimeout(() => dropSweep().catch(e => console.warn('傳送碼清理', e)), 8000);
 }
