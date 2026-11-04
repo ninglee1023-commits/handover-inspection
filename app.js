@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.19';
+const VERSION = '0.10.20';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -129,6 +129,7 @@ function stampEdits(it) {
   for (const g of Object.keys(FG)) { const sg = sigOf(it, g); if (it.fs[g] !== sg) { it.fm[g] = now; it.fs[g] = sg; } }
 }
 async function saveItem(it, merged) { if (merged) it.fs = sigsOf(it); else stampEdits(it); await DB.put('items', it); await refreshPhotos(it); }
+async function readAll(b) { if (!(b instanceof Blob) || !b.size) return null; try { const u = new Uint8Array(await b.arrayBuffer()); return u.byteLength ? u : null; } catch (e) { return null; } }
 async function canRead(b) { if (!(b instanceof Blob) || !b.size) return false; try { return (await b.slice(0, 64).arrayBuffer()).byteLength > 0; } catch (e) { return false; } }
 // a readable copy of a photo's marked-up image: memory, then storage, then the original
 async function photoOut(it, ph) {
@@ -1525,20 +1526,29 @@ async function exportBackup(onlyNew, roundId, reply) {
     const rd = roundId && S.rounds.find(r => r.id === roundId);
     const items = S.items.filter(i => rd ? roundOf(i) === rd.id : !onlyNew || (i.mod || i.created || 0) > backedAt(i)).filter(i => !reply || hasReply(i)).sort(byOrder);
     if (!items.length) return toast(reply ? '這個批次還沒有任何回復' : rd ? '這個批次沒有記錄' : '沒有新的記錄需要備份');
-    busy('正在打包…'); const zip = new JSZip(); const out = [];
+    busy('正在打包…'); const zip = new JSZip(); const out = [], bad = [];
     let n = 0, tot = items.reduce((s, i) => s + (reply ? 0 : i.photos.length) + ((i.fix && i.fix.photos) || []).length, 0);
+    /* the photo handles held in memory can point at a file iOS has already replaced ("object can not be found"),
+       so every photo is read in full here, from the stored copy if need be, and a photo that cannot be read
+       is listed afterwards instead of failing the whole backup when the ZIP is built */
+    const add = async (it, p, i, af) => {
+      busy(`正在打包相片 ${++n}／${tot}`);
+      const lbl = `${itemLabel(it)} ${af ? '回復' : '照片'}${i + 1}`;
+      let bytes = await readAll(p.orig);
+      if (!bytes) { await refreshPhotos(it); bytes = await readAll(p.orig); }
+      if (!bytes) { const x = await readAll(p.out); if (x) { bytes = x; p = { ...p, shapes: [] }; } } // markings baked in
+      if (!bytes) { bad.push(`${lbl}：原相及標記版都未能讀取`); return null; }
+      const o = `data/${p.id}.jpg`; zip.file(o, bytes, { compression: 'STORE' });
+      if (!reply) { try { zip.file(`相片/${photoName(it, i, af)}`, new Uint8Array(await (await captioned(it, p, i, af)).arrayBuffer()), { compression: 'STORE' }); } catch (e) { bad.push(`${lbl}（附說明的相片）：${e.message}`); } }
+      const { orig, out: _o, ...meta } = p; return { ...meta, orig: o };
+    };
     for (const it of items) {
+      await refreshPhotos(it);
       const photos = [];
-      if (!reply) for (const [i, p] of it.photos.entries()) {
-        if (!p.orig) continue;
-        busy(`正在打包相片 ${++n}／${tot}`);
-        const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' });
-        zip.file(`相片/${photoName(it, i)}`, await captioned(it, p, i), { compression: 'STORE' });
-        const { orig, out: _o, ...meta } = p; photos.push({ ...meta, orig: o });
-      }
+      if (!reply) for (const [i, p] of it.photos.entries()) { if (!p.orig) continue; const m = await add(it, p, i); if (m) photos.push(m); }
       let fix = it.fix;
       if (fix && fix.photos && fix.photos.length) { const fp = [];
-        for (const [i, p] of fix.photos.entries()) { if (!p.orig) continue; busy(`正在打包相片 ${++n}／${tot}`); const o = `data/${p.id}.jpg`; zip.file(o, p.orig, { compression: 'STORE' }); if (!reply) zip.file(`相片/${photoName(it, i, true)}`, await captioned(it, p, i, true), { compression: 'STORE' }); const { orig, out: _o, ...meta } = p; fp.push({ ...meta, orig: o }); }
+        for (const [i, p] of fix.photos.entries()) { if (!p.orig) continue; const m = await add(it, p, i, true); if (m) fp.push(m); }
         fix = { ...fix, photos: fp }; }
       out.push({ ...it, photos, fix });
     }
@@ -1550,9 +1560,10 @@ async function exportBackup(onlyNew, roundId, reply) {
     const stamp = fmtTime().replace(/[-: ]/g, '').slice(0, 12);
     const tag = rd ? `${setName(setOfRound(rd))}_${rd.name}`.replace(/[\\/:*?"<>|\s]+/g, '') : onlyNew ? '新增' : '完整';
     await deliver(blob, `${reply ? '回復包' : '驗收備份'}_${S.settings.dev || 'A'}_${tag}_${stamp}.zip`);
-    if (reply) return toast(`回復包已導出：${items.length} 項回復`, 3500);
+    if (reply) { toast(`回復包已導出：${items.length} 項回復`, 3500); if (bad.length) badPhotos(bad); return; }
     if (rd) S.settings.roundBackup = { ...S.settings.roundBackup, [rd.id]: Date.now() }; else S.settings.lastBackup = Date.now();
     await saveKV(); updateBar(); if (S.panel === 'export') exportPanel();
+    if (bad.length) badPhotos(bad);
   } catch (err) { busy(); toast('備份失敗：' + err.message, 6000); }
 }
 /* merge an incoming copy of a record into the local one, field group by field group:
