@@ -9,6 +9,8 @@
      items/{itemId}   the locked record, without photos' images
      photos/{photoId} kind 'b' (before, from the publisher) or 'a' (reply, with the uid of whoever took it), data = JPEG bytes, w, h, t, by
      replies/{itemId}_{uid}  one per person and record: item, uid, by, reply, mod, photos: { photoId: { t, w, h, by, v } }
+     gone/{itemId}    v0.10.25: a record a 管理員 deleted (at, by), so it can't come back: a device that was closed or offline
+                      at the time drops its copy when it next connects, and an edit of it waiting there is not sent up again
    Every device signs in anonymously, so each person is told apart by the uid of their browser even without a login:
    the rules let people change or remove only their own replies (the publisher may remove anyone's).
    管理員 = the publisher, or any device that has given the 發佈密碼 (S.settings.livePubOk): they may change, add,
@@ -22,7 +24,7 @@
 const LIVE_CFG = { apiKey: 'AIzaSyBZDMchl3D7B3Yo7x-5iNdMgkWizo_S3DY', authDomain: 'handover-inspection.firebaseapp.com', projectId: 'handover-inspection',
   storageBucket: 'handover-inspection.firebasestorage.app', messagingSenderId: '33558693068', appId: '1:33558693068:web:d3cb0e5168f95f66efee69' };
 const FB_V = '10.14.1';
-const LV = { fb: null, db: null, uid: '', init: null, subs: new Map(), rep: new Map(), flushing: false, again: false, down: false, err: '' };
+const LV = { fb: null, db: null, uid: '', init: null, subs: new Map(), rep: new Map(), gone: new Map(), flushing: false, again: false, down: false, err: '' };
 // this browser's anonymous uid, remembered so replies made before the first connection are still mine
 const myUid = () => LV.uid || S.settings.liveUid || '';
 const liveOf = r => (r && r.live) || null;
@@ -145,10 +147,32 @@ async function liveJoin(code) {
 }
 
 /* ---- the list from the cloud, live: its head (name, deleted), the replies and the records ---- */
+/* v0.10.25: records deleted by a 管理員. Before, a deletion only removed the record's document, so it came back:
+   - a device that was closed (or offline) at the time never heard of it (nothing is cached between openings, so no
+     'removed' arrives later) and kept its copy, and a 管理員 device then sent it up again with its next edit;
+   - the deleting device got it back from the cloud when the app was reopened before the deletion had gone up.
+   Now the deletion leaves gone/{id} as well; every device drops those records, never sends them up again, and on
+   connecting drops the records of the list that are no longer in the cloud (unless they are new here, waiting to go up). */
+const liveGoneOf = id => { let g = LV.gone.get(id); if (!g) { let res; g = { ids: new Set(), ready: new Promise(r => res = r) }; g.res = res; LV.gone.set(id, g); } return g; };
+const liveIsGone = (rd, iid) => !!(liveOf(rd) && (liveGoneOf(rd.live.id).ids.has(iid) || (rd.live.gone || []).includes(iid)));
+// a record deleted elsewhere: let go of it here
+async function liveDrop(rd, iid) {
+  const ex = S.items.find(i => i.id === iid); if (!ex || roundOf(ex) !== rd.id) return;
+  if (S.editing === ex) { S.editing = null; closePanel(); }
+  S.items = S.items.filter(i => i !== ex); await DB.del('items', iid); DB.del('kv', 'rc:' + iid).catch(() => { }); renderOverlay(); updateBar();
+}
 function liveWatch(rd) {
   const id = rd.live.id; if (LV.subs.has(id) || !LV.fb) return;
   const F = LV.fb, un = []; LV.subs.set(id, un);
   const again = err => { console.warn(err); liveUnwatch(id); setTimeout(() => { if (liveOf(rd)) liveWatch(rd); }, 30000); };
+  const G = liveGoneOf(id); let seen = false;
+  un.push(F.onSnapshot(lcol(id, 'gone'), snap => {
+    for (const ch of snap.docChanges()) { if (ch.type === 'removed') G.ids.delete(ch.doc.id); else { G.ids.add(ch.doc.id); liveDrop(rd, ch.doc.id); } }
+    if (!snap.metadata.fromCache) G.res();
+  }, err => {
+    // the rules in the console are older than v0.10.25 (no gone/): carry on without, as before
+    if (err && err.code === 'permission-denied') { if (!LV.goneOld) console.warn('Firestore 規則未更新（gone）'); LV.goneOld = true; G.res(); } else again(err);
+  }));
   un.push(F.onSnapshot(lref(id), s => { if (s.exists() || !s.metadata.fromCache) liveHead(rd, s.exists() ? s.data() : null); }, again));
   un.push(F.onSnapshot(lcol(id, 'replies'), snap => {
     const R = LV.rep.get(id) || new Map(), hit = new Set(); LV.rep.set(id, R);
@@ -162,6 +186,11 @@ function liveWatch(rd) {
   }, again));
   un.push(F.onSnapshot(lcol(id, 'items'), snap => {
     for (const ch of snap.docChanges()) liveRecord(rd, ch.type === 'removed' ? null : ch.doc.data(), ch.doc.id);
+    // the first full answer from the cloud: a record of this list it doesn't have was deleted while this device wasn't
+    // listening (nothing is cached between openings, so no 'removed' comes for it); keep only those new here
+    if (!seen && !snap.metadata.fromCache) { seen = true; const have = new Set(snap.docs.map(d => d.id));
+      // (a record never in the cloud — no uploaded photo — is left alone)
+      for (const it of S.items.filter(i => roundOf(i) === rd.id && !have.has(i.id) && (liveIsGone(rd, i.id) || (!i.liveDirty && i.photos.some(p => p.up))))) liveDrop(rd, it.id); }
   }, again));
 }
 function liveUnwatch(id) { for (const u of LV.subs.get(id) || []) u(); LV.subs.delete(id); }
@@ -212,7 +241,8 @@ async function livePurge(id, name) {
     const [its, reps] = await Promise.all([F.getDocs(lcol(id, 'items')), F.getDocs(lcol(id, 'replies'))]);
     const pids = new Set(); its.docs.forEach(d => (d.data().photos || []).forEach(p => pids.add(p.id))); reps.docs.forEach(d => Object.keys(d.data().photos || {}).forEach(p => pids.add(p)));
     let n = 0; for (const p of pids) { busy(`正在刪除相片 ${++n}／${pids.size}`); await F.deleteDoc(lref(id, 'photos', p)).catch(() => { }); }
-    const refs = [...its.docs, ...reps.docs].map(d => d.ref);
+    const gone = await F.getDocs(lcol(id, 'gone')).catch(() => ({ docs: [] }));
+    const refs = [...its.docs, ...reps.docs, ...gone.docs].map(d => d.ref);
     for (let i = 0; i < refs.length; i += 400) { const wb = F.writeBatch(LV.db); refs.slice(i, i + 400).forEach(r => wb.delete(r)); await wb.commit(); }
     await F.deleteDoc(lref(id));
     LV.lists = (LV.lists || []).filter(l => l.id !== id); if (S.panel === 'round') roundPanel(); busy(); toast(`已永久刪除「${name}」`, 5000);
@@ -223,11 +253,7 @@ const LIVE_KEYS = ['code', 'no', 'dev', 'by', 'ord', 'origLabel', 'note', 'sub',
 async function liveRecord(rd, c, id) {
   if (!liveOf(rd)) return;
   const ex = S.items.find(i => i.id === id);
-  if (!c) {
-    if (!ex || roundOf(ex) !== rd.id) return;
-    if (S.editing === ex) closePanel();
-    S.items = S.items.filter(i => i !== ex); await DB.del('items', id); renderOverlay(); updateBar(); return;
-  }
+  if (!c || liveIsGone(rd, id)) return liveDrop(rd, id); // deleted (here, waiting to go up, or by another 管理員)
   toFrame(c);
   if (ex && ex.liveDirty) return; // changed here, waiting to go up
   if (ex && roundOf(ex) === rd.id && JSON.stringify(liveRec(ex)) === JSON.stringify(c)) return;
@@ -304,7 +330,7 @@ function liveDelPhoto(it, i) { const F = fixOf(it), [ph] = F.photos.splice(i, 1)
 function liveSoon() { clearTimeout(LV.t); LV.t = setTimeout(liveFlush, 800); }
 // the publisher edited / deleted a record of the list
 function liveEdited(it) { if (!liveIn(it) || !liveBoss(liveRoundOf(it))) return; it.liveDirty = 1; liveSoon(); }
-async function liveRemoved(it) { const r = liveRoundOf(it); if (!r || !liveBoss(r)) return; r.live.gone = [...(r.live.gone || []), it.id]; await saveRounds(); liveSoon(); }
+async function liveRemoved(it) { const r = liveRoundOf(it); if (!r || !liveBoss(r)) return; if (!(r.live.gone || []).includes(it.id)) r.live.gone = [...(r.live.gone || []), it.id]; await saveRounds(); liveSoon(); }
 const liveReplyWaiting = i => i.fix && (i.fix.dirty || (i.fix.del || []).length || i.fix.photos.some(p => !p.up && !p.remote));
 /* v0.10.22: a write the rules refuse is refused again on every retry, and each refusal still costs the daily quota.
    So a refused record or reply is set aside in LV.deny for this session (tried again when the app is next opened)
@@ -322,6 +348,14 @@ async function liveFlush() {
     await liveInit(); const F = LV.fb;
     // the publisher's changes to the records: new or re-marked before photos first, then the records in batches
     let recs = S.items.filter(i => i.liveDirty && liveIn(i) && liveBoss(liveRoundOf(i)) && !liveSkip(i.id));
+    // an edit of a record another 管理員 has deleted must not bring it back: know the deleted ones first
+    for (const lid of new Set(recs.map(i => liveRoundOf(i).live.id))) {
+      if (!LV.subs.has(lid)) { const r = S.rounds.find(x => liveOf(x) && x.live.id === lid); if (r) liveWatch(r); }
+      let t; const ok = await Promise.race([liveGoneOf(lid).ready.then(() => true), new Promise(r => t = setTimeout(r, 15000, false))]); clearTimeout(t);
+      if (!ok) throw new Error('未能讀取已刪除的記錄，稍後再試');
+    }
+    for (const it of recs.filter(i => liveIsGone(liveRoundOf(i), i.id))) await liveDrop(liveRoundOf(it), it.id);
+    recs = recs.filter(i => S.items.includes(i));
     for (const it of recs) { const id = liveRoundOf(it).live.id;
       try {
         for (const p of it.photos.filter(p => !p.up && !p.remote)) {
@@ -334,12 +368,13 @@ async function liveFlush() {
       const part = recs.slice(i, i + 400), wb = F.writeBatch(LV.db);
       for (const it of part) wb.set(lref(liveRoundOf(it).live.id, 'items', it.id), liveRec(it));
       try { await wb.commit(); } catch (e) { if (!liveDenied(e)) throw e; part.forEach(it => liveDeny(it.id)); continue; }
-      for (const it of part) { delete it.liveDirty; await saveItem(it, true); }
+      // deleted here while it was going up: it stays deleted (the deletion follows below)
+      for (const it of part) { delete it.liveDirty; if (S.items.includes(it)) await saveItem(it, true); }
     }
     for (const r of S.rounds.filter(r => liveBoss(r) && (r.live.gone || []).length)) {
       for (const iid of [...r.live.gone]) {
         if (liveSkip('gone:' + iid)) continue;
-        try { await F.deleteDoc(lref(r.live.id, 'items', iid)); } catch (e) { if (!liveDenied(e)) throw e; liveDeny('gone:' + iid); continue; }
+        try { await liveDelRecord(r.live.id, iid); } catch (e) { if (!liveDenied(e)) throw e; liveDeny('gone:' + iid); continue; }
         r.live.gone = r.live.gone.filter(x => x !== iid);
       }
       await saveRounds();
@@ -358,6 +393,15 @@ async function liveFlush() {
     // after a failure the retry timer is already set: running again straight away would only fail again
     if (LV.again) { LV.again = false; if (!failed) liveFlush(); }
   }
+}
+// delete a record in the cloud, leaving gone/{id} so it stays deleted everywhere (older rules: only the record)
+async function liveDelRecord(lid, iid) {
+  const F = LV.fb;
+  if (!LV.goneOld) try {
+    const wb = F.writeBatch(LV.db); wb.set(lref(lid, 'gone', iid), { at: Date.now(), by: S.settings.inspector || '' }); wb.delete(lref(lid, 'items', iid));
+    await wb.commit(); liveGoneOf(lid).ids.add(iid); return;
+  } catch (e) { if (!liveDenied(e)) throw e; LV.goneOld = true; console.warn('Firestore 規則未更新（gone）：只刪除記錄'); }
+  await F.deleteDoc(lref(lid, 'items', iid));
 }
 // my reply to one record: new reply photos, then the reply itself, then photos removed
 async function liveSendReply(it, F) {
@@ -570,6 +614,10 @@ function liveMergeForm(r) {
 }
 async function liveMergeInto(rd, src) {
   busy('正在併入…'); const me = myUid(), now = Date.now();
+  // a record deleted from the list earlier and merged in again on purpose: it may come back
+  const G = liveGoneOf(rd.live.id), back = S.items.filter(i => roundOf(i) === src.id && liveIsGone(rd, i.id)).map(i => i.id);
+  for (const iid of back) { G.ids.delete(iid); await LV.fb.deleteDoc(lref(rd.live.id, 'gone', iid)).catch(() => { }); }
+  if (back.length) { rd.live.gone = (rd.live.gone || []).filter(x => !back.includes(x)); await saveRounds(); }
   for (const it of S.items.filter(i => roundOf(i) === src.id)) {
     it.round = rd.id; it.mod = now; it.liveDirty = 1;
     for (const p of it.photos) delete p.up; // before photos go up with the record
