@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.22';
+const VERSION = '0.10.23';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -73,7 +73,7 @@ function blobWarning() {
 const S = {
   project: { name: '', site: '', date: today(), inspector: '', company: '' },
   settings: { autoCam: true, showZones: true, crop: 'm', keyPlan: true },
-  floorSel: {}, recentAreas: [], views: {}, rots: {}, repSub: '',
+  floorSel: {}, recentAreas: [], views: {}, rots: {},
   drawings: [], items: [], rounds: [], fixItem: null, cur: null, mode: 'inspect', tool: 'select',
   view: { x: 0, y: 0, k: 1 }, editing: null, draft: null, sel: null, panel: null, listScope: 'cur',
 };
@@ -1060,14 +1060,13 @@ function exportPanel() {
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>
     <div class="grid2"><label class="f">地盤／地址<input id="pSite" value="${esc(P.site)}"></label><label class="f">驗收日期<input id="pDate" type="date" value="${esc(P.date)}"></label></div>
     <label class="f">公司／單位<input id="pCo" value="${esc(P.company)}"></label>
-    <label class="f">分判<select id="pSub"><option value="">全部分判</option>${allSubs().filter(x => S.items.some(i => subsOf(i).includes(x))).map(x => `<option ${S.repSub === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}<option value="-" ${S.repSub === '-' ? 'selected' : ''}>未指定分判</option></select></label>
     ${devs.length > 1 ? `<label class="f">報告範圍<select id="pDevs"><option value="">全部（${devs.join('、')}）</option>${devs.map(d => `<option value="${d}">只限 ${d}</option>`).join('')}</select></label>` : ''}
     <label class="f">圖紙截取範圍<select id="pCrop"><option value="s">細（約 7 米闊）</option><option value="m">中（約 11 米闊）</option><option value="l">大（約 17 米闊）</option></select></label>
     <label class="toggle">報告最後附上每張平面圖的位置總圖<input type="checkbox" id="pKey" ${S.settings.keyPlan ? 'checked' : ''}></label>
     <label class="f">報告類型<select id="pKind"><option value="inspect">驗收報告</option><option value="fixdone">回復報告（只限已回復項目，完成前後對照）</option><option value="fixall">回復報告（全部項目，列出是否已回復）</option></select></label>
     <button class="btn p" data-a="preview">預覽報告</button>
     <div class="row"><button class="btn dk" data-a="pdf">導出 PDF</button><button class="btn dk" data-a="docx">導出 Word</button></div>
-    <div class="note">預覽後可直接導出 PDF 或 Word。PDF 與預覽版面相同；Word 可再加文字修改。</div>
+    <div class="note">按下後會先彈出篩選：可揀一個或多個分判、完成狀態，及修改報告標題（預設全部）。預覽後可直接導出 PDF 或 Word。PDF 與預覽版面相同；Word 可再加文字修改。</div>
     <div class="f-l">分批導出 PDF（每組一個檔案，方便派發）</div>
     <div class="row"><button class="btn" data-a="set:sub">按分判</button><button class="btn" data-a="set:area">按區域</button><button class="btn" data-a="set:both">按區域＋分判</button></div>
     <div class="note">區域：Podium（B3–2F）、T1、T2、T3、T5，即各管工負責的範圍。按上面選的報告類型及本機範圍導出；未指定分判的記錄自成一個檔案。</div>
@@ -1087,7 +1086,7 @@ function exportPanel() {
     <div class="note" id="stor">記錄存在這部 iPad 的程式資料內。</div>
     <div class="note">版本 ${VERSION}${S.pkgVersion ? '　圖紙包 ' + esc(S.pkgVersion) : ''}</div>`);
   $('#pCrop').value = S.settings.crop; $('#pKind').value = 'inspect';
-  const sv = () => { Object.assign(P, { name: $('#pName').value, site: $('#pSite').value, date: $('#pDate').value, company: $('#pCo').value }); S.settings.keyPlan = $('#pKey').checked; S.repSub = $('#pSub').value; S.settings.crop = $('#pCrop').value; S.settings.autoCam = $('#sCam').checked; S.settings.showZones = $('#sZone').checked; S.settings.autoAlbum = $('#sAlb').checked; saveKV(); updateBar(); renderOverlay(); };
+  const sv = () => { Object.assign(P, { name: $('#pName').value, site: $('#pSite').value, date: $('#pDate').value, company: $('#pCo').value }); S.settings.keyPlan = $('#pKey').checked; S.settings.crop = $('#pCrop').value; S.settings.autoCam = $('#sCam').checked; S.settings.showZones = $('#sZone').checked; S.settings.autoAlbum = $('#sAlb').checked; saveKV(); updateBar(); renderOverlay(); };
   panel.querySelectorAll('input,select').forEach(i => i.onchange = sv);
   (async () => {
     const el = $('#stor'); if (!el) return; let t = el.textContent;
@@ -1099,10 +1098,10 @@ function exportPanel() {
     const a = e.target.dataset.a; if (!a) return; sv();
     const od = $('#pDevs') ? $('#pDevs').value : '';
     const kind = $('#pKind').value;
-    if (a.startsWith('set:')) return exportPdfSet(a.slice(4), kind, od);
-    if (a === 'docx') { if (kind === 'inspect') exportDocx(od); else exportFixDocx(reportItems(kind, od), kind); }
-    if (a === 'preview') previewReport(od, kind);
-    if (a === 'pdf') { const items = reportItems(kind, od); if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '還沒有任何記錄'); busy('正在生成 PDF…'); ovCache.clear(); try { const pr = (x, y) => busy(`正在生成 PDF… ${x}／${y}`); const r = kind === 'inspect' ? await buildReportPages(items, pr) : await buildFixPages(items, pr, kind); ovCache.clear(); await exportPdf(r.pages, kind); if (r.fails.length) reportFails(r.fails); } catch (err) { busy(); toast('PDF 生成失敗：' + err.message, 6000); } }
+    if (a.startsWith('set:')) return repFilterDlg(kind, od, '導出', () => exportPdfSet(a.slice(4), kind, od));
+    if (a === 'docx') return repFilterDlg(kind, od, '導出 Word', () => { if (kind === 'inspect') exportDocx(od); else exportFixDocx(reportItems(kind, od), kind); });
+    if (a === 'preview') return repFilterDlg(kind, od, '預覽', () => previewReport(od, kind));
+    if (a === 'pdf') return repFilterDlg(kind, od, '導出 PDF', async () => { const items = reportItems(kind, od); if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '還沒有任何記錄'); busy('正在生成 PDF…'); ovCache.clear(); try { const pr = (x, y) => busy(`正在生成 PDF… ${x}／${y}`); const r = kind === 'inspect' ? await buildReportPages(items, pr) : await buildFixPages(items, pr, kind); ovCache.clear(); await exportPdf(r.pages, kind); if (r.fails.length) reportFails(r.fails); } catch (err) { busy(); toast('PDF 生成失敗：' + err.message, 6000); } });
     if (a === 'bk') exportBackup(false);
     if (a === 'bknew') exportBackup(true);
     if (a === 'bkround') { const id = $('#bkRound').value; if (!id) return toast('還沒有任何記錄'); exportBackup(false, id); }
@@ -1293,7 +1292,7 @@ async function exportDocx(onlyDev) {
     const hc = (children, i, o = {}) => cell(children, o.span ? hw[i] + hw[i + 1] : hw[i], { ...o, tight: true });
     const hp = (runs, o = {}) => Pg(runs, { after: 0, ...o });
     const header = new D.Table({ width: { size: usable, type: D.WidthType.DXA }, columnWidths: hw, layout: D.TableLayoutType.FIXED, rows: [
-      new D.TableRow({ children: [hc([hp(T(''))], 0, { shade: REP_BLUE.slice(1) }), hc([hp(TS('OP Inspection Records (Defects and Outstanding Works)', { bold: true, size: 30 }))], 1, { shade: REP_BLUE.slice(1) }),
+      new D.TableRow({ children: [hc([hp(T(''))], 0, { shade: REP_BLUE.slice(1) }), hc([hp(TS(repHead('inspect'), { bold: true, size: 30 }))], 1, { shade: REP_BLUE.slice(1) }),
         hc([hp(TS(repTag(), { bold: true, size: 22, color: '1F6FB2' }), { align: D.AlignmentType.RIGHT })], 2, { span: 2, v: D.VerticalAlign.CENTER })] }),
       new D.TableRow({ children: [hc([hp(TS('Project:', { size: 18 }))], 0), hc([hp(TS(REPORT_PROJECT, { size: 18 }))], 1), hc([hp(TS('Inspection Date :', { size: 18 }), { align: D.AlignmentType.RIGHT })], 2), hc([hp(TS(repDate(), { size: 18 }))], 3)] }),
       new D.TableRow({ children: [hc([hp(TS('File Ref.:', { size: 18 }))], 0), hc([hp(TS(fileRefOf(), { size: 18 }))], 1), hc([hp(TS('Page :', { size: 18 }), { align: D.AlignmentType.RIGHT })], 2),
@@ -1314,7 +1313,7 @@ async function exportDocx(onlyDev) {
       }
     }
     const doc = new D.Document({
-      creator: '竣工驗收記錄', title: 'OP Inspection Records',
+      creator: '竣工驗收記錄', title: repHead('inspect'),
       styles: { default: { document: { run: { font: FONT, size: 18 } } } },
       sections: [{
         properties: { page: { size: { width: 11906, height: 16838, orientation: D.PageOrientation.LANDSCAPE }, margin: { top: 1650, bottom: 600, left: 600, right: 600, header: 400, footer: 300 } } },
@@ -1341,8 +1340,53 @@ const subsOf = it => it.subs && it.subs.length && it.subs[0] === (it.sub || '') 
 function setSubs(it, list) { const L = [...new Set(list.filter(Boolean))]; it.subs = L; it.sub = L[0] || ''; }
 const subText = it => subsOf(it).join('、');
 const allSubs = () => [...new Set([...SUBS, ...(S.settings.customSubs || []), ...S.items.flatMap(subsOf)])];
-// report scope: device and/or subcontractor ('-' = records without one)
-const inScope = (i, od) => (!od || devOf(i) === od) && (!S.repSub || (S.repSub === '-' ? !subsOf(i).length : subsOf(i).includes(S.repSub)));
+// report scope: device, the 分判 picked in the report filter ('-' = records without one) and completion status
+const REPF = { subs: [], st: [] }; // empty = all
+const repSubOk = (i, L = REPF.subs) => !L.length || L.some(f => f === '-' ? !subsOf(i).length : subsOf(i).includes(f));
+const repStOk = (i, L = REPF.st) => !L.length || L.includes(fixStatus(i));
+const inScope = (i, od) => (!od || devOf(i) === od) && repSubOk(i) && repStOk(i);
+// report heading: prefilled, can be changed in the report filter (remembered on this device)
+const REP_HEAD0 = { inspect: 'OP Inspection Records (Defects and Outstanding Works)', fix: '執修回復報告' };
+const repHeadKey = kind => kind === 'inspect' ? 'inspect' : 'fix';
+const repHead = kind => ((S.settings.repHeads || {})[repHeadKey(kind)] || '').trim() || REP_HEAD0[repHeadKey(kind)];
+/* report filter, shown before every preview / export: 分判 and 完成狀態 (one or several each, default all) and the heading */
+function repFilterDlg(kind, od, label, run) {
+  REPF.subs = []; REPF.st = [];
+  const base = roundItems().filter(i => (!od || devOf(i) === od) && (kind !== 'fixdone' || fixStatus(i) === 'done'));
+  if (!base.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '目前批次還沒有記錄');
+  const subKeys = [...allSubs().filter(x => base.some(i => subsOf(i).includes(x))), ...(base.some(i => !subsOf(i).length) ? ['-'] : [])];
+  const stKeys = kind === 'fixdone' ? [] : ['open', 'done', 'nf', 'na'].filter(k => k !== 'na' || base.some(i => fixStatus(i) === 'na'));
+  const hk = repHeadKey(kind), dlg = document.createElement('div'); dlg.id = 'repDlg';
+  const draw = () => {
+    const nSub = k => base.filter(i => repStOk(i) && repSubOk(i, [k])).length, nSt = k => base.filter(i => repSubOk(i) && repStOk(i, [k])).length;
+    const tot = base.filter(i => repSubOk(i) && repStOk(i)).length;
+    const chip = (attr, k, t, on) => `<button class="chip ${on ? 'on' : ''}" data-${attr}="${esc(k)}">${esc(t)}</button>`;
+    const old = dlg.querySelector('#rfHead'), hv = old ? old.value : repHead(kind), sc = dlg.querySelector('.pb'), top = sc ? sc.scrollTop : 0;
+    dlg.innerHTML = `<div class="dcard" role="dialog" aria-modal="true" aria-label="報告篩選"><div class="ph"><h2>報告篩選</h2><button class="x" data-rf="close" aria-label="關閉">✕</button></div><div class="pb">
+      <label class="f">報告標題<input id="rfHead" value="${esc(hv)}"></label>
+      <div><button class="btn" data-rf="head0" style="min-height:34px;padding:5px 12px;font-size:13px">還原預設標題</button></div>
+      <div class="f-l">分判（可揀一個或多個）</div><div class="chips pick">${chip('rs', '', `全部（${base.filter(i => repStOk(i)).length}）`, !REPF.subs.length)}${subKeys.map(k => chip('rs', k, `${k === '-' ? '未指定分判' : k}（${nSub(k)}）`, REPF.subs.includes(k))).join('')}</div>
+      ${stKeys.length ? `<div class="f-l">完成狀態（可揀一個或多個）</div><div class="chips pick">${chip('rt', '', `全部（${base.filter(i => repSubOk(i)).length}）`, !REPF.st.length)}${stKeys.map(k => chip('rt', k, `${FIX_ST[k]}（${nSt(k)}）`, REPF.st.includes(k))).join('')}</div>` : '<div class="note">此報告類型只包括已完成的項目。</div>'}
+      <div class="note">${esc(roundLabel())}：報告包括 <b>${tot}</b> 項記錄。一項記錄有多個分判時，揀中其中一個已會包括。</div>
+      <div class="row"><button class="btn" data-rf="close">取消</button><button class="btn p" data-rf="go" ${tot ? '' : 'disabled'}>${esc(label)}（${tot} 項）</button></div></div></div>`;
+    dlg.querySelector('.pb').scrollTop = top;
+  };
+  const tog = (L, k) => { if (!k) return L.splice(0); const j = L.indexOf(k); if (j < 0) L.push(k); else L.splice(j, 1); };
+  dlg.onclick = async e => {
+    if (e.target === dlg) return dlg.remove();
+    const s1 = e.target.closest('[data-rs]'); if (s1) { tog(REPF.subs, s1.dataset.rs); return draw(); }
+    const s2 = e.target.closest('[data-rt]'); if (s2) { tog(REPF.st, s2.dataset.rt); return draw(); }
+    const b = e.target.closest('[data-rf]'); if (!b) return;
+    if (b.dataset.rf === 'close') return dlg.remove();
+    if (b.dataset.rf === 'head0') { dlg.querySelector('#rfHead').value = REP_HEAD0[hk]; return; }
+    if (b.dataset.rf === 'go') {
+      const hv = dlg.querySelector('#rfHead').value.trim();
+      S.settings.repHeads = { ...(S.settings.repHeads || {}), [hk]: hv === REP_HEAD0[hk] ? '' : hv }; await saveKV();
+      dlg.remove(); run();
+    }
+  };
+  draw(); document.body.appendChild(dlg);
+}
 // 分判 filter of this device: pins on the plan, the record list and stepping through records show only that 分判's
 const subFilter = () => S.settings.subFilter || '';
 const areaFilter = () => S.settings.areaFilter || '';
@@ -1777,7 +1821,7 @@ async function buildReportPages(items, progress) {
   const header = (ctx, i, n) => {
     x = ctx; const tw = UW * 0.765, lw = 108, X2 = M + tw, X3 = X2 + lw, Y = M;
     box(M, Y, cw[0], 22, REP_BLUE); box(M + cw[0], Y, tw - cw[0], 22, REP_BLUE); box(X2, Y, UW - tw, 22);
-    drawText(x, 'OP Inspection Records (Defects and Outstanding Works)', M + cw[0] + 5, Y + 4, tw - cw[0] - 8, 14, { bold: true, font: RSERIF, max: 1 });
+    drawText(x, repHead('inspect'), M + cw[0] + 5, Y + 4, tw - cw[0] - 8, 14, { bold: true, font: RSERIF, max: 1 });
     drawText(x, repTag(), X2 + 4, Y + 6, UW - tw - 8, 10, { bold: true, color: '#1f6fb2', font: RSERIF, max: 1, right: true });
     const rows = [['Project:', REPORT_PROJECT, 'Inspection Date :', repDate()], ['File Ref.:', fileRefOf(), 'Page :', `${i} of ${n}`]];
     rows.forEach((r, j) => { const ry = Y + 22 + j * 14;
@@ -1878,9 +1922,9 @@ const AREA_ORDER = ['Podium', 'T1', 'T2', 'T3', 'T5'];
 let repLabel = ''; // shown on the first page of each file of a batch export
 async function exportPdfSet(by, kind, od) {
   if (!window.jspdf) return toast('PDF 元件未載入，請連網後重新開啟');
-  const L = roundItems().filter(i => !od || devOf(i) === od).filter(i => kind !== 'fixdone' || fixStatus(i) === 'done').sort(byOrder);
+  const L = roundItems().filter(i => inScope(i, od)).filter(i => kind !== 'fixdone' || fixStatus(i) === 'done').sort(byOrder);
   if (!L.length) return toast('目前批次還沒有記錄');
-  const subsOr = i => subsOf(i).length ? subsOf(i) : ['未指定分判'];
+  const subsOr = i => (subsOf(i).length ? subsOf(i) : ['未指定分判']).filter(x => !REPF.subs.length || REPF.subs.includes(x === '未指定分判' ? '-' : x));
   const keysOf = by === 'sub' ? subsOr : by === 'area' ? i => [areaOf(i)] : i => subsOr(i).map(x => `${areaOf(i)}_${x}`);
   const groups = new Map(); for (const it of L) for (const k of keysOf(it)) { if (!groups.has(k)) groups.set(k, []); groups.get(k).push(it); }
   const subRank = x => { const i = allSubs().indexOf(x); return i < 0 ? 999 : i; }, areaRank = x => { const i = AREA_ORDER.indexOf(x); return i < 0 ? 99 : i; };
@@ -2228,7 +2272,7 @@ function reportItems(kind, onlyDev) {
 const reportTitle = kind => kind === 'inspect' ? '竣工驗收記錄' : '執修回復報告';
 async function buildFixPages(items, progress, kind) {
   items = await freshItems(items);
-  const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M, title = reportTitle(kind), rn = roundLabel();
+  const P = S.project, k = PG.k, M = PG.M, UW = PG.W - 2 * M, title = repHead(kind), rn = roundLabel();
   const pct = [5, 13, 18, 23, 23, 11, 7], cw = pct.map(p => UW * p / 100), cx = cw.map((_, i) => M + cw.slice(0, i).reduce((a, b) => a + b, 0));
   const heads = ['編號', '位置', '圖紙位置', '完成前', '完成後', '問題／回覆', '狀態'];
   const pad = 4, dW = cw[2] - 2 * pad, pW = cw[3] - 2 * pad, top0 = M + 14, bottom = PG.H - M - 14, headH = 20;
@@ -2296,7 +2340,7 @@ async function exportFixDocx(items, kind) {
   items = await freshItems(items);
   if (!items.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '還沒有任何記錄');
   if (!window.docx) return toast('報告元件未載入，請連網後重新開啟一次');
-  const D = window.docx, P = S.project, title = reportTitle(kind), rn = roundLabel();
+  const D = window.docx, P = S.project, title = repHead(kind), rn = roundLabel();
   try {
     busy('正在生成報告…'); ovCache.clear(); const fails = [];
     const FONT = { ascii: 'Arial', hAnsi: 'Arial', eastAsia: 'Microsoft JhengHei', cs: 'Arial' };
@@ -2341,7 +2385,7 @@ async function exportFixDocx(items, kind) {
           new D.Table({ rows: [info('項目名稱', P.name), info('地盤／地址', P.site), info('驗收批次', rn), info('報告日期', today()), info('公司／單位', P.company), info('項目數量', `${items.length} 項（已完成 ${done} 項）`)], width: { size: 8000, type: D.WidthType.DXA }, columnWidths: [2000, 6000] }),
           Pg(T(''), { after: 120 }), new D.Table({ rows, width: { size: usable, type: D.WidthType.DXA }, columnWidths: colTw, layout: D.TableLayoutType.FIXED })] }] });
     const blob = await D.Packer.toBlob(doc); busy(); ovCache.clear();
-    await deliver(blob, `${title}_${safeName(rn)}_${safeName(P.name) || '項目'}_${today()}.docx`);
+    await deliver(blob, `${reportTitle(kind)}_${safeName(rn)}_${safeName(P.name) || '項目'}_${today()}.docx`);
     if (fails.length) reportFails(fails);
   } catch (e) { busy(); console.error(e); toast('報告生成失敗：' + e.message, 8000); }
 }

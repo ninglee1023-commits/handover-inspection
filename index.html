@@ -164,6 +164,9 @@ details[open]{display:flex;flex-direction:column;gap:8px}
 #editor .ok{background:var(--red);border-color:var(--red);font-weight:600}
 .edgrp{display:flex;gap:6px}
 
+#repDlg{position:fixed;inset:0;z-index:58;background:#0008;display:grid;place-items:center;padding:16px}
+#repDlg .dcard{background:var(--surface);color:var(--fg);border-radius:14px;width:min(560px,100%);max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 40px #0006}
+#repDlg .btn[disabled]{opacity:.45}
 #preview{position:fixed;inset:0;z-index:55;background:#3a4244;display:flex;flex-direction:column}
 #pv{position:fixed;inset:0;z-index:60;background:#0d1112;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
 #pv img{position:absolute;left:0;top:0;transform-origin:0 0;max-width:none}
