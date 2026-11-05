@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.23';
+const VERSION = '0.10.24';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1350,8 +1350,8 @@ const REP_HEAD0 = { inspect: 'OP Inspection Records (Defects and Outstanding Wor
 const repHeadKey = kind => kind === 'inspect' ? 'inspect' : 'fix';
 const repHead = kind => ((S.settings.repHeads || {})[repHeadKey(kind)] || '').trim() || REP_HEAD0[repHeadKey(kind)];
 /* report filter, shown before every preview / export: 分判 and 完成狀態 (one or several each, default all) and the heading */
-function repFilterDlg(kind, od, label, run) {
-  REPF.subs = []; REPF.st = [];
+function repFilterDlg(kind, od, label, run, keep) { // keep: reopen with the last choices (after closing the preview)
+  if (!keep) { REPF.subs = []; REPF.st = []; }
   const base = roundItems().filter(i => (!od || devOf(i) === od) && (kind !== 'fixdone' || fixStatus(i) === 'done'));
   if (!base.length) return toast(kind === 'fixdone' ? '目前批次還沒有已完成的項目' : '目前批次還沒有記錄');
   const subKeys = [...allSubs().filter(x => base.some(i => subsOf(i).includes(x))), ...(base.some(i => !subsOf(i).length) ? ['-'] : [])];
@@ -1907,7 +1907,9 @@ async function previewReport(onlyDev, kind = 'inspect') {
     el.hidden = false; el.querySelector('.pvpages').scrollTop = 0;
   } catch (e) { busy(); toast('預覽失敗：' + e.message, 6000); console.error(e); }
 }
-function closePreview() { $('#preview').hidden = true; if (PV) PV.urls.forEach(u => URL.revokeObjectURL(u)); $('#preview .pvpages').innerHTML = ''; const f = PV && PV.fails; PV = null; if (f && f.length) reportFails(f); }
+// back: closing the preview returns to 報告篩選 with the same choices, to change them or preview again
+function closePreview(back) { $('#preview').hidden = true; if (PV) PV.urls.forEach(u => URL.revokeObjectURL(u)); $('#preview .pvpages').innerHTML = ''; const f = PV && PV.fails, od = PV && PV.onlyDev, kd = PV && PV.kind; PV = null; if (f && f.length) reportFails(f);
+  if (back && kd) { if (!(f && f.length) && S.panel !== 'export') exportPanel(); repFilterDlg(kd, od, '預覽', () => previewReport(od, kd), true); } }
 async function pdfBlob(pages) {
   const doc = new jspdf.jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4', compress: true });
   for (const [i, b] of pages.entries()) { if (i) doc.addPage('a4', 'landscape'); doc.addImage(new Uint8Array(await b.arrayBuffer()), 'JPEG', 0, 0, PG.W, PG.H, undefined, 'FAST'); }
@@ -1965,7 +1967,7 @@ async function exportPdf(pages, kind = 'inspect') {
 }
 $('#preview')?.addEventListener('click', async e => {
   const a = e.target.closest('[data-pv]'); if (!a) return;
-  if (a.dataset.pv === 'close') closePreview();
+  if (a.dataset.pv === 'close') closePreview(true);
   if (a.dataset.pv === 'pdf' && PV) exportPdf(PV.pages, PV.kind);
   if (a.dataset.pv === 'docx' && PV) { const d = PV.onlyDev, kd = PV.kind; closePreview(); if (kd === 'inspect') exportDocx(d); else exportFixDocx(reportItems(kd, d), kd); }
 });
