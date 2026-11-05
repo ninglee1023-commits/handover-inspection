@@ -78,6 +78,11 @@ service cloud.firestore {
             && request.resource.data.kind == 'a' && request.resource.data.uid == request.auth.uid));
         allow delete: if signed() && (mine(lid) || (resource.data.kind == 'a' && resource.data.uid == request.auth.uid));
       }
+      // v0.10.25: a record a 管理員 deleted, so that it stays deleted on every device
+      match /gone/{id} {
+        allow read: if signed();
+        allow write: if signed() && mine(lid);
+      }
       // one reply per person and record, named {itemId}_{uid}: each person writes only their own
       match /replies/{rid} {
         allow read: if signed();

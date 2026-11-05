@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.24';
+const VERSION = '0.10.25';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -682,12 +682,16 @@ function itemPanel() {
     if (a === 'delph') { if (e.target.dataset.armed) { it.photos.splice(+e.target.dataset.i, 1); await persistItem(true); itemPanel(); } else { e.target.dataset.armed = 1; e.target.textContent = '刪'; e.target.style.background = 'var(--red)'; } }
     if (a === 'del') {
       if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = '再按一次確認刪除'; return; }
-      S.items = S.items.filter(x => x.id !== it.id); await DB.del('items', it.id); liveRemoved(it); DB.del('kv', 'rc:' + it.id).catch(() => { }); S.editing = null; closePanel(); toast(`已刪除 ${itemLabel(it)}`);
+      clearTimeout(persistT); // an edit still waiting to be saved would put it back
+      S.items = S.items.filter(x => x.id !== it.id); await DB.del('items', it.id); liveRemoved(it); forgetItem(it.id); DB.del('kv', 'rc:' + it.id).catch(() => { }); S.editing = null; closePanel(); toast(`已刪除 ${itemLabel(it)}`);
     }
   };
   updateBar();
 }
 let persistT;
+/* v0.10.25: a record deleted here is remembered (S.settings.goneIds, the last 5000), so importing a backup or a 傳送碼
+   made before the deletion doesn't bring it back */
+function forgetItem(id) { const g = (S.settings.goneIds || []).filter(x => x !== id); g.push(id); S.settings.goneIds = g.slice(-5000); saveKV(); }
 async function persistItem(now) {
   const it = S.editing; if (!it) return;
   if (it._new && !it.photos.length && !it.note.trim() && !(it.fix && it.fix.photos && it.fix.photos.length)) return;
@@ -844,7 +848,7 @@ function drawingForm(d, isNewFile) {
     }
     if (a === 'del') {
       if (!e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = '再按一次確認刪除'; return; }
-      for (const it of S.items.filter(i => i.drawingId === d.id)) await DB.del('items', it.id);
+      for (const it of S.items.filter(i => i.drawingId === d.id)) { await DB.del('items', it.id); liveRemoved(it); forgetItem(it.id); }
       S.items = S.items.filter(i => i.drawingId !== d.id); S.drawings = S.drawings.filter(x => x.id !== d.id); await DB.del('drawings', d.id);
       if (S.cur === d.id) await showDrawing(setDrawings()[0]?.id || null); drawingsPanel(); updateBar();
     }
@@ -1675,12 +1679,13 @@ async function importBackup(file) {
     // rounds are only made for records that land in them, so a 回復包 never leaves an empty round behind
     const rsrc = {}, rmap = {}; for (const r of data.rounds || []) rsrc[r.id] = r;
     const rnd = id => rmap[id] || (rmap[id] = importRound(rsrc[id] || { id }, from));
-    let add = 0, upd = 0, skip = 0, miss = 0, i = 0; const ask = [];
+    let add = 0, upd = 0, skip = 0, miss = 0, dead = 0, i = 0; const ask = [], gone = new Set(S.settings.goneIds || []);
     for (const it of data.items || []) {
       busy(`正在匯入記錄 ${++i}／${data.items.length}`);
       toFrame(it);
       const ex = S.items.find(x => x.id === it.id);
       if (!ex && data.reply) { miss++; continue; } // a reply without the record it answers
+      if (!ex && gone.has(it.id)) { dead++; continue; } // deleted here after that backup was made
       if (!it.dev) it.dev = data.dev || 'X';
       it.round = rnd(it.round || 'r1');
       if (!it.by && data.inspector && it.dev === data.dev) it.by = data.inspector;
@@ -1702,7 +1707,7 @@ async function importBackup(file) {
     // name where the records went: a round of the other drawing set, or an online one, is not under this set's 本地批次
     const into = [...new Set(Object.values(rmap))].map(id => S.rounds.find(r => r.id === id)).filter(Boolean)
       .map(r => `${setOfRound(r) !== curSet() ? setName(setOfRound(r)) + ' ' : ''}${liveOf(r) ? '在線批次' : ''}「${r.name}」`).join('、');
-    toast(`匯入完成：${data.reply ? '' : `新增 ${add}、`}更新 ${upd}、略過 ${skip}${into ? `，放入${into}` : ''}${miss ? `；${miss} 項回復找不到原記錄` : ''}${ask.length ? `；${ask.length} 項修改待確認` : ''}`, miss || into.includes('」、') ? 7000 : 5000);
+    toast(`匯入完成：${data.reply ? '' : `新增 ${add}、`}更新 ${upd}、略過 ${skip}${into ? `，放入${into}` : ''}${miss ? `；${miss} 項回復找不到原記錄` : ''}${dead ? `；${dead} 項已在這部機刪除，沒有匯入` : ''}${ask.length ? `；${ask.length} 項修改待確認` : ''}`, miss || dead || into.includes('」、') ? 7000 : 5000);
     await showDrawing(S.cur || S.drawings[0]?.id); closePanel();
     if (ask.length) askPanel(ask, data.inspector || data.dev || '對方');
   } catch (err) { busy(); toast('匯入失敗：' + err.message, 6000); console.error(err); }
