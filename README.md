@@ -6,7 +6,8 @@
 - 資料儲存在 iPad Safari 的 IndexedDB，請「加入主畫面」並定期備份（完整、只限新增記錄，或按驗收批次每次驗收一個 ZIP）。
 - 設定只填檢查人員名字，記錄編號以名字開頭（陳大文-001）。匯入同事的備份時，每個批次自成一個「名字-批次名稱」的批次（同名自動加（2）），不會自動合併；看過後在「驗收批次 → 合併批次」勾選多個批次，輸入新名稱合併，一次出報告。
 - 函式庫：pdf.js 3.11.174、docx 8.5.0（已放在 lib/，不需外部 CDN）。
-- 兩套圖紙：頂部「建築｜渠務」切換。建築 GBP（gbp/plans.pdf + gbp/mapping.json）及渠務圖（gbp/drainage.pdf 第 8–14、16–24 頁 + gbp/drainage-mapping.json）各自有圖紙清單、驗收批次、編號和報告。渠務圖包第一次切換時下載（約 36 MB）。
+- 三套圖紙：頂部「建築｜渠務｜消防」切換。建築 GBP（gbp/plans.pdf + gbp/mapping.json）及渠務圖（gbp/drainage.pdf 第 8–14、16–24 頁 + gbp/drainage-mapping.json）各自有圖紙清單、驗收批次、編號和報告。渠務圖包第一次切換時下載（約 36 MB）。
+- 第三套「消防」（v0.10.27）：FS501 的 EE、FS、FSD GBP 11th、MVAC（SES／SPS ST-B1、ST-B3／VAC）圖紙，圖紙清單按原資料夾分類及子分類（可摺合）。每張圖是 gbp/fs/ 內獨立的小 PDF，第一次打開該張圖才下載（「預先準備全部圖紙」一次下載全部，之後離線可用）；gbp/fs-mapping.json 每張圖記 `file`、`fileId`、`sha`，sha 改了會重新下載。掃描圖（MVAC，原檔 300 dpi 單一大圖）改為 200 dpi、每塊 2048 px 的 JPEG 拼塊，iPad 只需解碼小塊。平面範圍、軸線及區域由建築 GBP 對應樓層搬過來：SIFT 特徵配對 + RANSAC 求相似變換（比例、位移、轉角；1:500 的 Key Plan 不用），每個 view 的 `gbpxf` 記下來源 view 及變換。只有附註、表、系統圖的圖沒有平面範圍，整張作一個不設樓層的 view。腳本在 `.claude/work/fs/`（不上載）。
 - 建築 gbp/plans.pdf：全部用 13th GBP Amd Approval Drawing（20260708）。第 1–15 頁為平面（原檔第 3–9、13–20 頁；第 7 頁 A/GBP/09 為整層 3/F，包括 T1、T2、T3、T5，原檔抽頁在 gbp/src/gbp13_AGBP09.pdf），第 16–21 頁為立面 A/GBP/21（平台 Elevation 1–4）及 A/GBP/25、26、26.1、27、28（塔樓 Elevation 5–18；原檔抽頁在 gbp/src/gbp13_elevations.pdf）。v0.9.0 曾換上 14th GBP Amd Draft，v0.9.4 改回 13th：換過的圖紙保留原 id，mapping 內的 `xf` 把在 14th 圖上打的點搬回 13th 圖（記錄以 `pf` 標記所屬版本，`unset` 指明沒有 pf 的記錄屬哪一版；匯入舊備份或舊相片時一樣會轉換）。從圖紙包拿走的圖紙，如果沒有記錄就會從 iPad 刪除。
 - B3–B1 車位：每個車位（住宅 R、V，公眾 P，商業 C，電單車 RM／PM／CM，上落貨位 LG／HG）都是一個區域，在車位內點選，區域欄就會填「Parking Space R40」、「Motor Cycle Parking Space PM12」、「Loading/Unloading Bay HG04」等。範圍及編號取自 GBP 圖上的車位線條及編號字（B3 132 個、B2 180 個、B1 25 個）；B2 的 LG01–LG03 沿用原有註明座號的區域。
 - B2、B1、G/F 按 CAD 逐層重做（v0.10.26，經審查頁逐點核對）：輸入改為由圖紙 DWG 打印的分層 PDF；行人區、商場街（High Street 及其 Void）、下沉廣場（以有蓋明渠為界）、花槽（TOS/BOS 水平標註的箭頭所指）、有蓋明渠（Surface Channel near …）、無門洗手間補分隔線、地盤內戶外走道「Pavement near …」。1/F 以上待審查。

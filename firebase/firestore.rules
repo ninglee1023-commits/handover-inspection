@@ -50,6 +50,19 @@ service cloud.firestore {
       }
     }
 
+    // 消防圖紙去留 (tools/fs-picker): one document per 消防 sheet, keep or drop plus a note; anyone with the page may
+    // tick, and each write records who (their browser's anonymous uid and the name they typed). Never deleted from the page.
+    match /fsPicks/{id} {
+      allow read: if signed();
+      allow create, update: if signed() && id.matches('fs-[a-z0-9]+-[0-9]{2}')
+        && request.resource.data.keys().hasOnly(['keep', 'note', 'by', 'uid', 'at'])
+        && request.resource.data.keep is bool
+        && request.resource.data.note is string && request.resource.data.note.size() <= 500
+        && request.resource.data.by is string && request.resource.data.by.size() <= 40
+        && request.resource.data.uid == request.auth.uid && request.resource.data.at == request.time;
+      allow delete: if false;
+    }
+
     match /live/{lid} {
       allow get: if signed();
       // the 驗收批次 panel lists the locked lists, so they can be joined without a link

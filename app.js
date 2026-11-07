@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.25';
+const VERSION = '0.10.27';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -154,7 +154,9 @@ function curD() { return S.drawings.find(d => d.id === S.cur) || null; }
 // drawing sets shown one at a time (top-bar switch); drawings imported on the device join the set that was showing
 const SETS = [
   { id: 'gbp', name: '建築', mapping: 'gbp/mapping.json', size: '20 MB', fileRef: '20260708_BD_GBP 13th Amd Approval Drawing', works: "BUILDER'S WORKS" },
-  { id: 'drainage', name: '渠務', mapping: 'gbp/drainage-mapping.json', size: '36 MB', fileRef: '20260921_7th Drainage Amendment Approval Drawing', works: 'DRAINAGE WORKS' }];
+  { id: 'drainage', name: '渠務', mapping: 'gbp/drainage-mapping.json', size: '36 MB', fileRef: '20260921_7th Drainage Amendment Approval Drawing', works: 'DRAINAGE WORKS' },
+  // 消防 keeps one small PDF per sheet (gbp/fs/), each downloaded the first time it is opened
+  { id: 'fs', name: '消防', mapping: 'gbp/fs-mapping.json', size: '', fileRef: 'FS501 E&M Installation Drawings', works: 'FIRE SERVICES & E&M WORKS' }];
 const curSet = () => SETS.some(x => x.id === S.settings.set) ? S.settings.set : 'gbp';
 const setName = (k = curSet()) => (SETS.find(x => x.id === k) || SETS[0]).name;
 const setOf = d => (d && d.set) || 'gbp';
@@ -165,12 +167,23 @@ const panelOpen = () => !$('#panel').hidden;
 
 /* ---------------- PDF ---------------- */
 const pdfDocs = new Map();
-async function getPdf(fileId) {
-  if (pdfDocs.has(fileId)) return pdfDocs.get(fileId);
-  const f = await DB.get('files', fileId); if (!f) throw new Error('找不到圖紙原檔');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
-  const p = pdfjsLib.getDocument({ data: new Uint8Array(await f.blob.arrayBuffer()) }).promise;
-  pdfDocs.set(fileId, p); return p;
+function getPdf(fileId) {
+  if (!pdfDocs.has(fileId)) pdfDocs.set(fileId, (async () => {
+    let f = await DB.get('files', fileId);
+    if (!f) { const d = S.drawings.find(x => x.fileId === fileId && x.file); if (d) f = await fetchSheet(d); }
+    if (!f) throw new Error('找不到圖紙原檔');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+    return pdfjsLib.getDocument({ data: new Uint8Array(await f.blob.arrayBuffer()) }).promise;
+  })().catch(e => { pdfDocs.delete(fileId); throw e; }));
+  return pdfDocs.get(fileId);
+}
+// a sheet that ships as its own file (消防) is downloaded the first time it is needed, then kept offline
+async function fetchSheet(d) {
+  const shown = !$('#busy') || $('#busy').hidden; if (shown) busy(`正在下載圖紙「${d.name}」…`);
+  try {
+    const res = await fetch(d.file, { cache: 'no-cache' }); if (!res.ok) throw new Error('圖紙下載失敗，請連網後再試');
+    const f = { id: d.fileId, name: d.file, sha: d.sha, blob: await res.blob() }; await DB.put('files', f); return f;
+  } catch (e) { throw e instanceof TypeError ? new Error('圖紙下載失敗，請連網後再試') : e; } finally { if (shown) busy(); }
 }
 async function renderRegion(d, rx, ry, rw, rh, outW) {
   const outH = Math.round(outW * rh / rw);
@@ -805,19 +818,30 @@ function drawingsPanel() {
       <button class="btn" data-edit="${d.id}" style="min-height:38px;padding:6px 10px">設定</button></div>`;
   };
   const all = setDrawings(), el = all.filter(d => d.cat === 'elev');
-  const rows = !all.length ? '<div class="note">還沒有圖紙。</div>' : !el.length ? all.map(row).join('')
+  const rows = !all.length ? '<div class="note">還沒有圖紙。</div>' : all.some(d => d.grp) ? groupedRows(all, row) : !el.length ? all.map(row).join('')
     : `<div class="sec">平面圖</div>${all.filter(d => d.cat !== 'elev').map(row).join('')}<div class="sec">立面圖</div>${el.map(row).join('')}`;
   const pending = setDrawings().filter(d => d.kind === 'pdf' && !d.base).length;
   openPanel('drawings', `圖紙 · ${setName()}`, `
-    ${pending ? `<button class="btn dk" data-a="prep">預先準備全部圖紙（尚有 ${pending} 張）</button><div class="note">第一次開啟每張 A0 圖紙需要數秒轉換。到地盤前先按一次，現場就可以即開即用（之後離線亦可）。</div>` : ''}
+    ${pending ? `<button class="btn dk" data-a="prep">預先準備全部圖紙（尚有 ${pending} 張）</button><div class="note">第一次開啟每張 A0 圖紙需要數秒轉換。到地盤前先按一次，現場就可以即開即用（之後離線亦可）。${setDrawings().some(d => d.file) ? '這套圖紙每張分開下載：沒有預先準備的圖紙，第一次打開時才下載（全部約 350 MB，請用 Wi-Fi）。' : ''}</div>` : ''}
     <div class="list">${rows}</div>
     <button class="btn" data-a="add">另外匯入圖紙（PDF／圖片）</button>`);
+  panel.querySelectorAll('details.grp').forEach(g => g.ontoggle = () => { const k = g.dataset.g, L = (S.grpOpen || []).filter(x => x !== k); S.grpOpen = g.open ? [...L, k] : L; });
   panel.querySelector('.pb').onclick = async e => {
     const o = e.target.closest('[data-open]'); if (o) { await showDrawing(o.dataset.open); closePanel(); fit(); return; }
     const ed = e.target.closest('[data-edit]'); if (ed) return drawingForm(S.drawings.find(d => d.id === ed.dataset.edit));
     if (e.target.dataset.a === 'add') $('#dwgInput').click();
     if (e.target.dataset.a === 'prep') { let i = 0; const list = setDrawings().filter(d => d.kind === 'pdf' && !d.base); for (const d of list) { busy(`正在準備圖紙 ${++i}／${list.length}：${d.name}`); try { await ensureBase(d, true); await makeThumb(d); } catch (err) { console.warn(err); } } busy(); toast('全部圖紙已準備好'); drawingsPanel(); }
   };
+}
+// sets with sub-categories (消防): a folder per category, a sub-folder per sub-category; the folder of the open sheet starts open
+function groupedRows(all, row) {
+  const cats = []; for (const d of all) { const c = d.grp || '其他'; let C = cats.find(x => x.name === c); if (!C) cats.push(C = { name: c, subs: [] }); let U = C.subs.find(x => x.name === (d.sub || '')); if (!U) C.subs.push(U = { name: d.sub || '', L: [] }); U.L.push(d); }
+  const cnt = L => { const n = S.items.filter(i => L.some(d => d.id === i.drawingId)).length; return `${L.length} 張${n ? `・${n} 記錄` : ''}`; };
+  return cats.map(C => {
+    const L = C.subs.flatMap(u => u.L), open = L.some(d => d.id === S.cur) || (S.grpOpen || []).includes(C.name);
+    const inner = C.subs.map(u => !u.name ? u.L.map(row).join('') : `<details class="grp sub" data-g="${esc(C.name + '/' + u.name)}" ${u.L.some(d => d.id === S.cur) || (S.grpOpen || []).includes(C.name + '/' + u.name) ? 'open' : ''}><summary>${esc(u.name)}<span>${cnt(u.L)}</span></summary>${u.L.map(row).join('')}</details>`).join('');
+    return `<details class="grp" data-g="${esc(C.name)}" ${open ? 'open' : ''}><summary>${esc(C.name)}<span>${cnt(L)}</span></summary>${inner}</details>`;
+  }).join('');
 }
 async function makeThumb(d) {
   if (d.thumb) return; const img = await loadImg(d.kind === 'pdf' ? d.base.blob : d.blob);
@@ -2405,17 +2429,23 @@ async function loadBundle(k = 'gbp') {
   const vkey = k === 'gbp' ? 'pkgVersion' : 'pkgVersion:' + k;
   const have = await DB.kget(vkey); if (k === 'gbp') S.pkgVersion = have;
   if (have === man.version && S.drawings.some(d => d.src === 'bundle' && setOf(d) === k)) return;
-  busy(`正在下載${set.name}圖紙包（約 ${set.size}，只需一次）…`);
-  const fileInDb = await DB.get('files', man.fileId);
-  if (!fileInDb || fileInDb.sha !== man.sha) {
+  const perSheet = !man.file; // 消防: no package file, every sheet has its own (fetched when first opened)
+  busy(perSheet ? `正在載入${set.name}圖紙清單…` : `正在下載${set.name}圖紙包（約 ${set.size}，只需一次）…`);
+  const fileInDb = perSheet ? null : await DB.get('files', man.fileId);
+  if (!perSheet && (!fileInDb || fileInDb.sha !== man.sha)) {
     const res = await fetch(man.file, { cache: 'no-cache' }); if (!res.ok) throw new Error('圖紙包下載失敗');
     await DB.put('files', { id: man.fileId, name: man.file, sha: man.sha, blob: await res.blob() });
     pdfDocs.delete(man.fileId);
   }
   for (const pd of man.drawings) {
     const ex = S.drawings.find(d => d.id === pd.id);
-    const rec = { ...pd, src: 'bundle', kind: 'pdf', fileId: man.fileId, created: (k === 'gbp' ? 0 : 1000) + pd.order, ...(k === 'gbp' ? {} : { set: k }) };
-    if (ex && ex.base && ex.w === pd.w && fileInDb && fileInDb.sha === man.sha) { rec.base = ex.base; rec.thumb = ex.thumb; }
+    const rec = { ...pd, src: 'bundle', kind: 'pdf', fileId: pd.fileId || man.fileId, created: (k === 'gbp' ? 0 : SETS.findIndex(x => x.id === k) * 1000) + pd.order, ...(k === 'gbp' ? {} : { set: k }) };
+    if (perSheet) {
+      // a sheet reissued with a new file: drop the old copy so the new one is fetched, and prepare it again
+      const old = await DB.get('files', rec.fileId);
+      if (old && old.sha !== pd.sha) { await DB.del('files', rec.fileId); pdfDocs.delete(rec.fileId); }
+      if (ex && ex.base && ex.w === pd.w && ex.sha === pd.sha) { rec.base = ex.base; rec.thumb = ex.thumb; }
+    } else if (ex && ex.base && ex.w === pd.w && fileInDb && fileInDb.sha === man.sha) { rec.base = ex.base; rec.thumb = ex.thumb; }
     if (ex && (ex.w !== pd.w || ex.h !== pd.h) && S.views[pd.id]) { delete S.views[pd.id]; await DB.kset('views', S.views); }
     await DB.put('drawings', rec);
     const i = S.drawings.findIndex(d => d.id === rec.id); if (i >= 0) S.drawings[i] = rec; else S.drawings.push(rec);
