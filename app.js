@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.28';
+const VERSION = '0.10.29';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -734,7 +734,7 @@ function itemsPanel() {
   const subOpts = allSubs().map(x => [x, inArea.filter(i => subsOf(i).includes(x)).length]).filter(([, n]) => n);
   const rows = list.map(it => {
     const th = it.photos[0] ? `style="background-image:url('${burl(it.photos[0].out)}')"` : '';
-    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${subsOf(it).length ? `<em class="sub">${esc(subText(it))}</em>` : '<em class="sub none">未指定分判</em>'}　${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${fixStatus(it) === 'done' ? '　·　已回復' : ''}${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
+    return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${subsOf(it).length ? `<em class="sub">${esc(subText(it))}</em> ` : '<em class="sub none">未指定分判</em>'}　${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${fixStatus(it) === 'done' ? '　·　已回復' : ''}${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
   }).join('') || (scoped.length ? '' : '<div class="note">這張圖紙還沒有記錄。在「驗收」模式點選圖上的位置即可開始。</div>');
   openPanel('items', `${esc(roundLabel())}（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
@@ -808,13 +808,19 @@ function floorPanel() {
 }
 
 /* ---- drawings ---- */
+// floor tag in front of a sheet name in the list: its floors from the views, a long run shown as first–last
+function floorTag(d) {
+  const T = [];
+  for (const v of d.views || []) { const f = v.floors || []; if (!f.length) continue; const t = f.length > 2 ? f[0] + '–' + f[f.length - 1] : f.join('、'); if (!T.includes(t)) T.push(t); }
+  return T.length ? `<em class="fl">${esc(T.join(' / '))}</em> ` : '';
+}
 function drawingsPanel() {
   freeURLs();
   const row = d => {
     const n = S.items.filter(i => i.drawingId === d.id).length, F = roundItems().filter(i => i.drawingId === d.id && subOk(i));
     const th = d.thumb ? `background-image:url('${burl(d.thumb)}');` : '';
     return `<div class="li ${d.id === S.cur ? 'cur' : ''}" style="grid-template-columns:64px 1fr auto"><span class="th" style="${th}background-color:#fff"></span>
-      <span class="t" data-open="${d.id}"><b>${esc(d.name)}${filterDot(F)}</b><span>${esc(d.no || '')}${d.base || d.kind !== 'pdf' ? '' : '　·　未準備'}　·　${n} 記錄${F.length ? `　·　<b>${esc(subFilterName() || '本批次')} ${F.length} 項${F.some(i => fixStatus(i) === 'open') ? `（未回復 ${F.filter(i => fixStatus(i) === 'open').length}）` : '（全部已回復）'}</b>` : ''}</span></span>
+      <span class="t wrap" data-open="${d.id}"><b>${floorTag(d)}${esc(d.name)}${filterDot(F)}</b><span>${esc(d.no || '')}${d.base || d.kind !== 'pdf' ? '' : '　·　未準備'}　·　${n} 記錄${F.length ? `　·　<b>${esc(subFilterName() || '本批次')} ${F.length} 項${F.some(i => fixStatus(i) === 'open') ? `（未回復 ${F.filter(i => fixStatus(i) === 'open').length}）` : '（全部已回復）'}</b>` : ''}</span></span>
       <button class="btn" data-edit="${d.id}" style="min-height:38px;padding:6px 10px">設定</button></div>`;
   };
   const all = setDrawings(), el = all.filter(d => d.cat === 'elev');
