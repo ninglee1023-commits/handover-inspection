@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.27';
+const VERSION = '0.10.28';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -822,7 +822,7 @@ function drawingsPanel() {
     : `<div class="sec">平面圖</div>${all.filter(d => d.cat !== 'elev').map(row).join('')}<div class="sec">立面圖</div>${el.map(row).join('')}`;
   const pending = setDrawings().filter(d => d.kind === 'pdf' && !d.base).length;
   openPanel('drawings', `圖紙 · ${setName()}`, `
-    ${pending ? `<button class="btn dk" data-a="prep">預先準備全部圖紙（尚有 ${pending} 張）</button><div class="note">第一次開啟每張 A0 圖紙需要數秒轉換。到地盤前先按一次，現場就可以即開即用（之後離線亦可）。${setDrawings().some(d => d.file) ? '這套圖紙每張分開下載：沒有預先準備的圖紙，第一次打開時才下載（全部約 350 MB，請用 Wi-Fi）。' : ''}</div>` : ''}
+    ${pending ? `<button class="btn dk" data-a="prep">預先準備全部圖紙（尚有 ${pending} 張）</button><div class="note">第一次開啟每張 A0 圖紙需要數秒轉換。到地盤前先按一次，現場就可以即開即用（之後離線亦可）。${setDrawings().some(d => d.file) ? '這套圖紙每張分開下載：沒有預先準備的圖紙，第一次打開時才下載（全部約 220 MB，請用 Wi-Fi）。' : ''}</div>` : ''}
     <div class="list">${rows}</div>
     <button class="btn" data-a="add">另外匯入圖紙（PDF／圖片）</button>`);
   panel.querySelectorAll('details.grp').forEach(g => g.ontoggle = () => { const k = g.dataset.g, L = (S.grpOpen || []).filter(x => x !== k); S.grpOpen = g.open ? [...L, k] : L; });
