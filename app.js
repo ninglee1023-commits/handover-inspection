@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.29';
+const VERSION = '0.10.30';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1864,6 +1864,11 @@ async function buildReportPages(items, progress) {
       drawText(x, r[0], M + 4, ry + 3, cw[0] - 6, 8.5, { font: RSERIF, max: 1 }); drawText(x, r[1], M + cw[0] + 5, ry + 3, tw - cw[0] - 8, 8.5, { font: RSERIF, max: 1 });
       drawText(x, r[2], X2 + 4, ry + 3, lw - 8, 8.5, { font: RSERIF, max: 1, right: true }); drawText(x, r[3], X3 + 4, ry + 3, UW - tw - lw - 8, 8.5, { font: RSERIF, max: 1 }); });
   };
+  // first page: 各分判完成情況
+  await blankPage();
+  y += drawText(x, 'Summary：各分判完成情況', M, y, UW, 14, { bold: true, font: RSERIF }) + 2;
+  y += drawText(x, `${roundLabel()}${repLabel ? '　' + repLabel : ''}　·　截至 ${today()}　·　${items.length} 項記錄`, M, y, UW, 8.5, { color: '#5f6b69' }) + 8;
+  drawSubSummary(x, items, M, y, UW, bottom, RFONT);
   await newPage();
   let n = 0;
   for (const it of items) {
@@ -1957,6 +1962,7 @@ function areaOf(it) {
 }
 const AREA_ORDER = ['Podium', 'T1', 'T2', 'T3', 'T5'];
 let repLabel = ''; // shown on the first page of each file of a batch export
+let repSub = ''; // the one 分判 of a file exported 按分判, so its summary lists only that 分判
 async function exportPdfSet(by, kind, od) {
   if (!window.jspdf) return toast('PDF 元件未載入，請連網後重新開啟');
   const L = roundItems().filter(i => inScope(i, od)).filter(i => kind !== 'fixdone' || fixStatus(i) === 'done').sort(byOrder);
@@ -1973,11 +1979,11 @@ async function exportPdfSet(by, kind, od) {
     for (const k of keys) {
       const its = groups.get(k), name = k.replace('_', '　'); g++;
       const pr = (a, b) => busy(`正在生成 PDF ${g}／${keys.length}：${name}（${a}／${b}）`); pr(0, its.length);
-      repLabel = name;
+      repLabel = name; repSub = by === 'sub' ? k : by === 'area' ? '' : k.split('_').slice(1).join('_');
       try { const r = kind === 'inspect' ? await buildReportPages(its, pr) : await buildFixPages(its, pr, kind); fails.push(...r.fails.map(f => `${name}：${f}`));
         files.push(new File([await pdfBlob(r.pages)], `${reportTitle(kind)}_${safeName(roundLabel())}_${safeName(k)}_${its.length}項.pdf`, { type: 'application/pdf' })); }
       catch (e) { fails.push(`${name}：${e.message}`); }
-      finally { repLabel = ''; }
+      finally { repLabel = ''; repSub = ''; }
     }
     ovCache.clear(); busy();
     if (!files.length) return toast('PDF 生成失敗', 5000);
@@ -1990,7 +1996,7 @@ async function exportPdfSet(by, kind, od) {
     } else for (const f of files) saveFile(f, f.name);
     toast(`已生成 ${files.length} 個 PDF`, 3500);
     if (fails.length) reportFails(fails);
-  } catch (e) { busy(); repLabel = ''; toast('PDF 生成失敗：' + e.message, 6000); }
+  } catch (e) { busy(); repLabel = ''; repSub = ''; toast('PDF 生成失敗：' + e.message, 6000); }
 }
 async function exportPdf(pages, kind = 'inspect') {
   if (!window.jspdf) return toast('PDF 元件未載入，請連網後重新開啟');
@@ -2171,7 +2177,48 @@ function nfAdd(it, k, text) {
 }
 const nfLine = e => `${fmtTime(e.t).slice(5, 16)} ${e.by || ''}：${NF_K[e.k]}${e.text ? '　' + e.text : ''}`;
 // the reply text plus the 不需執修 conversation, for reports
-const fixReplyText = it => { const F = it.fix || {}, L = fixLog(it); return [(F.reply || '').trim(), ...L.map(nfLine)].filter(Boolean).join('\n'); };
+// 不需執修 shows only the reason (the latest one given), no names or times of who submitted / accepted it
+const fixReplyText = it => {
+  const F = it.fix || {}, L = fixLog(it), s = nfState(it), last = k => ((L.filter(e => e.k === k).pop() || {}).text || '').trim();
+  const lab = (t, v) => v ? `${t}：${v}` : t;
+  const nf = s === 'ok' ? lab('不需執修', last('nf')) : s === 'pend' ? lab('不需執修（待審查）', last('nf')) : s === 'no' ? lab('不需執修已駁回', last('no')) : '';
+  return [(F.reply || '').trim(), nf].filter(Boolean).join('\n');
+};
+/* 各分判完成情況 of a report's items, for its summary page: one row per 分判 (an item with several counts for each),
+   only the 分判 chosen in 報告篩選; 不跟進 left out; 認可 不需執修 counts as 已完成 */
+function subStats(items) {
+  const pick = k => repSub ? k === repSub : !REPF.subs.length || REPF.subs.includes(k === '未指定分判' ? '-' : k);
+  const z = () => ({ n: 0, done: 0, nf: 0, nfp: 0, na: 0 }), m = new Map(), tot = z();
+  const add = (e, i) => { const s = fixStatus(i); if (s === 'na') return void e.na++; e.n++;
+    if (fixDoneOk(i)) e.done++; if (s === 'nf' && nfState(i) === 'ok') e.nf++; else if (s === 'nf') e.nfp++; };
+  for (const i of items) { add(tot, i); const L = subsOf(i); for (const k of (L.length ? L : ['未指定分判']).filter(pick)) { if (!m.has(k)) m.set(k, z()); add(m.get(k), i); } }
+  const rank = k => { const r = allSubs().indexOf(k); return k === '未指定分判' ? 1e4 : r < 0 ? 999 : r; };
+  return { rows: [...m].sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0])), tot };
+}
+// draws the summary table at (X, Y), width W, down to `bottom`; returns its height
+function drawSubSummary(x, items, X, Y, W, bottom, font) {
+  const { rows, tot } = subStats(items), anyNa = tot.na > 0;
+  const heads = ['分判 Subcontractor', '總數 Total', '已完成 Completed', '其中不需執修（已認可）', '不需執修・待審查', '未完成 Outstanding', '完成率 %'];
+  const pct = [30, 9, 11, 13, 12, 11, 14], cw = pct.map(p => W * p / 100), cx = cw.map((_, i) => X + cw.slice(0, i).reduce((a, b) => a + b, 0));
+  const all = [...rows, ['全部項目 All items', tot]], hh = 22, rh = Math.max(11, Math.min(18, (bottom - Y - hh - 40) / all.length)), fs = Math.min(9, rh * 0.55);
+  const cellBox = (cX, cY, w, h, fill) => { if (fill) { x.fillStyle = fill; x.fillRect(cX, cY, w, h); } x.strokeStyle = '#333'; x.lineWidth = 0.6; x.strokeRect(cX, cY, w, h); };
+  let y = Y;
+  heads.forEach((h, i) => { cellBox(cx[i], y, cw[i], hh, REP_BLUE); drawText(x, h, cx[i] + 3, y + 3, cw[i] - 6, 8, { bold: true, center: i > 0, max: 2, font }); });
+  y += hh;
+  for (const [j, [k, e]] of all.entries()) {
+    const last = j === all.length - 1, open = e.n - e.done - e.nfp, r = e.n ? e.done / e.n : 0, fill = last ? REP_ITEM : j % 2 ? '#f7f9fb' : '';
+    const v = [k, e.n, e.done, e.nf || '—', e.nfp || '—', open, ''];
+    v.forEach((t, i) => { cellBox(cx[i], y, cw[i], rh, fill); if (i < 6) drawText(x, String(t), cx[i] + 4, y + (rh - fs * 1.3) / 2 + 1, cw[i] - 8, fs, { bold: last || i === 0, center: i > 0, max: 1, font, color: i === 5 && open ? '#d42a1e' : undefined }); });
+    // 完成率: a bar with the percentage
+    const bx = cx[6] + 4, bw = cw[6] - 34, bh = Math.min(7, rh - 6), by = y + (rh - bh) / 2;
+    x.fillStyle = '#e3e7ea'; x.fillRect(bx, by, bw, bh); x.fillStyle = r >= 1 ? '#2f7d4f' : r >= 0.5 ? '#4f8fc0' : '#c77700'; x.fillRect(bx, by, bw * r, bh);
+    drawText(x, e.n ? `${Math.round(r * 100)}%` : '—', bx + bw + 2, y + (rh - fs * 1.3) / 2 + 1, 26, fs, { bold: last, right: true, max: 1, font });
+    y += rh;
+  }
+  y += 6;
+  y += drawText(x, `一項有多個分判時，每個分判各計一次（總數一行每項只計一次）；管理員認可的「不需執修」計入已完成，待審查的不計；${anyNa ? `不跟進的 ${tot.na} 項不計；` : ''}${repSub ? `只列出 ${repSub}。` : REPF.subs.length ? '只列出報告篩選所選的分判。' : ''}${REPF.st.length ? '只包括報告篩選所選的回復狀態。' : ''}`, X, y, W, 7.5, { color: '#5f6b69', font });
+  return y - Y;
+}
 function noFixBlock(it, label, text) {
   const L = fixLog(it), s = nfState(it), rev = nfCanReview(it), col = { nf: '#c77700', ok: '#2f7d4f', no: '#d42a1e' };
   const head = { pend: '不需執修・待管理員審查', ok: '不需執修・已認可', no: '已駁回：請執修並拍回復照片，或再說明' }[s];
@@ -2325,7 +2372,9 @@ async function buildFixPages(items, progress, kind) {
       for (const [a, b] of [['項目名稱', P.name], ['地盤／地址', P.site], ['驗收批次', rn], ...(repLabel ? [['報告範圍', repLabel]] : []), ['報告日期', today()], ['公司／單位', P.company], ['項目數量', `${items.length} 項（已完成 ${done} 項）`]]) {
         drawText(x, a, M, y, 80, 9, { color: '#5f6b69' }); drawText(x, b || '', M + 80, y, 500, 9, { bold: true }); y += 13;
       }
-      y += 6;
+      y += 8; y += drawText(x, '各分判完成情況', M, y, UW, 11, { bold: true }) + 4;
+      drawSubSummary(x, items, M, y, UW, bottom, RFONT);
+      return newPage();
     }
     x.fillStyle = '#1d2629'; x.fillRect(M, y, UW, headH);
     heads.forEach((h, i) => drawText(x, h, cx[i], y + 5, cw[i], 8.5, { bold: true, color: '#fff', center: true }));
