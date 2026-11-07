@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.30';
+const VERSION = '0.10.31';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -2181,7 +2181,7 @@ const nfLine = e => `${fmtTime(e.t).slice(5, 16)} ${e.by || ''}：${NF_K[e.k]}${
 const fixReplyText = it => {
   const F = it.fix || {}, L = fixLog(it), s = nfState(it), last = k => ((L.filter(e => e.k === k).pop() || {}).text || '').trim();
   const lab = (t, v) => v ? `${t}：${v}` : t;
-  const nf = s === 'ok' ? lab('不需執修', last('nf')) : s === 'pend' ? lab('不需執修（待審查）', last('nf')) : s === 'no' ? lab('不需執修已駁回', last('no')) : '';
+  const nf = s === 'ok' ? lab('不需執修', last('nf')) : s === 'pend' ? lab('不需執修（待審查）', last('nf')) : '';
   return [(F.reply || '').trim(), nf].filter(Boolean).join('\n');
 };
 /* 各分判完成情況 of a report's items, for its summary page: one row per 分判 (an item with several counts for each),
