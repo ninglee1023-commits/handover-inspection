@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.36';
+const VERSION = '0.10.37';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -436,34 +436,123 @@ function renderOverlay() {
 
 // on a plan shared by several floors, only records of the selected floor are shown (and tappable)
 function onFloor(d, it) { const v = viewById(d, it.loc && it.loc.viewId); return !v || !v.floors || v.floors.length <= 1 || !it.loc.floor || it.loc.floor === floorFor(v); }
-function showFloorOf(it) { const d = S.drawings.find(x => x.id === it.drawingId); const v = d && viewById(d, it.loc && it.loc.viewId); if (v && v.floors && v.floors.length > 1 && it.loc.floor && v.floors.includes(it.loc.floor)) { S.floorSel[v.id] = it.loc.floor; DB.kset('floorSel', S.floorSel); } }
+function showFloorOf(it) { if (it.loc && it.loc.floor) S.navF = it.loc.floor;const d = S.drawings.find(x => x.id === it.drawingId); const v = d && viewById(d, it.loc && it.loc.viewId); if (v && v.floors && v.floors.length > 1 && it.loc.floor && v.floors.includes(it.loc.floor)) { S.floorSel[v.id] = it.loc.floor; DB.kset('floorSel', S.floorSel); } }
 function multiFloorViews(d) { return d ? (d.views || []).filter(v => v.floors && v.floors.length > 1) : []; }
 // the bar's height (two rows on a narrow phone), for what sits under it
 if (window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty('--barh', $('#bar').offsetHeight + 'px')).observe($('#bar'));
-/* floor rail on the left of the drawing, like a lift panel (top floor at the top): one tap picks the floor of a multi-floor plan.
-   A sheet with two typical plans (Tower 5: 18F–30F and 5F–17F) gets a group per plan, each with its own floor. The head folds it away. */
+/* ---- Tower / floor navigator, left of the drawing ----
+   A fixed floor rail (like a lift panel, top floor at the top) lists every floor of the set — or, in a set with folders (消防),
+   of the folder of the open sheet — and a row of Tower buttons sits beside it. A tap goes straight to the sheet of that Tower
+   and floor (on a multi-floor plan it just switches the floor). When a Tower and floor still leave several sheets of the
+   folder (VAC B3/F (1)–(3), two G/F sheets...), a third row picks between them. Floors the chosen Tower has no sheet for are greyed. */
+const navRank = f => { const s = String(f || '').toUpperCase(); return /TOP/.test(s) ? 902 : /UPPER/.test(s) ? 901 : /^R\/?F$|ROOF/.test(s) ? 900 : floorRank(f); };
+const isPodiumFloor = f => navRank(f) <= 2;
+// the Towers a sheet is for: from its name ("Tower 1 & 2", "Tower 1, 2, 3 & 5"), else from its plans
+function sheetTowers(d) {
+  const m = ((d && d.name) || '').match(/Towers?\s+([\d,&\s]+)/i);
+  if (m) return [...new Set(m[1].match(/\d+/g).map(n => 'T' + n))];
+  return [...new Set(((d && d.views) || []).map(v => v.tower).filter(Boolean))];
+}
+const sheetFloors = d => [...new Set(((d && d.views) || []).flatMap(v => v.floors || []).filter(Boolean))];
+// the sheets the navigator moves between: the open sheet's folder in a set with folders, else the whole set; elevations left out
+function navScope(d) {
+  const L = setDrawings().filter(x => x.cat !== 'elev' && sheetFloors(x).length);
+  return d && L.some(x => x.grp) ? L.filter(x => (x.grp || '') === (d.grp || '') && (x.sub || '') === (d.sub || '')) : L;
+}
+// sheets of the scope for a Tower and floor: the Tower's own sheets first, then sheets for no Tower (podium, or shared)
+function navPick(scope, t, f) {
+  const at = scope.filter(x => sheetFloors(x).includes(f));
+  // podium floors belong to no Tower: every sheet of the floor is offered (whole floor first), the Tower doesn't narrow it
+  if (isPodiumFloor(f)) return at.sort((a, b) => sheetTowers(a).length - sheetTowers(b).length);
+  const own = t ? at.filter(x => sheetTowers(x).includes(t)) : [];
+  if (own.length) {
+    // a sheet for this one Tower beats a sheet shared by several (3F: "Tower 1 & 2" beats "Tower 1, 2, 3 & 5")
+    const n = Math.min(...own.map(x => sheetTowers(x).length)); return own.filter(x => sheetTowers(x).length === n);
+  }
+  const none = at.filter(x => !sheetTowers(x).length); return none.length ? none : (isPodiumFloor(f) || !t ? at : []);
+}
+// short labels telling sheets apart: what is left once the words they share are cut from both ends
+function variantLabels(L) {
+  const N = L.map(d => d.name || ''); let a = 0, b = 0; const m = Math.min(...N.map(s => s.length));
+  while (a < m && N.every(s => s[a] === N[0][a])) a++;
+  while (b < m - a && N.every(s => s[s.length - 1 - b] === N[0][N[0].length - 1 - b])) b++;
+  const T = L.map((d, i) => N[i].slice(a, N[i].length - b).replace(/^[\s·(]+|[\s·)]+$/g, ''));
+  // the sheet left with nothing of its own is the whole-floor one when the others name a part; identical names are numbered
+  const E = T.map((t, i) => i).filter(i => !T[i]), whole = T.some(Boolean);
+  return T.map((t, i) => t ? (/^\d+( of \d+)?$/.test(t) ? `(${t})` : t) : whole ? (E.length === 1 ? '整層' : `整層 ${E.indexOf(i) + 1}`) : `第 ${i + 1} 張`);
+}
+function navTower(d) {
+  const T = d ? sheetTowers(d) : []; let t = S.navT;
+  if (T.length && !T.includes(t)) t = T[0];
+  // on a sheet for no Tower, a Tower the folder doesn't have (VAC: only Tower 1 at 3F) gives way to one it has
+  if (!T.length && d) { const ST = [...new Set(navScope(d).flatMap(sheetTowers))].sort(); if (ST.length && !ST.includes(t)) t = ST[0]; }
+  return t || '';
+}
+// the floor in view: the one picked last if the open sheet has it, else the sheet's plan floor
+function navFloor(d) {
+  const F = sheetFloors(d); if (S.navF && F.includes(S.navF)) return S.navF;
+  const mv = multiFloorViews(d); if (mv.length) return floorFor(mv[0]);
+  return floorOfItem({ drawingId: d.id }) || F[0] || '';
+}
 let railKey = '';
-function floorRail(d, mv) {
-  const R = $('#floorRail');
-  if (!d || !mv.length) { R.hidden = true; railKey = ''; return; }
+function navUI(d) {
+  const R = $('#floorRail'), TB = $('#towerBar');
+  const scope = S.mode === 'map' || !d ? [] : navScope(d);
+  if (!scope.length) { R.hidden = TB.hidden = true; railKey = ''; return; }
   let min = false; try { min = localStorage.getItem('railMin') === '1'; } catch (e) { }
-  const cur = mv.map(v => floorFor(v)).filter((f, i, a) => a.indexOf(f) === i).join('/');
-  // dot per floor, as in the 圖紙 list: red = a record (within the 篩選) still open, green = all replied
-  const F = roundItems().filter(i => i.drawingId === d.id && i.loc && subOk(i)), dot = {};
-  for (const v of mv) for (const f of v.floors) dot[v.id + '/' + f] = filterDot(F.filter(i => i.loc.viewId === v.id && i.loc.floor === f));
-  const key = [d.id, min, cur, ...mv.map(v => v.id), ...Object.values(dot)].join('|'); R.hidden = false;
+  const t = navTower(d), f = sheetFloors(d).length ? navFloor(d) : '';
+  const towers = [...new Set(scope.flatMap(sheetTowers))].sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+  const floors = [...new Set(scope.flatMap(sheetFloors))].sort((a, b) => navRank(b) - navRank(a));
+  // dot per floor (as in the 圖紙 list): red = a record within the 篩選 still open, green = all replied; for the chosen Tower
+  const ids = new Set(scope.map(x => x.id)), byId = Object.fromEntries(scope.map(x => [x.id, x]));
+  const F = roundItems().filter(i => ids.has(i.drawingId) && subOk(i));
+  const tw = i => (i.loc && i.loc.tower) ? [i.loc.tower] : sheetTowers(byId[i.drawingId]);
+  const dot = Object.fromEntries(floors.map(x => [x, filterDot(F.filter(i => floorOfItem(i) === x && (isPodiumFloor(x) || !t || !tw(i).length || tw(i).includes(t))))]));
+  const ok = Object.fromEntries(floors.map(x => [x, navPick(scope, t, x).length > 0]));
+  const vars = f ? navPick(scope, t, f) : [];
+  const key = [d.id, min, t, f, towers, floors, Object.values(dot), Object.values(ok), vars.map(x => x.id)].join('|');
+  R.hidden = false; TB.hidden = min || (towers.length < 2 && vars.length < 2);
   if (key === railKey) return; railKey = key;
   R.classList.toggle('min', min);
-  R.innerHTML = `<button class="rh" data-a="railMin" aria-expanded="${!min}" title="${min ? '展開樓層' : '收起樓層'}">${min ? `<b>${esc(cur)}</b>▾` : '樓層▴'}</button>` + (min ? '' :
-    `<div class="rl">${mv.map(v => `${mv.length > 1 ? `<span class="rg">${esc(v.floors[0] + '–' + v.floors[v.floors.length - 1])}</span>` : ''}${[...v.floors].reverse().map(f => `<button class="${f === floorFor(v) ? 'on' : ''}" data-v="${v.id}" data-f="${esc(f)}">${esc(f)}${dot[v.id + '/' + f]}</button>`).join('')}`).join('')}</div>`);
+  R.innerHTML = `<button class="rh" data-a="railMin" aria-expanded="${!min}" title="${min ? '展開樓層' : '收起樓層'}">${min ? `<b>${esc([!isPodiumFloor(f) && t, f].filter(Boolean).join(' '))}</b>▾` : '樓層▴'}</button>` + (min ? '' :
+    `<div class="rl">${floors.map(x => `<button class="${x === f ? 'on' : ''}" ${ok[x] ? '' : 'disabled'} data-f="${esc(x)}" title="${esc(x)}">${esc(x.replace(/^Upper RF$/, 'URF').replace(/^Top RF$/, 'TRF'))}${dot[x]}</button>`).join('')}</div>`);
+  TB.innerHTML = (towers.length > 1 ? `<div class="tw">${towers.map(x => `<button class="${x === t && !isPodiumFloor(f) ? 'on' : ''}" data-t="${x}">${x}</button>`).join('')}</div>` : '')
+    + (vars.length > 1 ? `<div class="vr">${variantLabels(vars).map((l, i) => `<button class="${vars[i].id === d.id ? 'on' : ''}" data-d="${vars[i].id}">${esc(l)}</button>`).join('')}</div>` : '');
   // keep the floor in use in sight
-  const L = R.querySelector('.rl'); if (L) L.querySelectorAll('.on').forEach((b, i) => { if (i) return; const t = b.offsetTop - L.offsetTop; if (t < L.scrollTop || t + b.offsetHeight > L.scrollTop + L.clientHeight) L.scrollTop = t - L.clientHeight / 2 + b.offsetHeight / 2; });
+  const L = R.querySelector('.rl'), b = L && L.querySelector('.on');
+  if (b) { const y = b.offsetTop - L.offsetTop; if (y < L.scrollTop || y + b.offsetHeight > L.scrollTop + L.clientHeight) L.scrollTop = y - L.clientHeight / 2 + b.offsetHeight / 2; }
 }
+// go to a Tower and floor: stay on the open sheet when it has that floor, else open the sheet for it
+async function navGo(t, f, id) {
+  const d = curD(); if (!d) return; const scope = navScope(d);
+  S.navT = t; S.navF = f; try { localStorage.setItem('navT', t || ''); } catch (e) { }
+  const L = navPick(scope, t, f);
+  if (!L.length) return toast(`${t} 沒有 ${f} 的圖紙`);
+  const to = id ? L.find(x => x.id === id) : L.find(x => x.id === d.id) || L.find(x => x.id === S.navLast[t + '/' + f]) || L[0];
+  if (!to) return;
+  S.navLast[t + '/' + f] = to.id;
+  const v = (to.views || []).find(v => v.floors && v.floors.length > 1 && v.floors.includes(f));
+  if (v) { S.floorSel[v.id] = f; DB.kset('floorSel', S.floorSel); }
+  if (to.id !== d.id) { await showDrawing(to.id); toast([!isPodiumFloor(f) && t, f, to.name].filter(Boolean).join(' · ')); }
+  updateBar(); renderOverlay();
+}
+S.navLast = {}; try { S.navT = localStorage.getItem('navT') || ''; } catch (e) { S.navT = ''; }
 $('#floorRail').onclick = e => {
-  const b = e.target.closest('button'); if (!b) return;
+  const b = e.target.closest('button'); if (!b || b.disabled) return;
   if (b.dataset.a === 'railMin') { try { localStorage.setItem('railMin', $('#floorRail').classList.contains('min') ? '0' : '1'); } catch (er) { } railKey = ''; return updateBar(); }
-  if (!b.dataset.f) return;
-  S.floorSel[b.dataset.v] = b.dataset.f; DB.kset('floorSel', S.floorSel); updateBar(); renderOverlay(); if (S.panel === 'floor') floorPanel();
+  if (b.dataset.f) navGo(navTower(curD()), b.dataset.f);
+};
+$('#towerBar').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return; const d = curD(); if (!d) return;
+  if (b.dataset.d) return navGo(navTower(d), navFloor(d), b.dataset.d);
+  if (!b.dataset.t) return;
+  // a Tower picked on a podium floor (or a floor it has no sheet of its own for) goes to its lowest floor of its own
+  const t = b.dataset.t, scope = navScope(d); let f = navFloor(d);
+  if (isPodiumFloor(f) || !navPick(scope, t, f).some(x => sheetTowers(x).includes(t))) {
+    const own = [...new Set(scope.filter(x => sheetTowers(x).includes(t)).flatMap(sheetFloors))].sort((a, b) => navRank(a) - navRank(b));
+    if (own.length) f = own.includes(f) ? f : own[0];
+  }
+  navGo(t, f);
 };
 function updateBar() {
   const d = curD();
@@ -478,7 +567,7 @@ function updateBar() {
   if (sf) $('#cnt').textContent = `${roundItems().filter(subOk).length}/${roundItems().length}`;
   const mv = multiFloorViews(d);
   $('#btnFloor').hidden = true; // replaced by the floor rail beside the drawing
-  floorRail(d, S.mode === 'map' ? [] : mv);
+  navUI(d);
   // zones and grids of the bundled plans come with the package; 位置設定 is only offered for drawings imported on the device
   $('#mMap').hidden = !d || d.src === 'bundle';
   document.body.classList.toggle('inspectOnly', $('#mMap').hidden && S.mode === 'inspect');

@@ -101,6 +101,14 @@ body.inspectOnly #bar .seg[aria-label="模式"]{display:none}
 #floorRail .rl::-webkit-scrollbar{display:none}
 #floorRail .rl button{flex:none;min-height:40px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);color:var(--fg);font-size:14px;padding:0}
 #floorRail .rl button.on{background:var(--red);border-color:var(--red);color:#fff;font-weight:700}
+#floorRail .rl button:disabled{opacity:.32}
+/* Tower buttons beside the floor rail; a second row tells apart several sheets of the same Tower and floor */
+#towerBar{left:calc(max(10px,env(safe-area-inset-left,0px)) + 68px);top:calc(var(--barh,54px) + 58px);display:flex;flex-direction:column;gap:6px;max-width:calc(100vw - 150px)}
+#towerBar .tw,#towerBar .vr{display:flex;flex-wrap:wrap;gap:6px}
+#towerBar button{background:var(--surface);border:1px solid var(--line);border-radius:10px;min-height:42px;min-width:48px;padding:0 12px;font-size:15px;font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,.12);color:var(--fg)}
+#towerBar .vr button{font-size:13px;font-weight:500;min-height:36px;padding:0 10px;max-width:60vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#towerBar button.on{background:var(--red);border-color:var(--red);color:#fff}
+#towerBar .vr button.on{background:#1f6f9c;border-color:#1f6f9c}
 #floorRail .rl button{position:relative}#floorRail .rl .fdot{position:absolute;top:3px;right:3px;margin:0}
 #floorRail .rg{font-size:10px;color:var(--muted);text-align:center;margin-top:4px;line-height:1.2}
 @media (max-width:700px),(orientation:portrait) and (max-width:1100px){
@@ -252,6 +260,7 @@ details.grp.sub>summary{font-size:14px}
   <button id="polyUndo" hidden>退一點</button>
 </div>
 <div id="floorRail" class="float" hidden></div>
+<div id="towerBar" class="float" hidden></div>
 <div id="zoombtns" class="float">
   <button id="zIn" aria-label="放大">＋</button>
   <button id="zOut" aria-label="縮小">－</button>
