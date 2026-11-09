@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.31';
+const VERSION = '0.10.32';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -583,19 +583,29 @@ async function saveDrawing(d) { await DB.put('drawings', d); }
 /* ---------------- panels ---------------- */
 const panel = $('#panel');
 function openPanel(kind, title, body, opts = {}) {
-  S.panel = kind;
-  panel.innerHTML = `<div class="ph">${opts.badge || ''}<h2>${title}</h2><button class="x" data-a="close" aria-label="關閉">✕</button></div><div class="pb">${body}</div>`;
+  S.panel = kind; if (kind !== 'item') S.back = null; // the back button only lives on a record opened from the list
+  const back = kind === 'item' && S.back ? `<button class="x bk" data-a="back" aria-label="返回記錄列表" title="返回記錄列表">‹</button>` : '';
+  panel.innerHTML = `<div class="ph">${back}${opts.badge || ''}<h2>${title}</h2><button class="x" data-a="close" aria-label="關閉">✕</button></div><div class="pb">${body}</div>`;
   panel.hidden = false; document.body.classList.add('pnl'); panel.classList.toggle('compact', !!opts.compact);
   panel.querySelector('[data-a="close"]').onclick = () => closePanel();
+  if (back) panel.querySelector('[data-a="back"]').onclick = () => backToList();
+}
+/* back from a record to the list it was opened from, at the same scroll position */
+function backToList() {
+  const b = S.back; if (!b) return; const id = S.editing && S.editing.id;
+  finishItem(); S.listScope = b.scope; itemsPanel();
+  const pb = panel.querySelector('.pb'); pb.scrollTop = b.scroll;
+  const row = id && pb.querySelector(`.li[data-id="${id}"]`);
+  if (row) { const r = row.getBoundingClientRect(), P = pb.getBoundingClientRect(); if (r.top < P.top || r.bottom > P.bottom) row.scrollIntoView({ block: 'center' }); row.classList.add('was'); }
 }
 function closePanel() {
   if (S.panel === 'item') finishItem();
-  panel.hidden = true; document.body.classList.remove('pnl'); S.panel = null; S.sel = null; freeURLs(); renderOverlay(); updateBar();
+  S.back = null; panel.hidden = true; document.body.classList.remove('pnl'); S.panel = null; S.sel = null; freeURLs(); renderOverlay(); updateBar();
 }
 
 /* ---- items ---- */
 function newItem(p) {
-  if (S.editing) finishItem();
+  if (S.editing) finishItem(); S.back = null;
   const d = curD(); const loc = resolveLoc(d, p.x, p.y);
   S.editing = { id: uid(), round: curRound().id, dev: S.settings.dev || 'A', by: S.settings.inspector || '', drawingId: d.id, pf: curFrame(d), no: nextNo(), x: Math.round(p.x), y: Math.round(p.y), loc, locText: fmtLoc(loc), locEdited: false, photos: [], note: '', created: Date.now(), _new: true };
   renderOverlay(); itemPanel(); updateBar(); ensureVisible(p);
@@ -616,7 +626,7 @@ function stepItem(it, how) {
   const go = () => { itemPanel(); centerOn(nx.x, nx.y, Math.max(S.view.k, 1)); const n = $('#fNote'); if (n && !(nx.note || '').trim()) n.focus(); };
   if (S.cur !== nx.drawingId) showDrawing(nx.drawingId).then(go); else go();
 }
-function openItem(it) { if (S.editing && S.editing.id !== it.id) finishItem(); S.editing = it; showFloorOf(it); if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { centerOn(it.x, it.y, 1); itemPanel(); }); else { itemPanel(); renderOverlay(); } }
+function openItem(it) { if (S.editing && S.editing.id !== it.id) finishItem(); S.back = null; S.editing = it; showFloorOf(it); if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { centerOn(it.x, it.y, 1); itemPanel(); }); else { itemPanel(); renderOverlay(); } }
 // who took a reply photo, for its label: 我 on their own device, their name on everyone else's
 const replier = (it, ph) => liveIn(it) ? `・${liveMinePhoto(ph) ? '我' : esc(ph.by || '其他人')}` : ph.by ? `・${esc(ph.by)}` : '';
 function relocate(it) { if (!it.locEdited) it.locText = fmtLoc(it.loc); }
@@ -748,6 +758,7 @@ function itemsPanel() {
     const b = e.target.closest('.li'); if (!b) return;
     const it = S.items.find(i => i.id === b.dataset.id);
     if (S.mode !== 'inspect') setMode('inspect');
+    S.back = { scroll: panel.querySelector('.pb').scrollTop, scope: S.listScope };
     S.editing = it; showFloorOf(it);
     if (S.cur !== it.drawingId) showDrawing(it.drawingId).then(() => { itemPanel(); centerOn(it.x, it.y, 1); });
     else { itemPanel(); centerOn(it.x, it.y, Math.max(S.view.k, 1)); }
