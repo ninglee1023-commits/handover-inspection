@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.34';
+const VERSION = '0.10.35';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -440,6 +440,28 @@ function showFloorOf(it) { const d = S.drawings.find(x => x.id === it.drawingId)
 function multiFloorViews(d) { return d ? (d.views || []).filter(v => v.floors && v.floors.length > 1) : []; }
 // the bar's height (two rows on a narrow phone), for what sits under it
 if (window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty('--barh', $('#bar').offsetHeight + 'px')).observe($('#bar'));
+/* floor rail on the left of the drawing, like a lift panel (top floor at the top): one tap picks the floor of a multi-floor plan.
+   A sheet with two typical plans (Tower 5: 18F–30F and 5F–17F) gets a group per plan, each with its own floor. The head folds it away. */
+let railKey = '';
+function floorRail(d, mv) {
+  const R = $('#floorRail');
+  if (!d || !mv.length) { R.hidden = true; railKey = ''; return; }
+  let min = false; try { min = localStorage.getItem('railMin') === '1'; } catch (e) { }
+  const cur = mv.map(v => floorFor(v)).filter((f, i, a) => a.indexOf(f) === i).join('/');
+  const key = [d.id, min, cur, ...mv.map(v => v.id)].join('|'); R.hidden = false;
+  if (key === railKey) return; railKey = key;
+  R.classList.toggle('min', min);
+  R.innerHTML = `<button class="rh" data-a="railMin" aria-expanded="${!min}" title="${min ? '展開樓層' : '收起樓層'}">${min ? `<b>${esc(cur)}</b>▾` : '樓層▴'}</button>` + (min ? '' :
+    `<div class="rl">${mv.map(v => `${mv.length > 1 ? `<span class="rg">${esc(v.floors[0] + '–' + v.floors[v.floors.length - 1])}</span>` : ''}${[...v.floors].reverse().map(f => `<button class="${f === floorFor(v) ? 'on' : ''}" data-v="${v.id}" data-f="${esc(f)}">${esc(f)}</button>`).join('')}`).join('')}</div>`);
+  // keep the floor in use in sight
+  const L = R.querySelector('.rl'); if (L) L.querySelectorAll('.on').forEach((b, i) => { if (i) return; const t = b.offsetTop - L.offsetTop; if (t < L.scrollTop || t + b.offsetHeight > L.scrollTop + L.clientHeight) L.scrollTop = t - L.clientHeight / 2 + b.offsetHeight / 2; });
+}
+$('#floorRail').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.a === 'railMin') { try { localStorage.setItem('railMin', $('#floorRail').classList.contains('min') ? '0' : '1'); } catch (er) { } railKey = ''; return updateBar(); }
+  if (!b.dataset.f) return;
+  S.floorSel[b.dataset.v] = b.dataset.f; DB.kset('floorSel', S.floorSel); updateBar(); renderOverlay(); if (S.panel === 'floor') floorPanel();
+};
 function updateBar() {
   const d = curD();
   $('#curName').textContent = d ? d.name : (S.project.name || '竣工驗收記錄');
@@ -452,8 +474,8 @@ function updateBar() {
   const sf = filterOn(); $('#btnItems').classList.toggle('on', sf); $('#btnItems').title = sf ? `已篩選：${subFilterName()}` : '';
   if (sf) $('#cnt').textContent = `${roundItems().filter(subOk).length}/${roundItems().length}`;
   const mv = multiFloorViews(d);
-  $('#btnFloor').hidden = !mv.length || S.mode === 'map';
-  if (mv.length) $('#btnFloor').innerHTML = `樓層 <b>${esc(mv.map(v => floorFor(v)).filter((f, i, a) => a.indexOf(f) === i).join('/'))}</b>`;
+  $('#btnFloor').hidden = true; // replaced by the floor rail beside the drawing
+  floorRail(d, S.mode === 'map' ? [] : mv);
   // zones and grids of the bundled plans come with the package; 位置設定 is only offered for drawings imported on the device
   $('#mMap').hidden = !d || d.src === 'bundle';
   document.body.classList.toggle('inspectOnly', $('#mMap').hidden && S.mode === 'inspect');
