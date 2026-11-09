@@ -142,7 +142,7 @@ async function liveJoin(code) {
     setCurRound(rd.id); await saveRounds(); await saveKV(); busy(); closePanel();
     const L = setDrawings(); if (!L.some(d => d.id === S.cur)) await showDrawing(L[0]?.id || null);
     renderOverlay(); updateBar(); liveWatch(rd); liveDownload();
-    toast(`已載入「${rd.name}」${qs.size} 項${h.ownerName ? `（${h.ownerName} 發佈）` : ''}；按頂部「篩選」可只顯示自己的分判或分區`, 6000);
+    toast(`已載入「${rd.name}」${qs.size} 項${h.ownerName ? `（${h.ownerName} 發佈）` : ''}；在「記錄」上面的篩選可只顯示自己的分判或分區`, 6000);
   } catch (e) { busy(); toast('加入失敗：' + e.message, 6000); console.error(e); }
 }
 

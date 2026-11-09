@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.32';
+const VERSION = '0.10.33';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -449,8 +449,8 @@ function updateBar() {
   document.querySelectorAll('#setSeg [data-set]').forEach(b => b.setAttribute('aria-pressed', b.dataset.set === curSet()));
   const ub = unbacked(); $('#btnExport').innerHTML = '導出' + (ub ? `<span class="n" title="未備份">${ub}</span>` : '');
   $('#mInspect').setAttribute('aria-pressed', S.mode === 'inspect'); $('#mMap').setAttribute('aria-pressed', S.mode === 'map');
-  const sf = filterOn(); $('#btnSub').hidden = S.mode === 'map' || (!sf && !roundItems().length);
-  $('#btnSub').classList.toggle('on', sf); $('#btnSub').innerHTML = sf ? `篩選 <b>${esc(subFilterName())}</b>` : '篩選';
+  const sf = filterOn(); $('#btnItems').classList.toggle('on', sf); $('#btnItems').title = sf ? `已篩選：${subFilterName()}` : '';
+  if (sf) $('#cnt').textContent = `${roundItems().filter(subOk).length}/${roundItems().length}`;
   const mv = multiFloorViews(d);
   $('#btnFloor').hidden = !mv.length || S.mode === 'map';
   if (mv.length) $('#btnFloor').innerHTML = `樓層 <b>${esc(mv.map(v => floorFor(v)).filter((f, i, a) => a.indexOf(f) === i).join('/'))}</b>`;
@@ -739,22 +739,26 @@ function itemsPanel() {
   freeURLs();
   const d = curD();
   const scoped = (S.listScope === 'cur' && d ? roundItems().filter(i => i.drawingId === d.id) : roundItems());
-  const subF = subFilter(); const nNone = scoped.filter(i => !subsOf(i).length).length;
-  const inArea = scoped.filter(i => areaMatch(i) && repMatch(i)), list = inArea.filter(i => subMatch(i)).sort(byOrder);
-  const subOpts = allSubs().map(x => [x, inArea.filter(i => subsOf(i).includes(x)).length]).filter(([, n]) => n);
+  const list = scoped.filter(i => areaMatch(i) && repMatch(i) && subMatch(i)).sort(byOrder);
   const rows = list.map(it => {
     const th = it.photos[0] ? `style="background-image:url('${burl(it.photos[0].out)}')"` : '';
     return `<button class="li" data-id="${it.id}"><span class="th" ${th}><span class="no">${itemLabel(it)}</span></span><span class="t"><b>${esc(it.locText || '（無位置）')}</b><span>${subsOf(it).length ? `<em class="sub">${esc(subText(it))}</em> ` : '<em class="sub none">未指定分判</em>'}　${esc(it.note || '未填描述')}　·　${it.photos.length} 張相${fixStatus(it) === 'done' ? '　·　已回復' : ''}${it.by ? '　·　' + esc(it.by) : ''}</span></span></button>`;
   }).join('') || (scoped.length ? '' : '<div class="note">這張圖紙還沒有記錄。在「驗收」模式點選圖上的位置即可開始。</div>');
   openPanel('items', `${esc(roundLabel())}（${list.length}）`, `
     <div class="row"><button class="btn ${S.listScope === 'cur' ? 'dk' : ''}" data-s="cur">此圖紙</button><button class="btn ${S.listScope === 'all' ? 'dk' : ''}" data-s="all">全部圖紙</button></div>
-    ${areaFilter() || repFilter() ? `<div class="note">${[areaFilter() && `分區：<b>${esc(areaFilter())}</b>`, repFilter() && `回復狀態：<b>${FIX_ST[repFilter()]}</b>`].filter(Boolean).join('　')}（頂部「篩選」可改）</div>` : ''}
-    <label class="f">分判<select id="lSub"><option value="">全部（${inArea.length}）</option><option value="-" ${subF === '-' ? 'selected' : ''}>未指定分判（${inArea.filter(i => !subsOf(i).length).length}）</option>${subOpts.map(([x, n]) => `<option value="${esc(x)}" ${subF === x ? 'selected' : ''}>${esc(x)}（${n}）</option>`).join('')}</select></label>
-    <div class="note">選了分判之後，圖上亦只顯示該分判的點（頂部「篩選」按鈕可隨時改回全部）。圖上：<b style="color:#d42a1e">紅點</b>＝未指定分判，<b style="color:#1f6f9c">藍點</b>＝已指定分判，<b style="color:#2f7d4f">綠點</b>＝已回復。</div>
-    <div class="list">${rows || '<div class="note">沒有符合的記錄。</div>'}</div>`);
-  $('#lSub').onchange = async e => { await setSubFilter(e.target.value); itemsPanel(); };
-  panel.querySelector('.pb').onclick = e => {
+    <details class="grp filt" ${S.filtOpen === false ? '' : 'open'}><summary>篩選<span>${filterOn() ? esc(subFilterName()) : '全部'}</span></summary>${filterBlock(scoped)}</details>
+    <div class="list">${rows || '<div class="note">沒有符合的記錄。</div>'}</div>
+    ${roundItems().length ? `<details class="grp"><summary>各分判完成情況<span>可複製發出</span></summary>${subSummaryBlock()}</details>` : ''}`);
+  const pb = panel.querySelector('.pb');
+  pb.querySelector('details.filt').ontoggle = e => { S.filtOpen = e.target.open; };
+  // a filter change redraws the list where it is, without jumping back to the top
+  const redo = async () => { await saveKV(); renderOverlay(); updateBar(); const y = pb.scrollTop; itemsPanel(); panel.querySelector('.pb').scrollTop = y; };
+  pb.onclick = async e => {
+    if (e.target.dataset.a === 'sumCopy') return copyText($('#subSum').value, '已複製完成情況，可以貼上發出');
     const s = e.target.closest('[data-s]'); if (s) { S.listScope = s.dataset.s; return itemsPanel(); }
+    const rb = e.target.closest('[data-rp]'); if (rb) { S.settings.repFilter = rb.dataset.rp; return redo(); }
+    const ar = e.target.closest('[data-area]'); if (ar) { S.settings.areaFilter = ar.dataset.area; return redo(); }
+    const fb = e.target.closest('[data-f]'); if (fb) { S.settings.subFilter = fb.dataset.f; return redo(); }
     const b = e.target.closest('.li'); if (!b) return;
     const it = S.items.find(i => i.id === b.dataset.id);
     if (S.mode !== 'inspect') setMode('inspect');
@@ -765,29 +769,21 @@ function itemsPanel() {
   };
 }
 
-async function setSubFilter(f) { S.settings.subFilter = f; await saveKV(); renderOverlay(); updateBar(); }
-function subPanel() {
-  const R = roundItems(), f = subFilter(), a = areaFilter(), rp = repFilter();
+/* the filter menu at the top of the 記錄 list; R = the records in the list scope (此圖紙／全部圖紙) */
+function filterBlock(R) {
+  const f = subFilter(), a = areaFilter(), rp = repFilter();
   // counts of each choice within the other ones
   const L = R.filter(i => areaMatch(i) && repMatch(i)), n = x => L.filter(i => subMatch(i, x)).length, na = x => R.filter(i => subMatch(i) && repMatch(i) && areaMatch(i, x)).length;
   const areas = [['', `全部（${R.filter(i => subMatch(i) && repMatch(i)).length}）`], ...AREA_ORDER.map(x => [x, `${x}（${na(x)}）`])];
-  // reply status within the chosen 分區 and 分判
   const S2 = R.filter(i => areaMatch(i) && subMatch(i)), nr = x => S2.filter(i => fixStatus(i) === x).length, done = S2.filter(fixDoneOk).length, nfOk = S2.filter(i => fixStatus(i) === 'nf' && nfState(i) === 'ok').length, nf = nr('nf'), na2 = nr('na'), due = S2.length - na2;
   const reps = [['', `全部（${S2.length}）`], ['open', `未回復（${nr('open')}）`], ['done', `已完成（${nr('done')}）`], ['nf', `不需執修（${nf}）`], ['nfp', `不需執修・待審查（${S2.filter(i => repMatch(i, 'nfp')).length}）`], ...(na2 ? [['na', `不跟進（${na2}）`]] : [])];
   const opts = [['', `全部（${L.length}）`], ...allSubs().filter(x => n(x)).map(x => [x, `${x}（${n(x)}）`]), ['-', `未指定分判（${n('-')}）`]];
   if (f && !opts.some(([k]) => k === f)) opts.push([f, `${f}（0）`]);
-  openPanel('subf', '篩選', `<div class="f-l">分區</div><div class="chips pick">${areas.map(([k, t]) => `<button class="chip ${k === a ? 'on' : ''}" data-area="${esc(k)}">${esc(t)}</button>`).join('')}</div>
+  return `<div class="f-l">分區</div><div class="chips pick">${areas.map(([k, t]) => `<button class="chip ${k === a ? 'on' : ''}" data-area="${esc(k)}">${esc(t)}</button>`).join('')}</div>
     <div class="f-l">分判</div><div class="chips pick">${opts.map(([k, t]) => `<button class="chip ${k === f ? 'on' : ''}" data-f="${esc(k)}">${esc(t)}</button>`).join('')}</div>
     <div class="f-l">回復狀態</div><div class="note">${esc([a, f === '-' ? '未指定分判' : f].filter(Boolean).join(' · ') || '全部')}：已完成 <b>${done}</b>／${due} 項${due ? `（${Math.round(done / due * 100)}%）` : ''}${nfOk ? `（含認可不需執修 ${nfOk} 項）` : ''}${nf - nfOk ? `，不需執修待審查 <b>${nf - nfOk}</b> 項` : ''}，未回復 <b>${nr('open')}</b> 項${na2 ? `，不跟進 ${na2} 項` : ''}</div>
     <div class="chips pick">${reps.map(([k, t]) => `<button class="chip ${k === rp ? 'on' : ''}" data-rp="${k}">${esc(t)}</button>`).join('')}</div>
-    <div class="note">Podium＝B3–2F；T1、T2、T3、T5＝3F 或以上各座。圖上的點、記錄清單及「上一項／下一項」只包括所選分區及分判，其他點暫時隱藏（不會刪除）。選「未回復」只看還未回復的點。「圖紙」清單及「樓層」選擇旁邊有小圓點（沒有篩選時按整個批次計）：<b style="color:#d42a1e">紅點</b>＝該圖／該層有未回復的項目，<b style="color:#2f7d4f">綠點</b>＝全部已回復。這部機會記住所選篩選。</div>
-    ${subSummaryBlock()}`);
-  panel.querySelector('.pb').onclick = async e => {
-    if (e.target.dataset.a === 'sumCopy') return copyText($('#subSum').value, '已複製完成情況，可以貼上發出');
-    const rb = e.target.closest('[data-rp]'); if (rb) { S.settings.repFilter = rb.dataset.rp; await saveKV(); renderOverlay(); updateBar(); return subPanel(); }
-    const ar = e.target.closest('[data-area]'); if (ar) { S.settings.areaFilter = ar.dataset.area; await saveKV(); renderOverlay(); updateBar(); return subPanel(); }
-    const b = e.target.closest('[data-f]'); if (!b) return; await setSubFilter(b.dataset.f); closePanel(); toast(filterOn() ? `只顯示 ${subFilterName()}` : '顯示全部');
-  };
+    <div class="note">Podium＝B3–2F；T1、T2、T3、T5＝3F 或以上各座。圖上的點、此列表及「上一項／下一項」只包括所選分區、分判及回復狀態，其他點暫時隱藏（不會刪除）。圖上：<b style="color:#d42a1e">紅點</b>＝未指定分判，<b style="color:#1f6f9c">藍點</b>＝已指定分判，<b style="color:#2f7d4f">綠點</b>＝已回復。「圖紙」清單及「樓層」旁的小圓點：紅＝有未回復，綠＝全部已回復。這部機會記住所選篩選。</div>`;
 }
 /* 各分判完成情況, to copy and send: every 分判 of the batch (within the chosen 分區), 已完成／總數 (不跟進 left out) */
 function subSummary() {
@@ -803,7 +799,7 @@ function subSummary() {
 function subSummaryBlock() {
   if (!roundItems().length) return '';
   const t = subSummary(), h = Math.min(t.split('\n').length, 18);
-  return `<div class="f-l">各分判完成情況（可複製發出）</div><textarea id="subSum" readonly rows="${h}" style="flex:none;height:${h * 21 + 20}px;width:100%;font-size:14px;line-height:1.5;padding:8px;border:1px solid #d9dedd;border-radius:10px;background:#fff">${esc(t)}</textarea>
+  return `<textarea id="subSum" readonly rows="${h}" style="flex:none;height:${h * 21 + 20}px;width:100%;font-size:14px;line-height:1.5;padding:8px;border:1px solid #d9dedd;border-radius:10px;background:#fff">${esc(t)}</textarea>
     <button class="btn p" data-a="sumCopy">複製</button>
     <div class="note">一項有多個分判時，每個分判各計一次；管理員認可的「不需執修」計入已完成，待審查的不計；不跟進的項目不計。${areaFilter() ? '只包括所選分區。' : ''}</div>`;
 }
@@ -975,7 +971,6 @@ $('#btnDrawings').onclick = () => S.panel === 'drawings' ? closePanel() : drawin
 $('#btnItems').onclick = () => S.panel === 'items' ? closePanel() : itemsPanel();
 $('#btnExport').onclick = () => S.panel === 'export' ? closePanel() : exportPanel();
 $('#btnFloor').onclick = () => S.panel === 'floor' ? closePanel() : floorPanel();
-$('#btnSub').onclick = () => S.panel === 'subf' ? closePanel() : subPanel();
 $('#btnRound').onclick = () => S.panel === 'round' ? closePanel() : roundPanel();
 $('#setSeg').onclick = e => { const b = e.target.closest('[data-set]'); if (b) switchSet(b.dataset.set); };
 async function switchSet(k) {
@@ -1099,7 +1094,7 @@ function exportPanel() {
     <div class="f-l">用傳送碼傳送此批次（不用存檔）</div>
     <div class="row"><button class="btn" data-a="dropround">全部記錄</button><button class="btn" data-a="dropnew">只傳新增</button><button class="btn" data-a="dropreply">回復包</button></div>
     <div class="note">傳送碼：不用存檔，直接經雲端交給另一部機（iPad、iPhone、Android 都可以）。畫面會顯示 6 位數字及二維碼，24 小時內有效，可讓多部機接收；對方在「接收傳送碼」輸入即可。「新增」只送這個批次上次用傳送碼傳送後新增或修改過的記錄（從未傳送過就按上次備份計），對方要先收過之前的部分。傳送碼只是交收，不是備份。</div>
-    <div class="note">分判用：匯入你發出的批次備份，按頂部「篩選」只顯示自己的點，逐點按「回復」拍完成照後，導出回復包發回。回復包只有回復內容及完成照，不含完成前照片，檔案細很多；匯入後按記錄自動對回原本的項目。</div>
+    <div class="note">分判用：匯入你發出的批次備份，在「記錄」上面的篩選選自己的分判，只顯示自己的點，逐點按「回復」拍完成照後，導出回復包發回。回復包只有回復內容及完成照，不含完成前照片，檔案細很多；匯入後按記錄自動對回原本的項目。</div>
     <div class="note">備份檔是 ZIP，可用分享選單存到「檔案」、iCloud Drive、Google Drive 或 WhatsApp。ZIP 內的「相片」資料夾在電腦上可直接開啟，每張相底部印有編號、位置、時間及檢查人員。</div>
     <div class="sec">報告（${esc(roundLabel())}，${roundItems().length} 項）</div>
     <label class="f">項目名稱<input id="pName" value="${esc(P.name)}" placeholder="例如：XX 住宅發展項目"></label>

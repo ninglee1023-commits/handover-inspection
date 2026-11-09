@@ -68,7 +68,7 @@ label.btn{display:flex;align-items:center;justify-content:center;cursor:pointer}
 /* phones: the set switch takes the drawing name's place; the mode switch is only shown when there is a mode to leave */
 @media (max-width:600px){#bar{gap:6px}#bar .tb,#bar .seg button{padding:8px 9px}#bar .brand{display:none}body.inspectOnly #bar .seg[aria-label="模式"]{display:none}}
 /* narrow phones: the buttons wrap to a second row rather than run off the screen (記錄, 篩選, 導出 were out of reach) */
-@media (max-width:600px){#bar{flex-wrap:wrap;row-gap:6px}#btnSub{max-width:calc(100vw - 24px);overflow:hidden;text-overflow:ellipsis}
+@media (max-width:600px){#bar{flex-wrap:wrap;row-gap:6px}
   #hint{top:calc(var(--barh,54px) + 12px)}}
 
 /* stage */
@@ -121,7 +121,7 @@ label.f textarea{resize:vertical;min-height:62px}
 details summary{font-size:13px;color:var(--muted);cursor:pointer;padding:4px 0}
 details[open]{display:flex;flex-direction:column;gap:8px}
 #btnFloor b{font-family:var(--mono)}
-#btnSub.on{background:#1f6f9c;color:#fff;border-color:#1f6f9c}
+#btnItems.on{background:#1f6f9c;color:#fff;border-color:#1f6f9c}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:3px 9px}
 .fdot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#d42a1e;margin-left:6px;vertical-align:middle;box-shadow:0 0 0 1.5px #fff}.fdot.ok{background:#2f7d4f}
@@ -220,7 +220,6 @@ details.grp.sub>summary{font-size:14px}
   </div>
   <button class="tb" id="btnRound" title="驗收批次">第1次</button>
   <button class="tb" id="btnFloor" hidden>樓層</button>
-  <button class="tb" id="btnSub" hidden>篩選</button>
   <button class="tb" id="btnItems">記錄<span class="n" id="cnt">0</span></button>
   <button class="tb" id="btnExport">導出</button>
 </header>
