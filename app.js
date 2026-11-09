@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.35';
+const VERSION = '0.10.36';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -448,11 +448,14 @@ function floorRail(d, mv) {
   if (!d || !mv.length) { R.hidden = true; railKey = ''; return; }
   let min = false; try { min = localStorage.getItem('railMin') === '1'; } catch (e) { }
   const cur = mv.map(v => floorFor(v)).filter((f, i, a) => a.indexOf(f) === i).join('/');
-  const key = [d.id, min, cur, ...mv.map(v => v.id)].join('|'); R.hidden = false;
+  // dot per floor, as in the 圖紙 list: red = a record (within the 篩選) still open, green = all replied
+  const F = roundItems().filter(i => i.drawingId === d.id && i.loc && subOk(i)), dot = {};
+  for (const v of mv) for (const f of v.floors) dot[v.id + '/' + f] = filterDot(F.filter(i => i.loc.viewId === v.id && i.loc.floor === f));
+  const key = [d.id, min, cur, ...mv.map(v => v.id), ...Object.values(dot)].join('|'); R.hidden = false;
   if (key === railKey) return; railKey = key;
   R.classList.toggle('min', min);
   R.innerHTML = `<button class="rh" data-a="railMin" aria-expanded="${!min}" title="${min ? '展開樓層' : '收起樓層'}">${min ? `<b>${esc(cur)}</b>▾` : '樓層▴'}</button>` + (min ? '' :
-    `<div class="rl">${mv.map(v => `${mv.length > 1 ? `<span class="rg">${esc(v.floors[0] + '–' + v.floors[v.floors.length - 1])}</span>` : ''}${[...v.floors].reverse().map(f => `<button class="${f === floorFor(v) ? 'on' : ''}" data-v="${v.id}" data-f="${esc(f)}">${esc(f)}</button>`).join('')}`).join('')}</div>`);
+    `<div class="rl">${mv.map(v => `${mv.length > 1 ? `<span class="rg">${esc(v.floors[0] + '–' + v.floors[v.floors.length - 1])}</span>` : ''}${[...v.floors].reverse().map(f => `<button class="${f === floorFor(v) ? 'on' : ''}" data-v="${v.id}" data-f="${esc(f)}">${esc(f)}${dot[v.id + '/' + f]}</button>`).join('')}`).join('')}</div>`);
   // keep the floor in use in sight
   const L = R.querySelector('.rl'); if (L) L.querySelectorAll('.on').forEach((b, i) => { if (i) return; const t = b.offsetTop - L.offsetTop; if (t < L.scrollTop || t + b.offsetHeight > L.scrollTop + L.clientHeight) L.scrollTop = t - L.clientHeight / 2 + b.offsetHeight / 2; });
 }
