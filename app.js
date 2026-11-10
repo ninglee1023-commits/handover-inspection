@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.37';
+const VERSION = '0.10.38';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -516,7 +516,8 @@ function navUI(d) {
   R.classList.toggle('min', min);
   R.innerHTML = `<button class="rh" data-a="railMin" aria-expanded="${!min}" title="${min ? '展開樓層' : '收起樓層'}">${min ? `<b>${esc([!isPodiumFloor(f) && t, f].filter(Boolean).join(' '))}</b>▾` : '樓層▴'}</button>` + (min ? '' :
     `<div class="rl">${floors.map(x => `<button class="${x === f ? 'on' : ''}" ${ok[x] ? '' : 'disabled'} data-f="${esc(x)}" title="${esc(x)}">${esc(x.replace(/^Upper RF$/, 'URF').replace(/^Top RF$/, 'TRF'))}${dot[x]}</button>`).join('')}</div>`);
-  TB.innerHTML = (towers.length > 1 ? `<div class="tw">${towers.map(x => `<button class="${x === t && !isPodiumFloor(f) ? 'on' : ''}" data-t="${x}">${x}</button>`).join('')}</div>` : '')
+  // a Tower with no sheet of its own on this floor (podium floors, mostly) is greyed and does nothing
+  TB.innerHTML = (towers.length > 1 ? `<div class="tw">${towers.map(x => { const own = !!towerSheet(scope, x, f); return `<button class="${own && x === t && sheetTowers(d).includes(x) ? 'on' : ''}" ${own ? '' : `disabled title="${esc(f)} 沒有 ${x} 的圖紙"`} data-t="${x}">${x}</button>`; }).join('')}</div>` : '')
     + (vars.length > 1 ? `<div class="vr">${variantLabels(vars).map((l, i) => `<button class="${vars[i].id === d.id ? 'on' : ''}" data-d="${vars[i].id}">${esc(l)}</button>`).join('')}</div>` : '');
   // keep the floor in use in sight
   const L = R.querySelector('.rl'), b = L && L.querySelector('.on');
@@ -545,15 +546,15 @@ $('#floorRail').onclick = e => {
 $('#towerBar').onclick = e => {
   const b = e.target.closest('button'); if (!b) return; const d = curD(); if (!d) return;
   if (b.dataset.d) return navGo(navTower(d), navFloor(d), b.dataset.d);
-  if (!b.dataset.t) return;
-  // a Tower picked on a podium floor (or a floor it has no sheet of its own for) goes to its lowest floor of its own
-  const t = b.dataset.t, scope = navScope(d); let f = navFloor(d);
-  if (isPodiumFloor(f) || !navPick(scope, t, f).some(x => sheetTowers(x).includes(t))) {
-    const own = [...new Set(scope.filter(x => sheetTowers(x).includes(t)).flatMap(sheetFloors))].sort((a, b) => navRank(a) - navRank(b));
-    if (own.length) f = own.includes(f) ? f : own[0];
-  }
-  navGo(t, f);
+  if (!b.dataset.t || b.disabled) return;
+  // the Tower's own sheet of the floor in view; the floor never changes
+  const t = b.dataset.t, f = navFloor(d), s = towerSheet(navScope(d), t, f); if (!s) return;
+  navGo(t, f, sheetTowers(d).includes(t) && navPick(navScope(d), t, f).some(x => x.id === d.id) ? d.id : s.id);
 };
+// the sheet of a floor drawn for this Tower (the one for fewest Towers: "Tower 3" before "Tower 1, 2, 3 & 5"), or none
+function towerSheet(scope, t, f) {
+  return scope.filter(x => sheetFloors(x).includes(f) && sheetTowers(x).includes(t)).sort((a, b) => sheetTowers(a).length - sheetTowers(b).length)[0] || null;
+}
 function updateBar() {
   const d = curD();
   $('#curName').textContent = d ? d.name : (S.project.name || '竣工驗收記錄');
