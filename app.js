@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.41';
+const VERSION = '0.10.42';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -721,8 +721,10 @@ function closePanel() {
 /* ---- items ---- */
 function newItem(p) {
   if (S.editing) finishItem(); S.back = null;
+  // v0.10.42: an online list several people fill in needs each device's own name, or their numbers clash
+  const rd = curRound(); if (liveOf(rd) && liveBoss(rd)) { if (liveNameWarn(rd, true)) { if (!S.settings.inspector) return; } }
   const d = curD(); const loc = resolveLoc(d, p.x, p.y);
-  S.editing = { id: uid(), round: curRound().id, dev: S.settings.dev || 'A', by: S.settings.inspector || '', drawingId: d.id, pf: curFrame(d), no: nextNo(), x: Math.round(p.x), y: Math.round(p.y), loc, locText: fmtLoc(loc), locEdited: false, photos: [], note: '', created: Date.now(), _new: true };
+  S.editing = { id: uid(), round: curRound().id, dev: S.settings.dev || 'A', devId: S.settings.devId, by: S.settings.inspector || '', drawingId: d.id, pf: curFrame(d), no: nextNo(), x: Math.round(p.x), y: Math.round(p.y), loc, locText: fmtLoc(loc), locEdited: false, photos: [], note: '', created: Date.now(), _new: true };
   renderOverlay(); itemPanel(); updateBar(); ensureVisible(p);
   if (S.settings.autoCam) $('#camInput').click();
 }
@@ -1894,9 +1896,12 @@ function setupPanel(first) {
   openPanel('setup', first ? '開始前：設定本機' : '本機設定', `
     <div class="note">記錄編號會以檢查人員名字開頭，例如 陳大文-001，多部 iPad 的記錄合併後也分得出是誰做的。</div>
     <label class="f">檢查人員<input id="sBy" value="${esc(S.settings.inspector || '')}" placeholder="姓名"></label>
+    ${S.settings.inspector && liveNameClash(curRound()) ? `<div class="note" style="color:var(--warn,#b3261e)">目前在線批次「${esc(curRound().name)}」內已有另一部機用「${esc(S.settings.inspector)}」這名字錄入，請改用不同名字（例如加 2），否則同時錄入會重複編號。</div>` : ''}
     <button class="btn dk" id="sOk">儲存</button>`, { compact: true });
-  $('#sOk').onclick = async () => {
+  $('#sOk').onclick = async e => {
     const name = $('#sBy').value.trim(); if (!name) return toast('請輸入檢查人員名字');
+    // the same name as another device in this online list: ask once more
+    if (liveNameClash(curRound(), devName(name)) && !e.target.classList.contains('armed')) { e.target.classList.add('armed'); e.target.textContent = `「${name}」已有另一部機使用，再按一次仍然儲存`; return; }
     for (const it of S.items) if (!it.dev) { it.dev = S.settings.dev || 'A'; await saveItem(it); }
     S.settings.inspector = name; S.settings.dev = devName(name); if (!S.project.inspector) S.project.inspector = name;
     await saveKV(); closePanel(); updateBar(); renderOverlay(); toast(`檢查人員：${name}`);

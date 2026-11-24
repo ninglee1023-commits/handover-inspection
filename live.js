@@ -67,7 +67,7 @@ async function livePhotoBytes(blob) {
   }
   throw new Error('相片太大，未能上載');
 }
-const liveRec = it => JSON.parse(JSON.stringify({ id: it.id, code: it.code, no: it.no, dev: devOf(it), by: it.by, ord: it.ord, origLabel: it.origLabel,
+const liveRec = it => JSON.parse(JSON.stringify({ id: it.id, code: it.code, no: it.no, dev: devOf(it), devId: it.devId, by: it.by, ord: it.ord, origLabel: it.origLabel,
   note: it.note || '', sub: it.sub, subs: it.subs, drawingId: it.drawingId, pf: it.pf, x: it.x, y: it.y, loc: it.loc, locText: it.locText,
   locEdited: it.locEdited, created: it.created, photos: it.photos.map(p => ({ id: p.id, t: p.t || 0, v: p.up || 0 })) }));
 
@@ -205,7 +205,8 @@ function liveWatch(rd) {
     // listening (nothing is cached between openings, so no 'removed' comes for it); keep only those new here
     if (!seen && !snap.metadata.fromCache) { seen = true; const have = new Set(snap.docs.map(d => d.id));
       // (a record never in the cloud — no uploaded photo — is left alone)
-      for (const it of S.items.filter(i => roundOf(i) === rd.id && !have.has(i.id) && (liveIsGone(rd, i.id) || (!i.liveDirty && i.photos.some(p => p.up))))) liveDrop(rd, it.id); }
+      for (const it of S.items.filter(i => roundOf(i) === rd.id && !have.has(i.id) && (liveIsGone(rd, i.id) || (!i.liveDirty && i.photos.some(p => p.up))))) liveDrop(rd, it.id);
+      if (rd === curRound() && !S.panel) setTimeout(() => liveNameWarn(rd), 7000); }
   }, again));
 }
 function liveUnwatch(id) { for (const u of LV.subs.get(id) || []) u(); LV.subs.delete(id); }
@@ -263,8 +264,22 @@ async function livePurge(id, name) {
     LV.lists = (LV.lists || []).filter(l => l.id !== id); if (S.panel === 'round') roundPanel(); busy(); toast(`已永久刪除「${name}」`, 5000);
   } catch (e) { busy(); toast('永久刪除失敗：' + e.message, 6000); console.error(e); }
 }
+/* ---- v0.10.42: the name a device numbers its records with. Records carry the devId of the device that made them,
+   so another device using the same name in a list shows (records from before v0.10.42 have none and are left out) ---- */
+const liveNameClash = (rd, dev = S.settings.dev) => !!(liveOf(rd) && dev && S.items.some(i => roundOf(i) === rd.id && i.dev === dev && i.devId && i.devId !== S.settings.devId));
+// once per opening and list (each time when adding with no name): no name → 本機設定; same name as another device → a warning
+function liveNameWarn(rd, adding) {
+  if (!liveOf(rd) || !liveBoss(rd)) return false;
+  if (!S.settings.inspector) {
+    toast('這部機未填檢查人員名字：記錄編號會用「A」開頭，容易與其他機重複。請先填名字再錄入', 7000); setupPanel(false); return true;
+  }
+  const k = rd.live.id + '|' + S.settings.dev; if (!liveNameClash(rd) || (LV.named || (LV.named = new Set())).has(k)) return false;
+  LV.named.add(k);
+  toast(`「${rd.name}」內已有另一部機用「${S.settings.inspector}」這名字錄入，同時錄入會重複編號。請在「本機設定」改用不同名字（例如加 2）`, 9000);
+  return !adding;
+}
 /* the publisher changed, added or deleted a record */
-const LIVE_KEYS = ['code', 'no', 'dev', 'by', 'ord', 'origLabel', 'note', 'sub', 'subs', 'drawingId', 'pf', 'x', 'y', 'loc', 'locText', 'locEdited', 'created'];
+const LIVE_KEYS = ['code', 'no', 'dev', 'devId', 'by', 'ord', 'origLabel', 'note', 'sub', 'subs', 'drawingId', 'pf', 'x', 'y', 'loc', 'locText', 'locEdited', 'created'];
 async function liveRecord(rd, c, id) {
   if (!liveOf(rd)) return;
   const ex = S.items.find(i => i.id === id);
