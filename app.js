@@ -1,7 +1,7 @@
 'use strict';
 /* 竣工驗收記錄 — offline iPad PWA
    Bundled GBP plans (vector PDF) + location mapping; items (pin + photos + text) live in IndexedDB on the device. */
-const VERSION = '0.10.42';
+const VERSION = '0.10.43';
 const $ = s => document.querySelector(s);
 // an update can arrive as new app.js under a stale cached index.html: reload the page once, bypassing caches
 (() => {
@@ -1203,6 +1203,8 @@ function exportPanel() {
   const P = S.project; const ub = unbacked(), ua = unalbum(); const devs = [...new Set(S.items.map(devOf))].sort();
   const last = S.settings.lastBackup ? fmtTime(S.settings.lastBackup) : '從未備份';
   openPanel('export', '導出及備份', `
+    ${(() => { const D = dupLabels(); if (!D.length) return ''; const n = D.reduce((s, [, c]) => s + c - 1, 0);
+      return `<div class="safe warn"><b>「${esc(curRound().name)}」有 ${n} 個重複編號</b><span>${D.slice(0, 4).map(([l, c]) => `${esc(l)} ×${c}`).join('、')}${D.length > 4 ? ` 等 ${D.length} 個` : ''}　·　多半是兩部機用了同一個名字。發給分判前，請按下面「只修正重複編號」或「整理編號」。</span></div>`; })()}
     <div class="safe ${ub ? 'warn' : 'ok'}"><b>${ub ? `${ub} 項記錄未備份` : '全部記錄已備份'}</b><span>上次備份：${last}　·　未存入相簿：${ua} 張</span></div>
     <div class="row"><button class="btn ${ub ? 'p' : ''}" data-a="bknew">備份新增記錄</button><button class="btn" data-a="repair">檢查及修復相片</button><button class="btn" data-a="album">存入相簿（${ua}）</button></div>
     <button class="btn" data-a="bk">完整備份（全部 ${S.items.length} 項）</button>
@@ -1232,7 +1234,7 @@ function exportPanel() {
     <label class="btn" for="photoRestore">從相片還原記錄</label>
     <div class="note">本程式存的每張相片都帶有圖紙坐標（相片資料內及底部二維碼）。即使只剩下相片，在這裏一次揀選多張，就可以把記錄放回原來的圖紙位置及驗收批次。</div>
     <div class="note">匯入後所有記錄會在同一張圖上顯示，連同圖上位置、照片標註及檢查人員；同一記錄以較新的版本為準。</div>
-    ${dupCodes() && !(liveOf(curRound()) && !liveAdmin()) ? `<button class="btn p" data-a="fixdup">只修正重複編號（${dupCodes()} 項）</button><div class="note">有記錄共用同一個編號。按這裏只改重複的那些（最早的保留原編號，其餘改用該樓層／單位的下一個號碼），其他編號不變，適合已發出的在線清單。</div>` : ''}
+    ${dupCodes() && !(liveOf(curRound()) && !liveAdmin()) ? `<button class="btn p" data-a="fixdup">只修正重複編號（${dupCodes()} 項）</button><div class="note">有記錄共用同一個編號。按這裏只改重複的那些（最早的保留原編號，其餘改用該樓層／單位的下一個號碼；未整理編號的改用該名字的下一個號碼，例如 陳大文-003 改為 陳大文-012），其他編號不變，適合已發出的在線清單。原編號保留在記錄內。</div>` : ''}
     <button class="btn" data-a="renum">整理「${esc(curRound().name)}」的編號（${roundItems().length} 項）</button>
     <div class="note">只整理目前批次的記錄，其他批次的編號不變；要整理另一個批次，先在「驗收批次」切換過去。全部記錄匯入後按這裏，編號會改為按樓層排列，例如 B1-001、B1-002、G-001；3F 或以上按單位 A–Z 分開編號，例如 T1-3F-A-001、T1-3F-B-001，公共位置排在各單位之後（T1-3F-001）。同一單位或區域的記錄排在一起，就像一個人做了全部記錄。原來的編號會保留在記錄內。之後再匯入或新增記錄，可再按一次重新整理。</div>
     <div class="sec">本機</div>
@@ -1602,7 +1604,9 @@ async function renumberAll() {
 }
 /* only the clashes: two records with one code (batches merged, each numbered on its own). The earliest keeps it,
    the others take the next free number of their floor / flat, so codes already sent out stay as they are */
-const dupCodes = () => { const m = new Map(); for (const i of roundItems()) if (i.code) m.set(i.code, (m.get(i.code) || 0) + 1); return [...m.values()].reduce((n, c) => n + (c > 1 ? c - 1 : 0), 0); };
+// v0.10.43: also two records with one name-number (陳大文-003 twice: two devices with one name, offline at the time)
+const dupLabels = () => { const m = new Map(); for (const i of roundItems()) { const l = itemLabel(i); m.set(l, (m.get(l) || 0) + 1); } return [...m].filter(([, c]) => c > 1); };
+const dupCodes = () => dupLabels().reduce((n, [, c]) => n + c - 1, 0);
 async function fixDupCodes() {
   if (liveOf(curRound()) && !liveAdmin()) return 0;
   const L = roundItems().filter(i => i.code), by = new Map(), top = new Map(), now = Date.now(); let n = 0;
@@ -1617,6 +1621,19 @@ async function fixDupCodes() {
       const x = (top.get(k) || 0) + 1; top.set(k, x);
       if (!it.origLabel) it.origLabel = `${devOf(it)}-${String(it.no).padStart(3, '0')}`;
       it.code = `${k}-${String(x).padStart(3, '0')}`; it.mod = now; await saveItem(it); liveEdited(it); n++;
+    }
+  }
+  // records not yet numbered by 整理編號, sharing one name-number: the later ones take that name's next number
+  const U = roundItems().filter(i => !i.code), byL = new Map(), topNo = new Map();
+  for (const i of roundItems()) topNo.set(devOf(i), Math.max(topNo.get(devOf(i)) || 0, i.no || 0));
+  for (const i of U) { const l = itemLabel(i); byL.set(l, [...(byL.get(l) || []), i]); }
+  for (const G of byL.values()) {
+    if (G.length < 2) continue;
+    G.sort((a, b) => !!a.liveDirty - !!b.liveDirty || (a.created || 0) - (b.created || 0) || byOrder(a, b));
+    for (const it of G.slice(1)) {
+      const d = devOf(it), x = (topNo.get(d) || 0) + 1; topNo.set(d, x);
+      if (!it.origLabel) it.origLabel = itemLabel(it);
+      it.no = x; it.mod = now; await saveItem(it); liveEdited(it); n++;
     }
   }
   if (n) { renderOverlay(); updateBar(); }
